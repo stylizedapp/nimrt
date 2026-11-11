@@ -18,9 +18,11 @@ import std/atomics
 import std/sysatomics
 import std/cpuinfo
 import ./adt
+import ./workstealing
 
 export atomics.Atomic, atomics.AtomicFlag, atomics.atomicInc, atomics.atomicDec
 export sysatomics.cpuRelax, sysatomics.fence
+export workstealing.WorkStealDeque, workstealing.JobDeque, workstealing.Job, workstealing.JobProc
 
 # =============================================================================
 # Platform C Bindings (OS Synchronization Primitives)
@@ -1136,79 +1138,233 @@ proc full*[T; Cap: static int](q: ptr MpmcQueue[T, Cap]): bool {.inline.} =
   q[].full
 
 # =============================================================================
-# Feature 34: `ThreadPool` & `parallelFor`
+# Feature 34: `ThreadPool` & `parallelFor` (Work-Stealing Chase-Lev Worker Pool)
 # =============================================================================
 
 type
   Task* = proc() {.gcsafe.}
 
-  JobProc = proc(arg: pointer) {.nimcall, gcsafe.}
-
-  Job = object
-    fn: JobProc
-    arg: pointer
-    cleanup: JobProc
+  WorkerArg = object
+    pool: ptr ThreadPool
+    workerId: int
 
   ThreadPool* = object
-    ## Fixed worker thread pool with OS condition variable parking at 0% idle CPU.
-    threads: seq[Thread[ptr ThreadPool]]
+    ## Fixed worker thread pool with work-stealing Chase-Lev deques,
+    ## lock-free local task spawning, and OS condition variable parking at 0% idle CPU.
+    threads: seq[Thread[ptr WorkerArg]]
+    workerArgs: ptr UncheckedArray[WorkerArg]
+    deques: ptr UncheckedArray[ptr WorkStealDeque[Job]]
     queue: ptr UncheckedArray[Job]
     queueCap: int
     queueHead: int
     queueTail: int
-    queueCount: int
+    queueCount: Atomic[int]
     numWorkers: int
     lock: SysLock
     when defined(windows):
       condWork: WinCondVar
     elif defined(posix):
       condWork: PthreadCondRaw
-    running: bool
+    running: Atomic[bool]
     isShutDown: bool
     threadsStarted: Atomic[bool]
+    sleepingWorkers: Atomic[int]
 
 proc `=copy`*(dest: var ThreadPool, src: ThreadPool) {.
   error: "ThreadPool cannot be copied; pass by pointer or var reference".}
 
-proc workerProc(pool: ptr ThreadPool) {.thread.} =
-  while true:
-    var job = Job(fn: nil, arg: nil, cleanup: nil)
+# Thread-local worker context
+var tWorkerPool {.threadvar.}: pointer
+var tWorkerId {.threadvar.}: int
+var tRngState {.threadvar.}: uint64
 
-    acquire(pool.lock)
-    while pool.running and pool.queueCount == 0:
+proc nextRand(maxVal: int): int {.inline.} =
+  if maxVal <= 1: return 0
+  if tRngState == 0:
+    tRngState = uint64(tWorkerId + 1) * 0x9E3779B97F4A7C15'u64 + 1
+  tRngState = tRngState xor (tRngState shl 13)
+  tRngState = tRngState xor (tRngState shr 7)
+  tRngState = tRngState xor (tRngState shl 17)
+  return int(tRngState mod uint64(maxVal))
+
+proc allLocalDequesEmpty(pool: ptr ThreadPool): bool {.inline.} =
+  if pool.deques != nil:
+    for i in 0 ..< pool.numWorkers:
+      if pool.deques[i] != nil and not pool.deques[i].empty:
+        return false
+  return true
+
+proc allLocalDequesEmpty(pool: var ThreadPool): bool {.inline.} =
+  allLocalDequesEmpty(addr pool)
+
+proc allQueuesEmpty(pool: ptr ThreadPool): bool {.inline.} =
+  if pool.queueCount.load(moRelaxed) > 0:
+    return false
+  return pool.allLocalDequesEmpty()
+
+proc allQueuesEmpty(pool: var ThreadPool): bool {.inline.} =
+  allQueuesEmpty(addr pool)
+
+proc popInjection(pool: ptr ThreadPool, workerId: int, job: var Job): bool =
+  if pool.queueCount.load(moRelaxed) == 0:
+    return false
+
+  acquire(pool.lock)
+  let count = pool.queueCount.load(moRelaxed)
+  if count > 0:
+    job = pool.queue[pool.queueHead]
+    pool.queue[pool.queueHead] = Job(fn: nil, arg: nil, cleanup: nil)
+    pool.queueHead = (pool.queueHead + 1) mod pool.queueCap
+    pool.queueCount.atomicDec(1)
+    result = true
+
+    # If calling thread is a worker, batch up to 15 additional jobs into local deque
+    if workerId >= 0 and workerId < pool.numWorkers and pool.deques != nil and pool.deques[workerId] != nil:
+      let rem = pool.queueCount.load(moRelaxed)
+      let batch = min(rem, 15)
+      for _ in 0 ..< batch:
+        var bJob = pool.queue[pool.queueHead]
+        pool.queue[pool.queueHead] = Job(fn: nil, arg: nil, cleanup: nil)
+        pool.queueHead = (pool.queueHead + 1) mod pool.queueCap
+        pool.queueCount.atomicDec(1)
+        pool.deques[workerId].push(bJob)
+
+      if batch > 0 and pool.sleepingWorkers.load(moRelaxed) > 0:
+        when defined(windows):
+          winWakeConditionVariable(addr pool.condWork)
+        elif defined(posix):
+          discard pthread_cond_signal(addr pool.condWork)
+
+  release(pool.lock)
+
+proc popInjection(pool: var ThreadPool, workerId: int, job: var Job): bool {.inline.} =
+  popInjection(addr pool, workerId, job)
+
+proc stealWork(pool: ptr ThreadPool, workerId: int, job: var Job): bool =
+  let n = pool.numWorkers
+  if n <= 1 or pool.deques == nil:
+    return false
+  let start = nextRand(n)
+  for i in 0 ..< n:
+    let victim = (start + i) mod n
+    if victim != workerId and pool.deques[victim] != nil:
+      if pool.deques[victim].steal(job):
+        return true
+  return false
+
+proc stealWork(pool: var ThreadPool, workerId: int, job: var Job): bool {.inline.} =
+  stealWork(addr pool, workerId, job)
+
+proc workerProc(arg: ptr WorkerArg) {.thread.} =
+  let pool = arg.pool
+  let workerId = arg.workerId
+  tWorkerPool = cast[pointer](pool)
+  tWorkerId = workerId
+
+  try:
+    while true:
+      var job: Job
+      var found = false
+
+      # a) Try to pop from local deque (LIFO, maximum cache locality)
+      if pool.deques[workerId].pop(job):
+        found = true
+
+      # b) If empty, try to pop from global injection queue
+      if not found:
+        found = pool.popInjection(workerId, job)
+
+      # c) If empty, attempt to steal from other workers (randomized victim selection, stealing from top)
+      if not found:
+        found = pool.stealWork(workerId, job)
+
+      if found:
+        execute(job)
+        continue
+
+      # Check termination condition
+      if not pool.running.load(moAcquire):
+        if pool.allQueuesEmpty():
+          break
+
+      # d) Brief spin with cpuRelax() before parking
+      var foundDuringSpin = false
+      const MaxSpins = 32
+      var spins = 0
+      while spins < MaxSpins:
+        for _ in 0 ..< 4:
+          cpuRelax()
+        inc(spins)
+
+        if pool.deques[workerId].pop(job):
+          foundDuringSpin = true
+          break
+        if pool.popInjection(workerId, job):
+          foundDuringSpin = true
+          break
+        if (spins and 7) == 0:
+          if pool.stealWork(workerId, job):
+            foundDuringSpin = true
+            break
+
+      if foundDuringSpin:
+        execute(job)
+        continue
+
+      # Park on condition variable (condWork)
+      acquire(pool.lock)
+      if not pool.running.load(moAcquire):
+        if pool.allQueuesEmpty():
+          release(pool.lock)
+          break
+
+      if pool.queueCount.load(moRelaxed) > 0:
+        job = pool.queue[pool.queueHead]
+        pool.queue[pool.queueHead] = Job(fn: nil, arg: nil, cleanup: nil)
+        pool.queueHead = (pool.queueHead + 1) mod pool.queueCap
+        pool.queueCount.atomicDec(1)
+        release(pool.lock)
+        execute(job)
+        continue
+
+      if not pool.allLocalDequesEmpty():
+        release(pool.lock)
+        continue
+
+      if not pool.running.load(moAcquire):
+        release(pool.lock)
+        break
+
+      pool.sleepingWorkers.atomicInc(1)
       when defined(windows):
         discard winSleepConditionVariableSRW(addr pool.condWork, addr pool.lock.raw, 0xFFFFFFFF'u32, 0'u32)
       elif defined(posix):
         discard pthread_cond_wait(addr pool.condWork, addr pool.lock.raw)
+      pool.sleepingWorkers.atomicDec(1)
+      release(pool.lock)
 
-    if pool.queueCount > 0:
-      job = pool.queue[pool.queueHead]
-      pool.queue[pool.queueHead] = Job(fn: nil, arg: nil, cleanup: nil)
-      pool.queueHead = (pool.queueHead + 1) mod pool.queueCap
-      dec(pool.queueCount)
-
-    let shouldExit = (not pool.running) and (pool.queueCount == 0) and (job.fn == nil)
-    release(pool.lock)
-
-    if job.fn != nil:
-      try:
-        job.fn(job.arg)
-      except CatchableError, Defect:
-        discard
-      finally:
-        if job.cleanup != nil:
-          job.cleanup(job.arg)
-    elif shouldExit:
-      break
+  finally:
+    tWorkerPool = nil
+    tWorkerId = -1
 
 proc ensureWorkers(pool: var ThreadPool) =
   if not pool.threadsStarted.load(moAcquire):
     acquire(pool.lock)
-    if not pool.threadsStarted.load(moRelaxed) and pool.running and not pool.isShutDown:
+    if not pool.threadsStarted.load(moRelaxed) and pool.running.load(moRelaxed) and not pool.isShutDown:
       let count = if pool.numWorkers > 0: pool.numWorkers else: max(1, countProcessors())
-      pool.threads = newSeq[Thread[ptr ThreadPool]](count)
+      pool.numWorkers = count
+
+      pool.workerArgs = cast[ptr UncheckedArray[WorkerArg]](allocShared0(sizeof(WorkerArg) * count))
+      pool.deques = cast[ptr UncheckedArray[ptr WorkStealDeque[Job]]](allocShared0(sizeof(ptr WorkStealDeque[Job]) * count))
       for i in 0 ..< count:
-        createThread(pool.threads[i], workerProc, addr pool)
+        pool.deques[i] = newWorkStealDeque[Job](64)
+        pool.workerArgs[i].pool = addr pool
+        pool.workerArgs[i].workerId = i
+
+      pool.threads = newSeq[Thread[ptr WorkerArg]](count)
+      for i in 0 ..< count:
+        createThread(pool.threads[i], workerProc, addr pool.workerArgs[i])
+
       pool.threadsStarted.store(true, moRelease)
     release(pool.lock)
 
@@ -1220,16 +1376,17 @@ proc initThreadPool*(numThreads: int = 0): ThreadPool =
   result.queue = cast[ptr UncheckedArray[Job]](allocShared0(sizeof(Job) * InitialCapacity))
   result.queueHead = 0
   result.queueTail = 0
-  result.queueCount = 0
+  result.queueCount.store(0, moRelaxed)
   result.numWorkers = count
   result.lock = initSysLock()
   when defined(windows):
     winInitializeConditionVariable(addr result.condWork)
   elif defined(posix):
     discard pthread_cond_init(addr result.condWork, nil)
-  result.running = true
+  result.running.store(true, moRelaxed)
   result.isShutDown = false
   result.threadsStarted.store(false, moRelaxed)
+  result.sleepingWorkers.store(0, moRelaxed)
 
 proc initThreadPool*(pool: var ThreadPool, numThreads: int = 0) =
   ## Initializes an existing ThreadPool in-place and starts worker threads immediately.
@@ -1239,16 +1396,17 @@ proc initThreadPool*(pool: var ThreadPool, numThreads: int = 0) =
   pool.queue = cast[ptr UncheckedArray[Job]](allocShared0(sizeof(Job) * InitialCapacity))
   pool.queueHead = 0
   pool.queueTail = 0
-  pool.queueCount = 0
+  pool.queueCount.store(0, moRelaxed)
   pool.numWorkers = count
   pool.lock = initSysLock()
   when defined(windows):
     winInitializeConditionVariable(addr pool.condWork)
   elif defined(posix):
     discard pthread_cond_init(addr pool.condWork, nil)
-  pool.running = true
+  pool.running.store(true, moRelaxed)
   pool.isShutDown = false
   pool.threadsStarted.store(false, moRelaxed)
+  pool.sleepingWorkers.store(0, moRelaxed)
   pool.ensureWorkers()
 
 proc newThreadPool*(numThreads: int = 0): ptr ThreadPool =
@@ -1256,28 +1414,30 @@ proc newThreadPool*(numThreads: int = 0): ptr ThreadPool =
   result = cast[ptr ThreadPool](allocShared0(sizeof(ThreadPool)))
   initThreadPool(result[], numThreads)
 
-proc pushJob(pool: var ThreadPool, job: Job) =
+proc pushInjection(pool: var ThreadPool, job: Job) =
   acquire(pool.lock)
-  if not pool.running:
+  if not pool.running.load(moRelaxed) or pool.isShutDown:
     release(pool.lock)
+    if job.cleanup != nil and job.arg != nil:
+      job.cleanup(job.arg)
     raise newException(ValueError, "Cannot submit job on stopped ThreadPool")
 
-  # Dynamic expansion of queue buffer if full
-  if pool.queueCount == pool.queueCap:
+  # Dynamic expansion of injection queue buffer if full
+  if pool.queueCount.load(moRelaxed) == pool.queueCap:
     let oldCap = pool.queueCap
     let newCap = oldCap * 2
     let newQueue = cast[ptr UncheckedArray[Job]](allocShared0(sizeof(Job) * newCap))
-    for i in 0 ..< pool.queueCount:
+    for i in 0 ..< pool.queueCap:
       newQueue[i] = pool.queue[(pool.queueHead + i) mod oldCap]
     deallocShared(pool.queue)
     pool.queue = newQueue
     pool.queueCap = newCap
     pool.queueHead = 0
-    pool.queueTail = pool.queueCount
+    pool.queueTail = oldCap
 
   pool.queue[pool.queueTail] = job
   pool.queueTail = (pool.queueTail + 1) mod pool.queueCap
-  inc(pool.queueCount)
+  pool.queueCount.atomicInc(1)
 
   when defined(windows):
     winWakeConditionVariable(addr pool.condWork)
@@ -1285,12 +1445,59 @@ proc pushJob(pool: var ThreadPool, job: Job) =
     discard pthread_cond_signal(addr pool.condWork)
   release(pool.lock)
 
+proc submitJob(pool: var ThreadPool, job: Job) =
+  let poolPtr = cast[pointer](addr pool)
+  if tWorkerPool == poolPtr and tWorkerId >= 0 and tWorkerId < pool.numWorkers:
+    # In-worker submission: push directly to local deque (zero mutex locks!)
+    pool.deques[tWorkerId].push(job)
+    if pool.sleepingWorkers.load(moRelaxed) > 0:
+      when defined(windows):
+        winWakeConditionVariable(addr pool.condWork)
+      elif defined(posix):
+        discard pthread_cond_signal(addr pool.condWork)
+  else:
+    # External submission: push to injection queue and wake a worker
+    pool.pushInjection(job)
+
+proc pushJob(pool: var ThreadPool, job: Job) {.inline.} =
+  pool.submitJob(job)
+
+type
+  ClosureRaw = object
+    fn: pointer
+    env: pointer
+
+  TNimTypeV2 = object
+    destructor: pointer
+    size: int
+    align: int
+    depth: int
+    display: pointer
+    traceImpl: pointer
+    flags: uint32
+
+  RefHeader = object
+    rc: int
+    when defined(gcOrc):
+      rootIdx: int
+      refId: int
+
+proc sanitizeClosure(env: pointer) {.inline.} =
+  when defined(gcOrc):
+    if env != nil:
+      let pDesc = cast[ptr ptr TNimTypeV2](env)[]
+      if pDesc != nil:
+        pDesc.flags = pDesc.flags or 1'u32 # acyclicFlag
+      let cell = cast[ptr RefHeader](cast[int](env) - sizeof(RefHeader))
+      if cell.rootIdx > 0:
+        GC_runOrc()
+
 type TaskEnv = object
   task: Task
 
 proc runTaskEnv(p: pointer) {.nimcall, gcsafe.} =
   let env = cast[ptr TaskEnv](p)
-  if env.task != nil:
+  if env != nil and env.task != nil:
     env.task()
 
 proc freeTaskEnv(p: pointer) {.nimcall, gcsafe.} =
@@ -1304,9 +1511,12 @@ proc spawn*(pool: var ThreadPool, task: proc() {.gcsafe.}) =
   pool.ensureWorkers()
   let env = cast[ptr TaskEnv](allocShared0(sizeof(TaskEnv)))
   env.task = task
+  let raw = cast[ClosureRaw](task)
+  if raw.env != nil:
+    sanitizeClosure(raw.env)
   let job = Job(fn: runTaskEnv, arg: env, cleanup: freeTaskEnv)
   try:
-    pool.pushJob(job)
+    pool.submitJob(job)
   except CatchableError, Defect:
     freeTaskEnv(env)
     raise
@@ -1321,7 +1531,7 @@ proc shutdown*(pool: var ThreadPool) =
     release(pool.lock)
     return
   pool.isShutDown = true
-  pool.running = false
+  pool.running.store(false, moRelease)
   when defined(windows):
     winWakeAllConditionVariable(addr pool.condWork)
   elif defined(posix):
@@ -1335,10 +1545,10 @@ proc shutdown*(pool: var ThreadPool) =
 
   acquire(pool.lock)
   if pool.queue != nil:
-    while pool.queueCount > 0:
+    while pool.queueCount.load(moRelaxed) > 0:
       var job = pool.queue[pool.queueHead]
       pool.queueHead = (pool.queueHead + 1) mod pool.queueCap
-      dec(pool.queueCount)
+      pool.queueCount.atomicDec(1)
       if job.cleanup != nil and job.arg != nil:
         try:
           job.cleanup(job.arg)
@@ -1346,23 +1556,65 @@ proc shutdown*(pool: var ThreadPool) =
           discard
     deallocShared(pool.queue)
     pool.queue = nil
+
+  if pool.deques != nil:
+    for i in 0 ..< pool.numWorkers:
+      if pool.deques[i] != nil:
+        var job: Job
+        while pool.deques[i].pop(job):
+          if job.cleanup != nil and job.arg != nil:
+            try:
+              job.cleanup(job.arg)
+            except CatchableError, Defect:
+              discard
+        destroyWorkStealDeque(pool.deques[i])
+        pool.deques[i] = nil
+    deallocShared(pool.deques)
+    pool.deques = nil
+
+  if pool.workerArgs != nil:
+    deallocShared(pool.workerArgs)
+    pool.workerArgs = nil
+
   release(pool.lock)
 
 proc shutdown*(pool: ptr ThreadPool) {.inline.} =
   shutdown(pool[])
 
 proc `=destroy`*(pool: var ThreadPool) =
-  if pool.running and not pool.isShutDown:
+  if pool.running.load(moRelaxed) and not pool.isShutDown:
     try:
       pool.shutdown()
-    except:
+    except CatchableError, Defect:
       discard
-  elif pool.queue != nil:
-    acquire(pool.lock)
-    if pool.queue != nil:
-      deallocShared(pool.queue)
-      pool.queue = nil
-    release(pool.lock)
+  else:
+    if pool.queue != nil or pool.deques != nil or pool.workerArgs != nil:
+      acquire(pool.lock)
+      if pool.queue != nil:
+        while pool.queueCount.load(moRelaxed) > 0:
+          var job = pool.queue[pool.queueHead]
+          pool.queueHead = (pool.queueHead + 1) mod pool.queueCap
+          pool.queueCount.atomicDec(1)
+          if job.cleanup != nil and job.arg != nil:
+            try:
+              job.cleanup(job.arg)
+            except CatchableError, Defect:
+              discard
+        deallocShared(pool.queue)
+        pool.queue = nil
+
+      if pool.deques != nil:
+        for i in 0 ..< pool.numWorkers:
+          if pool.deques[i] != nil:
+            destroyWorkStealDeque(pool.deques[i])
+            pool.deques[i] = nil
+        deallocShared(pool.deques)
+        pool.deques = nil
+
+      if pool.workerArgs != nil:
+        deallocShared(pool.workerArgs)
+        pool.workerArgs = nil
+      release(pool.lock)
 
 type ChunkJob = object
   s: int
@@ -1402,6 +1654,9 @@ proc parallelFor*(pool: var ThreadPool, start, `end`: int, fn: proc(s, e: int) {
   var cur = start
   var idx = 0
   var pushedChunks = 0
+  let poolPtr = cast[pointer](addr pool)
+  let isWorker = (tWorkerPool == poolPtr and tWorkerId >= 0 and tWorkerId < pool.numWorkers)
+
   try:
     while cur < `end`:
       let chunkEnd = min(cur + chunkSize, `end`)
@@ -1412,10 +1667,43 @@ proc parallelFor*(pool: var ThreadPool, start, `end`: int, fn: proc(s, e: int) {
 
       wgPtr.add(1)
       let job = Job(fn: runChunkJob, arg: addr jobs[idx], cleanup: nil)
-      pool.pushJob(job)
+      try:
+        if isWorker:
+          pool.deques[tWorkerId].push(job)
+        else:
+          pool.pushInjection(job)
+      except CatchableError, Defect:   
+        wgPtr.add(-1)   # rollback: task not in queue, done() will not be called
+        raise
       inc(pushedChunks)
       cur = chunkEnd
       inc(idx)
+
+    if isWorker and pool.sleepingWorkers.load(moRelaxed) > 0:
+      when defined(windows):
+        winWakeAllConditionVariable(addr pool.condWork)
+      elif defined(posix):
+        discard pthread_cond_broadcast(addr pool.condWork)
+
+    # Cooperative execution while waiting for chunks:
+    if isWorker:
+      while wgPtr.value > 0:
+        var j: Job
+        if pool.deques[tWorkerId].pop(j):
+          execute(j)
+        elif pool.popInjection(tWorkerId, j):
+          execute(j)
+        elif pool.stealWork(tWorkerId, j):
+          execute(j)
+        else:
+          break
+    else:
+      while wgPtr.value > 0:
+        var j: Job
+        if pool.popInjection(-1, j):
+          execute(j)
+        else:
+          break
 
     wgPtr.wait()
   except CatchableError, Defect:

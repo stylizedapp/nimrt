@@ -15,6 +15,7 @@
 | M6 | Чистка предупреждений `algx`, прогон бенчмарков | Принят. Предупреждения `UnreachableCode` в `zeropack.nim` полностью устранены (0 warnings), бенчмарки актуализированы |
 | M7 | Полный прогон тестов с проверкой на утечки | Принят. Полный системный тест `nimble test` (`test_ecosystem.nim` 10/10) и все подсьюты пройдены без ошибок и утечек памяти |
 | M8 | Сканер дисков WizTree Engine (`src/wiztree/` + `src/wiztree.nim`) | Принят. 40-байтный POD `Node`, Arena-интернирование имен, MFT Direct + Win32 Fast fallback, O(N) rollup, Top-K выборка, экспорт JSON/CSV. Все 9/9 тестов и бенчмарк на 1M нод пройдены (0 утечек) |
+| M9 | Work-Stealing ThreadPool (`src/corex/workstealing.nim` + `src/corex/concurrency.nim`) | Принят. Chase-Lev lock-free deque на поток (LIFO push/pop, lock-free FIFO steal), батчевая инжекция (до 16 задач), cooperative `parallelFor`, устранение гонок цикла ORC, 0 утечек под ARC/ORC, до 10x ускорение под конкуренцией (935 M items/s на рекурсивном divide-and-conquer) |
 
 ---
 
@@ -23,6 +24,8 @@
 | Тест / Сьют | Результат | Статус |
 |---|---|---|
 | `tests/test_ecosystem.nim` (`--mm:orc --threads:on --panics:on`) | ✅ 10/10 подсистем | 0 ошибок, 0 ворнингов, чистый код возврата 0 |
+| `tests/test_workstealing.nim` | ✅ 10/10 тестовых сьютов | 0 ошибок, проверено на 10 стресс-прогонах, 0 утечек |
+| `tests/bench_workstealing.nim` | ✅ 4 бенчмарк-сценария | 935.89 M items/s (divide-and-conquer), 0 байт утечек под ORC |
 | `tests/test_wiztree.nim` | ✅ 9/9 тестовых сьютов | 82.72 ms, 0 ошибок, 0 утечек памяти под TrackingAllocator |
 | `tests/test_m5_verification.nim` | ✅ 8/8 тестовых сьютов | 0 дефектов, 0 утечек памяти |
 | `.agents/teamwork/sub_orch_m4/worker_1/test_concurrency.nim` | ✅ 24/24 сьюта | 0 ошибок, double-checked locking & reset(task) подтверждены |
@@ -100,7 +103,7 @@
    - `AlignedBuffer` под флаг `FILE_FLAG_NO_BUFFERING` (выравнивание по границе сектора 4KB).
    - Интеграция с IOCP (I/O Completion Ports).
    - `StringArena` и компактный `Slab[T]` с адресацией по `NodeId`.
-   - Work-stealing очередь (алгоритм Chase-Lev) для масштабируемого пула потоков.
+   - Work-stealing очередь (алгоритм Chase-Lev) для масштабируемого пула потоков [РЕАЛИЗОВАНО в M9].
 3. **Кросс-платформенная верификация POSIX:**
    - Запуск сьютов на Linux и macOS в CI/CD контейнерах для подтверждения идентичности поведения `posix_fs.nim`.
 4. **Система контроля версий:**
