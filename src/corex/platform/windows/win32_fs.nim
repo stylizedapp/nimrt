@@ -379,10 +379,12 @@ proc win32GetVolumeInfo*(path: string): Result[Win32VolumeInfo, IOError] =
       return err[Win32VolumeInfo, IOError](IOError(msg: "GetVolumeInformationW failed for '" & root & "': error " & $getLastError()))
 
     var freeAvail, totalBytes, totalFree: int64
-    discard getDiskFreeSpaceExW(wRoot, addr freeAvail, addr totalBytes, addr totalFree)
+    if getDiskFreeSpaceExW(wRoot, addr freeAvail, addr totalBytes, addr totalFree) == 0:
+      return err[Win32VolumeInfo, IOError](IOError(msg: "GetDiskFreeSpaceExW failed for '" & root & "': error " & $getLastError()))
 
     var spc, bps, freeC, totC: DWORD
-    discard getDiskFreeSpaceW(wRoot, addr spc, addr bps, addr freeC, addr totC)
+    if getDiskFreeSpaceW(wRoot, addr spc, addr bps, addr freeC, addr totC) == 0:
+      return err[Win32VolumeInfo, IOError](IOError(msg: "GetDiskFreeSpaceW failed for '" & root & "': error " & $getLastError()))
     let clusterSize = int(spc) * int(bps)
 
     var volName, fsName: string

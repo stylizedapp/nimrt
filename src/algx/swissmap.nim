@@ -13,6 +13,8 @@
 ## 4. Сверхбыстрый 64-битный хэш-миксер SplitMix64 / Fibonacci.
 
 import std/[hashes, bitops]
+import corex/adt
+export adt
 
 {.push checks: off, optimization: speed.}
 
@@ -297,7 +299,41 @@ proc del*[K, V](m: var FastMap[K, V], key: K): bool {.inline, raises: [].} =
     inc step
     g = (g + step) and groupMask
 
-proc `[]`*[K, V](m: FastMap[K, V], key: K): lent V {.inline.} =
+proc get*[K, V](m: FastMap[K, V], key: K): Option[V] {.inline, raises: [].} =
+  ## Safe non-panicking lookup returning Some(val) or None if key is absent.
+  if m.count == 0 or m.ctrl.len == 0:
+    return none(V)
+
+  let h = fastHash(key)
+  let tag = extractTag(h)
+  let groupMask = m.mask shr 3
+  let pCtrl = cast[ptr UncheckedArray[uint8]](unsafeAddr m.ctrl[0])
+  let pKeys = cast[ptr UncheckedArray[K]](unsafeAddr m.keys[0])
+  let pVals = cast[ptr UncheckedArray[V]](unsafeAddr m.vals[0])
+
+  var g = int(h and uint64(groupMask))
+  var step = 0
+
+  while true:
+    let baseIdx = g shl 3
+    let word = cast[ptr uint64](addr pCtrl[baseIdx])[]
+
+    var matchMask = matchByteMask64(word, tag)
+    while matchMask != 0:
+      let slotOffset = countTrailingZeroBits(matchMask) shr 3
+      let slotIdx = baseIdx + slotOffset
+      if pKeys[slotIdx] == key:
+        return some(pVals[slotIdx])
+      matchMask = matchMask and (matchMask - 1)
+
+    let emptyMask = matchByteMask64(word, SlotEmpty)
+    if emptyMask != 0:
+      return none(V)
+
+    inc step
+    g = (g + step) and groupMask
+
+proc `[]`*[K, V](m: FastMap[K, V], key: K): lent V {.inline, raises: [].} =
   if m.count > 0 and m.ctrl.len > 0:
     let h = fastHash(key)
     let tag = extractTag(h)
@@ -328,9 +364,9 @@ proc `[]`*[K, V](m: FastMap[K, V], key: K): lent V {.inline.} =
       inc step
       g = (g + step) and groupMask
 
-  raise newException(KeyError, "key not found")
+  raiseAssert("FastMap[]: key not found")
 
-proc `[]`*[K, V](m: var FastMap[K, V], key: K): var V {.inline.} =
+proc `[]`*[K, V](m: var FastMap[K, V], key: K): var V {.inline, raises: [].} =
   if m.count > 0 and m.ctrl.len > 0:
     let h = fastHash(key)
     let tag = extractTag(h)
@@ -361,6 +397,6 @@ proc `[]`*[K, V](m: var FastMap[K, V], key: K): var V {.inline.} =
       inc step
       g = (g + step) and groupMask
 
-  raise newException(KeyError, "key not found")
+  raiseAssert("FastMap[]: key not found")
 
 {.pop.}

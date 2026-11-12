@@ -670,7 +670,7 @@ proc `=copy`*(dest: var Barrier, src: Barrier) {.
 proc initBarrier*(parties: int): Barrier =
   ## Creates and initializes a cyclic Barrier for the given number of participating threads.
   if parties <= 0:
-    raise newException(ValueError, "Barrier parties must be positive")
+    raiseAssert("Barrier parties must be positive")
   result.partiesNum = parties
   result.countNum = parties
   result.generation = 0
@@ -684,7 +684,7 @@ proc initBarrier*(parties: int): Barrier =
 proc initBarrier*(b: var Barrier, parties: int) =
   ## Initializes an existing Barrier in-place.
   if parties <= 0:
-    raise newException(ValueError, "Barrier parties must be positive")
+    raiseAssert("Barrier parties must be positive")
   b.partiesNum = parties
   b.countNum = parties
   b.generation = 0
@@ -1420,7 +1420,7 @@ proc pushInjection(pool: var ThreadPool, job: Job) =
     release(pool.lock)
     if job.cleanup != nil and job.arg != nil:
       job.cleanup(job.arg)
-    raise newException(ValueError, "Cannot submit job on stopped ThreadPool")
+    raiseAssert("Cannot submit job on stopped ThreadPool")
 
   # Dynamic expansion of injection queue buffer if full
   if pool.queueCount.load(moRelaxed) == pool.queueCap:

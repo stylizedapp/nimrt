@@ -82,6 +82,7 @@ proc testFastMapStress() =
       let missKey = KeyRange + 10_000 + (op mod 1000)
       doAssert fmap.contains(missKey) == false
       doAssert fmap.getOrDefault(missKey, "DEF") == "DEF"
+      doAssert fmap.get(missKey).isNone()
 
     if op mod 25_000 == 0:
       doAssert fmap.len == tbl.len, &"Length mismatch at op {op}: FastMap={fmap.len}, Table={tbl.len}"
@@ -91,6 +92,8 @@ proc testFastMapStress() =
   for k, v in tbl:
     doAssert fmap.contains(k), &"FastMap missing final key {k}"
     doAssert fmap.getOrDefault(k, "") == v, &"FastMap value mismatch for final key {k}"
+    let optVal = fmap.get(k)
+    doAssert optVal.isSome() and optVal.get() == v, &"FastMap.get() mismatch for {k}"
 
   echo &"[test_ironclad_map_stress] FastMap stress passed: {TotalOps} ops matched Table ground truth."
 
