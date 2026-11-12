@@ -11,6 +11,11 @@ requires "nim >= 2.0.0"
 # Tasks
 task test, "Run the automated ecosystem test suite":
   exec "nim c -r tests/test_ecosystem.nim"
+  exec "nim c -r tests/test_workstealing.nim"
+  exec "nim c -r tests/test_ironclad_bitops.nim"
+  exec "nim c -r tests/test_ironclad_heap.nim"
+  exec "nim c -r tests/test_ironclad_map_stress.nim"
+  exec "nim c -r tests/test_ironclad_unicode.nim"
 
 task bench, "Run the core performance benchmark suite":
   when defined(windows):

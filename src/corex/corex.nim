@@ -19,6 +19,8 @@
 ## - `diagnostic`: Диагностический рендерер компиляторного уровня `Diagnostic`
 ## - `smallvec`: Стековый вектор `SmallVec[T, N]` с переполнением в аллокатор
 ## - `interner`: Строковый дедупликатор `StringInterner` с `InternedStr`
+## - `bitops`: Быстрые битовые интринсики, стековый `BitSet[N]` и SWAR примитивы
+## - `unicode`: RFC 3629 валидация, декодирование рун, UAX #29 графемы и displayWidth
 
 import ./result
 import ./adt
@@ -37,5 +39,7 @@ import ./arc
 import ./diagnostic
 import ./smallvec
 import ./interner
+import ./bitops
+import ./unicode
 
-export result, adt, allocators, memory, containers, concurrency, traits, testing, io, fs, bufmap, slab, stringarena, arc, diagnostic, smallvec, interner
+export result, adt, allocators, memory, containers, concurrency, traits, testing, io, fs, bufmap, slab, stringarena, arc, diagnostic, smallvec, interner, bitops, unicode

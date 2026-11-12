@@ -1,10 +1,11 @@
 ## corex/bufmap — Allocator-aware SwissTable Hash Map (`BufMap[K, V]`)
 ##
 ## High-performance flat hash map using 1-byte SwissTable control tags,
+## SWAR (SIMD Within A Register) 8-byte parallel matching, quadratic/triangular group jumping,
 ## single-allocation backing store (ctrl + keys + vals), Result-based error handling,
 ## and complete ARC/ORC lifecycle integration.
 
-import std/hashes
+import std/[hashes, bitops]
 import ./allocators
 import ./result
 import ./adt
@@ -25,6 +26,17 @@ type
     count*: int
     usedSlots*: int
     alloc*: Allocator
+
+# =============================================================================
+# SWAR Byte Matching & Bit Operations
+# =============================================================================
+
+proc matchByteMask64*(word: uint64, byteVal: uint8): uint64 {.inline, raises: [].} =
+  ## Returns a 64-bit mask where the MSB (bit 7) of each byte is set if and only if
+  ## that byte equals `byteVal`. Evaluates all 8 bytes in parallel branchlessly.
+  let broadcast = uint64(byteVal) * 0x0101_0101_0101_0101'u64
+  let diff = word xor broadcast
+  (diff - 0x0101_0101_0101_0101'u64) and (not diff) and 0x8080_8080_8080_8080'u64
 
 # =============================================================================
 # Layout & Hash Helpers
@@ -203,6 +215,7 @@ proc grow[K, V](m: var BufMap[K, V]): Result[void, AllocError] {.raises: [].} =
   let oldCap = m.cap
   let newCap = if oldCap == 0: 64 else: oldCap * 2
   let newMask = newCap - 1
+  let newGroupMask = newMask shr 3
   let (newBytes, newAlign, newOffKeys, newOffVals) = calcOffsets[K, V](newCap)
 
   let raw = ?m.alloc.rawAlloc(newBytes, newAlign)
@@ -216,14 +229,22 @@ proc grow[K, V](m: var BufMap[K, V]): Result[void, AllocError] {.raises: [].} =
     let tag = m.ctrl[i]
     if tag >= 2'u8:
       let h = fastHash(m.keys[i])
-      var idx = int(h and uint64(newMask))
-      while newCtrl[idx] >= 2'u8:
-        idx = (idx + 1) and newMask
-      newCtrl[idx] = tag
-      copyMem(addr newKeys[idx], addr m.keys[i], sizeof(K))
-      copyMem(addr newVals[idx], addr m.vals[i], sizeof(V))
-      wasMoved(m.keys[i])
-      wasMoved(m.vals[i])
+      var g = int(h and uint64(newGroupMask))
+      var step = 0
+      while true:
+        let baseIdx = g shl 3
+        let word = cast[ptr uint64](addr newCtrl[baseIdx])[]
+        let emptyMask = matchByteMask64(word, SlotEmpty)
+        if emptyMask != 0:
+          let target = baseIdx + (countTrailingZeroBits(emptyMask) shr 3)
+          newCtrl[target] = tag
+          copyMem(addr newKeys[target], addr m.keys[i], sizeof(K))
+          copyMem(addr newVals[target], addr m.vals[i], sizeof(V))
+          wasMoved(m.keys[i])
+          wasMoved(m.vals[i])
+          break
+        inc step
+        g = (g + step) and newGroupMask
 
   let (oldBytes, _, _, _) = calcOffsets[K, V](oldCap)
   if not m.alloc.freeFn.isNil and oldCap > 0:
@@ -243,15 +264,37 @@ proc put*[K, V](m: var BufMap[K, V], key: K, val: V): Result[void, AllocError] {
 
   let h = fastHash(key)
   let tag = extractTag(h)
-  let mask = m.mask
+  let groupMask = m.mask shr 3
 
-  var idx = int(h and uint64(mask))
+  var g = int(h and uint64(groupMask))
+  var step = 0
   var firstDeleted = -1
 
   while true:
-    let c = m.ctrl[idx]
-    if c == SlotEmpty:
-      let target = if firstDeleted >= 0: firstDeleted else: idx
+    let baseIdx = g shl 3
+    let word = cast[ptr uint64](addr m.ctrl[baseIdx])[]
+
+    # 1. Match tag across 8 slots in parallel with SWAR
+    var matchMask = matchByteMask64(word, tag)
+    while matchMask != 0:
+      let slotOffset = countTrailingZeroBits(matchMask) shr 3
+      let slotIdx = baseIdx + slotOffset
+      if m.keys[slotIdx] == key:
+        m.vals[slotIdx] = val
+        return ok(void, AllocError)
+      matchMask = matchMask and (matchMask - 1)
+
+    # 2. Track first deleted slot
+    if firstDeleted < 0:
+      let delMask = matchByteMask64(word, SlotDeleted)
+      if delMask != 0:
+        firstDeleted = baseIdx + (countTrailingZeroBits(delMask) shr 3)
+
+    # 3. Match empty slots across 8 slots in parallel
+    let emptyMask = matchByteMask64(word, SlotEmpty)
+    if emptyMask != 0:
+      let target = if firstDeleted >= 0: firstDeleted
+                   else: baseIdx + (countTrailingZeroBits(emptyMask) shr 3)
       if firstDeleted < 0:
         inc(m.usedSlots)
       m.ctrl[target] = tag
@@ -263,66 +306,106 @@ proc put*[K, V](m: var BufMap[K, V], key: K, val: V): Result[void, AllocError] {
       wasMoved(vCopy)
       inc(m.count)
       return ok(void, AllocError)
-    elif c == tag and m.keys[idx] == key:
-      m.vals[idx] = val
-      return ok(void, AllocError)
-    elif c == SlotDeleted and firstDeleted < 0:
-      firstDeleted = idx
-    idx = (idx + 1) and mask
+
+    # 4. Triangular / quadratic group jumping
+    inc step
+    g = (g + step) and groupMask
 
 proc get*[K, V](m: BufMap[K, V], key: K): Option[V] {.inline, raises: [].} =
   if m.count == 0 or m.ctrl.isNil:
     return none[V]()
+
   let h = fastHash(key)
   let tag = extractTag(h)
-  let mask = m.mask
+  let groupMask = m.mask shr 3
 
-  var idx = int(h and uint64(mask))
+  var g = int(h and uint64(groupMask))
+  var step = 0
+
   while true:
-    let c = m.ctrl[idx]
-    if c == tag and m.keys[idx] == key:
-      return some[V](m.vals[idx])
-    elif c == SlotEmpty:
+    let baseIdx = g shl 3
+    let word = cast[ptr uint64](addr m.ctrl[baseIdx])[]
+
+    var matchMask = matchByteMask64(word, tag)
+    while matchMask != 0:
+      let slotOffset = countTrailingZeroBits(matchMask) shr 3
+      let slotIdx = baseIdx + slotOffset
+      if m.keys[slotIdx] == key:
+        return some[V](m.vals[slotIdx])
+      matchMask = matchMask and (matchMask - 1)
+
+    let emptyMask = matchByteMask64(word, SlotEmpty)
+    if emptyMask != 0:
       return none[V]()
-    idx = (idx + 1) and mask
+
+    inc step
+    g = (g + step) and groupMask
 
 proc contains*[K, V](m: BufMap[K, V], key: K): bool {.inline, raises: [].} =
   if m.count == 0 or m.ctrl.isNil:
     return false
+
   let h = fastHash(key)
   let tag = extractTag(h)
-  let mask = m.mask
+  let groupMask = m.mask shr 3
 
-  var idx = int(h and uint64(mask))
+  var g = int(h and uint64(groupMask))
+  var step = 0
+
   while true:
-    let c = m.ctrl[idx]
-    if c == tag and m.keys[idx] == key:
-      return true
-    elif c == SlotEmpty:
+    let baseIdx = g shl 3
+    let word = cast[ptr uint64](addr m.ctrl[baseIdx])[]
+
+    var matchMask = matchByteMask64(word, tag)
+    while matchMask != 0:
+      let slotOffset = countTrailingZeroBits(matchMask) shr 3
+      let slotIdx = baseIdx + slotOffset
+      if m.keys[slotIdx] == key:
+        return true
+      matchMask = matchMask and (matchMask - 1)
+
+    let emptyMask = matchByteMask64(word, SlotEmpty)
+    if emptyMask != 0:
       return false
-    idx = (idx + 1) and mask
+
+    inc step
+    g = (g + step) and groupMask
 
 proc del*[K, V](m: var BufMap[K, V], key: K): bool {.raises: [].} =
   if m.count == 0 or m.ctrl.isNil:
     return false
+
   let h = fastHash(key)
   let tag = extractTag(h)
-  let mask = m.mask
+  let groupMask = m.mask shr 3
 
-  var idx = int(h and uint64(mask))
+  var g = int(h and uint64(groupMask))
+  var step = 0
+
   while true:
-    let c = m.ctrl[idx]
-    if c == tag and m.keys[idx] == key:
-      m.ctrl[idx] = SlotDeleted
-      `=destroy`(m.keys[idx])
-      `=destroy`(m.vals[idx])
-      wasMoved(m.keys[idx])
-      wasMoved(m.vals[idx])
-      dec(m.count)
-      return true
-    elif c == SlotEmpty:
+    let baseIdx = g shl 3
+    let word = cast[ptr uint64](addr m.ctrl[baseIdx])[]
+
+    var matchMask = matchByteMask64(word, tag)
+    while matchMask != 0:
+      let slotOffset = countTrailingZeroBits(matchMask) shr 3
+      let slotIdx = baseIdx + slotOffset
+      if m.keys[slotIdx] == key:
+        m.ctrl[slotIdx] = SlotDeleted
+        `=destroy`(m.keys[slotIdx])
+        `=destroy`(m.vals[slotIdx])
+        wasMoved(m.keys[slotIdx])
+        wasMoved(m.vals[slotIdx])
+        dec(m.count)
+        return true
+      matchMask = matchMask and (matchMask - 1)
+
+    let emptyMask = matchByteMask64(word, SlotEmpty)
+    if emptyMask != 0:
       return false
-    idx = (idx + 1) and mask
+
+    inc step
+    g = (g + step) and groupMask
 
 iterator pairs*[K, V](m: BufMap[K, V]): tuple[key: K, val: V] {.inline.} =
   if not m.ctrl.isNil:

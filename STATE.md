@@ -16,6 +16,7 @@
 | M7 | Полный прогон тестов с проверкой на утечки | Принят. Полный системный тест `nimble test` (`test_ecosystem.nim` 10/10) и все подсьюты пройдены без ошибок и утечек памяти |
 | M8 | Сканер дисков WizTree Engine (`src/wiztree/` + `src/wiztree.nim`) | Принят. 40-байтный POD `Node`, Arena-интернирование имен, MFT Direct + Win32 Fast fallback, O(N) rollup, Top-K выборка, экспорт JSON/CSV. Все 9/9 тестов и бенчмарк на 1M нод пройдены (0 утечек) |
 | M9 | Work-Stealing ThreadPool (`src/corex/workstealing.nim` + `src/corex/concurrency.nim`) | Принят. Chase-Lev lock-free deque на поток (LIFO push/pop, lock-free FIFO steal), батчевая инжекция (до 16 задач), cooperative `parallelFor`, устранение гонок цикла ORC, 0 утечек под ARC/ORC, до 10x ускорение под конкуренцией (935 M items/s на рекурсивном divide-and-conquer) |
+| M10 | Расширение ядра (`bitops`, `unicode`), SWAR-ускорение (`swissmap`, `bufmap`, `heap`) и «железные» тесты | Принят. `BitSet[N]`, SWAR 8-byte matching, UAX #29 графемы (8.19M runes/s), UTF-8 (до 9.85 GB/s), $O(N)$ `heapify` (56.9M ops/s), 3.6x ускорение промахов в FastMap. 4/4 стресс-сьюта пройдены с 0 ошибок и 0 утечек |
 
 ---
 

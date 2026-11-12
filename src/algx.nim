@@ -4,7 +4,8 @@
 ## ultrasort (Cache-Aware MSD Radix + L1 Insertion Sort),
 ## swissmap (SwissTable FastMap flat hash table),
 ## zeropack (Zero-Copy POD serialization and fast JSON),
-## simdscan (8-way superscalar / SIMD array analytics).
+## simdscan (8-way superscalar / SIMD array analytics),
+## heap (Cache-Friendly BinaryHeap & in-place heapify).
 
 import algx/algx
 export algx

@@ -116,7 +116,11 @@ src/
 │   ├── result.nim              # Result[T, E], ?, errdefer
 │   ├── adt.nim                 # Sum types (sumType), Option[T], pattern match
 │   ├── concurrency.nim         # Threading, Atomics, Locks, Queues, ThreadPool
+│   ├── workstealing.nim        # Lock-free Chase-Lev work-stealing deque & worker runtime
 │   ├── containers.nim          # Allocator-aware BufSeq[T], BufStr
+│   ├── bufmap.nim              # Allocator-aware SwissTable BufMap[K, V] with SWAR matching
+│   ├── bitops.nim              # SWAR byte matching, BitSet[N], branchless bit intrinsics
+│   ├── unicode.nim             # RFC 3629 UTF-8 validation, UAX #29 graphemes, SWAR ASCII
 │   ├── io.nim                  # RAII FileHandle, BufferedReader, BufferedWriter
 │   ├── fs.nim                  # Cross-platform FileStat, DirEntry, walkDirFast
 │   ├── traits.nim              # Dyn[Trait] fat-pointer polymorphism
@@ -130,6 +134,7 @@ src/
     ├── algx.nim                # Module aggregator
     ├── ultrasort.nim           # 3-level hybrid MSD radix sort + L1 insertion
     ├── swissmap.nim            # SwissTable-style FastMap flat hash table
+    ├── heap.nim                # BinaryHeap[T] (min/max), tryPeek/tryPop, O(N) heapify
     ├── zeropack.nim            # Zero-copy POD binary and streaming JSON serialization
     └── simdscan.nim            # 8-way superscalar / SIMD vector analytics
 ```
