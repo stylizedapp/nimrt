@@ -419,6 +419,9 @@ testCase "WorkStealDeque: Uncontended throughput (> 50M ops/s)":
   let totalSec = tPush + tPop
   let totalOps = (N * 2).float / totalSec / 1_000_000.0
   stdout.write("[" & $(totalOps.formatFloat(ffDecimal, 1)) & " M ops/s] ")
+  when defined(release) or defined(danger):
+    doAssert totalOps > 50.0,
+      "Expected > 50M ops/s, got " & $totalOps & " M ops/s — throughput regression"
   doAssert deque.empty
 
 # =============================================================================

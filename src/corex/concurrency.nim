@@ -1585,7 +1585,7 @@ proc `=destroy`*(pool: var ThreadPool) =
   if pool.running.load(moRelaxed) and not pool.isShutDown:
     try:
       pool.shutdown()
-    except CatchableError, Defect:
+    except CatchableError, Defect, Exception:
       discard
   else:
     if pool.queue != nil or pool.deques != nil or pool.workerArgs != nil:
@@ -1598,7 +1598,7 @@ proc `=destroy`*(pool: var ThreadPool) =
           if job.cleanup != nil and job.arg != nil:
             try:
               job.cleanup(job.arg)
-            except CatchableError, Defect:
+            except CatchableError, Defect, Exception:
               discard
         deallocShared(pool.queue)
         pool.queue = nil
@@ -1606,7 +1606,10 @@ proc `=destroy`*(pool: var ThreadPool) =
       if pool.deques != nil:
         for i in 0 ..< pool.numWorkers:
           if pool.deques[i] != nil:
-            destroyWorkStealDeque(pool.deques[i])
+            try:
+              destroyWorkStealDeque(pool.deques[i])
+            except CatchableError, Defect, Exception:
+              discard
             pool.deques[i] = nil
         deallocShared(pool.deques)
         pool.deques = nil

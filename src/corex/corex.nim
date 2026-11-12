@@ -12,6 +12,14 @@
 ## - `io`: Move-only RAII `FileHandle`, 64KB `BufferedReader` и `BufferedWriter` с auto-flush
 ## - `fs`: Кросс-платформенная файловая система (`FileStat`, `DirEntry`, `VolumeInfo`, `walkDirFast`, `getVolumeInfo`)
 
+## - `bufmap`: Аллокаторно-зависимая SwissTable хэш-таблица `BufMap[K, V]`
+## - `slab`: Пул объектов `Slab[T]` с O(1) alloc/free и стабильными `SlabId`
+## - `stringarena`: Временная арена строк `StringArena` с O(1) reset
+## - `arc`: Потокобезопасный smart-pointer `Arc[T]` с контролем аллокатора
+## - `diagnostic`: Диагностический рендерер компиляторного уровня `Diagnostic`
+## - `smallvec`: Стековый вектор `SmallVec[T, N]` с переполнением в аллокатор
+## - `interner`: Строковый дедупликатор `StringInterner` с `InternedStr`
+
 import ./result
 import ./adt
 import ./allocators
@@ -22,5 +30,12 @@ import ./traits
 import ./testing
 import ./io
 import ./fs
+import ./bufmap
+import ./slab
+import ./stringarena
+import ./arc
+import ./diagnostic
+import ./smallvec
+import ./interner
 
-export result, adt, allocators, memory, containers, concurrency, traits, testing, io, fs
+export result, adt, allocators, memory, containers, concurrency, traits, testing, io, fs, bufmap, slab, stringarena, arc, diagnostic, smallvec, interner
