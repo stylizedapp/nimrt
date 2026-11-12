@@ -121,13 +121,18 @@ src/
 │   ├── bufmap.nim              # Allocator-aware SwissTable BufMap[K, V] with SWAR matching
 │   ├── bitops.nim              # SWAR byte matching, BitSet[N], branchless bit intrinsics
 │   ├── unicode.nim             # RFC 3629 UTF-8 validation, UAX #29 graphemes, SWAR ASCII
+│   ├── async.nim               # AsyncReactor, IOCP completion dequeuing & WorkStealing integration
+│   ├── mft.nim                 # Uniform NTFS Master File Table parser & volume streamer facade
 │   ├── io.nim                  # RAII FileHandle, BufferedReader, BufferedWriter
 │   ├── fs.nim                  # Cross-platform FileStat, DirEntry, walkDirFast
 │   ├── traits.nim              # Dyn[Trait] fat-pointer polymorphism
 │   ├── testing.nim             # Leak detection (testWithLeakCheck), quickCheck, bench
 │   └── platform/               # Tier 2: Platform Abstraction Layer
 │       ├── windows/
-│       │   └── win32_fs.nim    # FindFirstFileExW, cluster geometry, USN/MFT journal
+│       │   ├── win32_fs.nim    # FindFirstFileExW, cluster geometry, USN/MFT journal
+│       │   ├── win32_iocp.nim  # Native IOCP bindings, batch dequeuing (GetQueuedCompletionStatusEx), OverlappedCtx
+│       │   ├── win32_mft.nim   # 1024-byte MFT parser, multi-sector FIXUP array, runlists, raw volume streaming
+│       │   └── win32_volume.nim # NTFS volume geometry and volume queries
 │       └── posix/
 │           └── posix_fs.nim    # POSIX opendir/readdir_r fallback
 └── algx/                       # Tier 3: High-Throughput Algorithms
@@ -185,7 +190,18 @@ src/
    - `BufferedReader` & `BufferedWriter`: 64 KB aligned buffered streams minimizing OS read/write syscalls, featuring automatic flush on destruction.
    - `corex/fs`: High-level filesystem interface providing `FileStat`, `DirEntry`, `VolumeInfo`, and `walkDirFast`.
 
-7. **Traits & Testing (`corex/traits`, `corex/testing`)**:
+7. **Asynchronous Reactor & File I/O (`corex/async`)**:
+   - `AsyncReactor`: Dedicated background polling thread calling `GetQueuedCompletionStatusEx` to batch dequeue up to 64 completions in a single kernel transition. Continuations are dispatched directly into the `ThreadPool` work-stealing injection queue, executing completion callbacks across worker threads.
+   - `AsyncFile`: RAII handle for asynchronous file operations (`asyncRead`, `asyncWrite`) across 64-bit offsets and `ByteSpan` slices.
+   - `OverlappedPool`: Dmitry Vyukov lock-free bounded MPMC queue (`MpmcQueue[ptr OverlappedCtx, 4096]`) guaranteeing zero heap allocations on the hot path with full recycling.
+   - Zero Exceptions: All async APIs return `Result[T, int32]` and invoke `raises: []` callbacks.
+
+8. **Master File Table Facade (`corex/mft`)**:
+   - Uniform cross-platform facade for raw Master File Table (MFT) parsing and unbuffered sector streaming.
+   - Exposes `MftEntry`, `MftDataRun`, `MftStreamStats`, `parseMftRecord`, and `parseMftBuffer`.
+   - On Windows, routes directly to `corex/platform/windows/win32_mft`.
+
+9. **Traits & Testing (`corex/traits`, `corex/testing`)**:
    - `Dyn[Trait]`: Zero-heap fat-pointer dynamic dispatch without `ref object of RootObj`.
    - `testWithLeakCheck`: Test harness verifying zero byte leaks under ARC/ORC.
    - `quickCheck`: Property-based randomized fuzzing.
@@ -199,8 +215,8 @@ The platform layer isolates operating system specifics behind high-level, cross-
 
 ```
        +-------------------------------------------------------+
-       |           Uniform Filesystem Layer (corex/fs)          |
-       |      walkDirFast(), getVolumeInfo(), FileStat         |
+       |           Uniform Filesystem Layer (corex/fs, mft)     |
+       |      walkDirFast(), getVolumeInfo(), parseMftRecord   |
        +-------------------------------------------------------+
                                   |
                Compile-Time Platform Dispatch (when defined)
@@ -209,25 +225,34 @@ The platform layer isolates operating system specifics behind high-level, cross-
             |                                           |
             v                                           v
 +-------------------------------+       +-------------------------------+
-|  Windows Core (win32_fs.nim)  |       |   POSIX Core (posix_fs.nim)   |
-| - FindFirstFileExW            |       | - opendir() / readdir_r()     |
-|   (FindExInfoBasic)           |       | - stat() / lstat()            |
-|   (FIND_FIRST_EX_LARGE_FETCH) |       | - statvfs()                   |
-| - GetDiskFreeSpaceW (Geometry)|       +-------------------------------+
-| - FSCTL_ENUM_USN_DATA (MFT)   |
+|  Windows Core                 |       |   POSIX Core (posix_fs.nim)   |
+| - win32_fs.nim (FindFirstFile)|       | - opendir() / readdir_r()     |
+| - win32_iocp.nim (Async IOCP) |       | - stat() / lstat()            |
+| - win32_mft.nim (Raw MFT)     |       | - statvfs()                   |
+| - win32_volume.nim (Geometry) |       +-------------------------------+
 +-------------------------------+
 ```
 
-1. **Windows Native Core (`corex/platform/windows/win32_fs`)**:
+1. **Windows Native Filesystem Core (`corex/platform/windows/win32_fs`)**:
    - **Kernel-Level Batched Enumeration**: Utilizes `FindFirstFileExW` configured with `FindExInfoBasic` (avoiding the computation of DOS 8.3 short names) and `FIND_FIRST_EX_LARGE_FETCH` (retrieving large batches of entries from NTFS in a single I/O operation).
    - **Cluster Geometry & "Size on Disk"**: Direct volume inspection via `GetDiskFreeSpaceW` to compute cluster size (`SectorsPerCluster * BytesPerSector`), enabling exact calculation of physical disk usage for sparse and compressed files.
    - **Direct MFT / USN Journal Enumeration**: Low-level structures (`UsnRecordV2`, `MFT_ENUM_DATA_V0`) for querying the NTFS Master File Table via `DeviceIoControl` (`FSCTL_ENUM_USN_DATA`), delivering sub-second volume indexing.
 
-2. **POSIX Fallback Core (`corex/platform/posix/posix_fs`)**:
+2. **Windows Native IOCP Primitives (`corex/platform/windows/win32_iocp`)**:
+   - Raw Win32 bindings: `CreateIoCompletionPort`, `CloseHandle`, `GetQueuedCompletionStatusEx`, `PostQueuedCompletionStatus`.
+   - Batch dequeuing up to 64 `OVERLAPPED_ENTRY` packets in a single kernel transition.
+   - `OverlappedCtx`: Zero-allocation structure extending Win32 `OVERLAPPED` at offset 0, with 64-bit offset accessors and `raises: []` callback dispatch.
+
+3. **Windows Raw MFT Parser & Streamer (`corex/platform/windows/win32_mft`)**:
+   - **1024-byte MFT Record Parser**: Signature validation ('FILE' vs 'BAAD'), multi-sector FIXUP array restoration (validating and restoring check words at 512-byte sector ends).
+   - **Attribute Extraction**: Enumerate `$STANDARD_INFORMATION` (timestamps, flags), `$FILE_NAME` (parent FRN, Win32/DOS namespace priority, zero-allocation UTF-16LE decoding), and `$DATA` (resident data and non-resident compressed runlists with variable-length LCN arithmetic).
+   - **Raw Volume Streamer**: Opens `\\.\<drive>:` with `FILE_FLAG_NO_BUFFERING` and `FILE_FLAG_SEQUENTIAL_SCAN`, queries `FSCTL_GET_NTFS_VOLUME_DATA`, allocates `VirtualAlloc` page-aligned sector buffers, streaming full volume records with zero heap allocations.
+
+4. **POSIX Fallback Core (`corex/platform/posix/posix_fs`)**:
    - Clean, zero-overhead fallback utilizing `opendir`, `readdir_r`, `stat`, and `statvfs` for Linux and macOS environments.
 
-3. **Public Interface (`corex/fs`)**:
-   - Uniform cross-platform API exporting `FileStat`, `DirEntry`, `VolumeInfo`, and `walkDirFast`.
+5. **Public Interfaces (`corex/fs`, `corex/mft`, `corex/async`)**:
+   - Uniform cross-platform API exporting `FileStat`, `DirEntry`, `VolumeInfo`, `walkDirFast`, `MftEntry`, `MftStreamStats`, `AsyncFile`, and `AsyncReactor`.
 
 ---
 

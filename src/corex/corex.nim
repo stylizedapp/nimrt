@@ -21,6 +21,8 @@
 ## - `interner`: Строковый дедупликатор `StringInterner` с `InternedStr`
 ## - `bitops`: Быстрые битовые интринсики, стековый `BitSet[N]` и SWAR примитивы
 ## - `unicode`: RFC 3629 валидация, декодирование рун, UAX #29 графемы и displayWidth
+## - `async`: Асинхронный I/O реактор на базе Windows IOCP и интеграция с Work-Stealing пулом потоков
+## - `mft`: Парсер Master File Table (MFT) NTFS, многосекторные FIXUP массивы и прямой стриминг томов
 
 import ./result
 import ./adt
@@ -41,5 +43,7 @@ import ./smallvec
 import ./interner
 import ./bitops
 import ./unicode
+import ./async
+import ./mft
 
-export result, adt, allocators, memory, containers, concurrency, traits, testing, io, fs, bufmap, slab, stringarena, arc, diagnostic, smallvec, interner, bitops, unicode
+export result, adt, allocators, memory, containers, concurrency, traits, testing, io, fs, bufmap, slab, stringarena, arc, diagnostic, smallvec, interner, bitops, unicode, async, mft

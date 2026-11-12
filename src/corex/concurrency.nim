@@ -1178,6 +1178,10 @@ var tWorkerPool {.threadvar.}: pointer
 var tWorkerId {.threadvar.}: int
 var tRngState {.threadvar.}: uint64
 
+proc currentWorkerId*(): int {.inline.} =
+  ## Returns the 0-based worker thread ID if called within a ThreadPool worker, or -1 otherwise.
+  tWorkerId
+
 proc nextRand(maxVal: int): int {.inline.} =
   if maxVal <= 1: return 0
   if tRngState == 0:
@@ -1414,7 +1418,8 @@ proc newThreadPool*(numThreads: int = 0): ptr ThreadPool =
   result = cast[ptr ThreadPool](allocShared0(sizeof(ThreadPool)))
   initThreadPool(result[], numThreads)
 
-proc pushInjection(pool: var ThreadPool, job: Job) =
+proc pushInjection*(pool: var ThreadPool, job: Job) =
+  pool.ensureWorkers()
   acquire(pool.lock)
   if not pool.running.load(moRelaxed) or pool.isShutDown:
     release(pool.lock)
@@ -1445,7 +1450,11 @@ proc pushInjection(pool: var ThreadPool, job: Job) =
     discard pthread_cond_signal(addr pool.condWork)
   release(pool.lock)
 
-proc submitJob(pool: var ThreadPool, job: Job) =
+proc pushInjection*(pool: ptr ThreadPool, job: Job) {.inline.} =
+  pushInjection(pool[], job)
+
+proc submitJob*(pool: var ThreadPool, job: Job) =
+  pool.ensureWorkers()
   let poolPtr = cast[pointer](addr pool)
   if tWorkerPool == poolPtr and tWorkerId >= 0 and tWorkerId < pool.numWorkers:
     # In-worker submission: push directly to local deque (zero mutex locks!)
@@ -1458,6 +1467,9 @@ proc submitJob(pool: var ThreadPool, job: Job) =
   else:
     # External submission: push to injection queue and wake a worker
     pool.pushInjection(job)
+
+proc submitJob*(pool: ptr ThreadPool, job: Job) {.inline.} =
+  submitJob(pool[], job)
 
 proc pushJob(pool: var ThreadPool, job: Job) {.inline.} =
   pool.submitJob(job)

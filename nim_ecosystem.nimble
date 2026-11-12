@@ -16,6 +16,14 @@ task test, "Run the automated ecosystem test suite":
   exec "nim c -r tests/test_ironclad_heap.nim"
   exec "nim c -r tests/test_ironclad_map_stress.nim"
   exec "nim c -r tests/test_ironclad_unicode.nim"
+  exec "nim c -r tests/test_ironclad_mft.nim"
+  exec "nim c -r tests/test_ironclad_async_iocp.nim"
+
+task test_mft, "Run Ironclad MFT parser & fixup test suite":
+  exec "nim c -r tests/test_ironclad_mft.nim"
+
+task test_async, "Run Ironclad IOCP async & reactor concurrency test suite":
+  exec "nim c -r tests/test_ironclad_async_iocp.nim"
 
 task bench, "Run the core performance benchmark suite":
   when defined(windows):
