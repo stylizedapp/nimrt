@@ -18,36 +18,79 @@ import ./usn_monitor
 import ./win32_gui
 
 var
-  gIndexer: Indexer
-  gIndexLock: SysLock
-  gConfig: Config
-  gMonitor: UsnMonitor
-  gHasMonitor: bool = false
-  gState: ptr AppState = nil
+  gIndexer*: Indexer
+  gIndexLock*: SysLock
+  gConfig*: Config
+  gMonitor*: UsnMonitor
+  gHasMonitor*: bool = false
+  gSearchIndex*: SearchIndex
+  gHasSearchIndex*: bool = false
+  gLastProcessedCount*: int = 0
+  gState*: ptr AppState = nil
 
-proc performSearch(query: string): seq[GuiItem] =
+proc rebuildSearchIndex*(alloc: Allocator = Allocator()) =
+  ## Rebuilds the fast binary search and Bloom filter indices over gIndexer.
+  let effAlloc = if alloc.allocFn != nil: alloc
+                 elif gIndexer.alloc.allocFn != nil: gIndexer.alloc
+                 else: heapAllocator()
+  var sRes = initSearchIndex(addr gIndexer, effAlloc)
+  if sRes.isOk:
+    gSearchIndex = move(sRes.val)
+    gHasSearchIndex = true
+    logGui("SearchIndex built successfully (" & $gSearchIndex.prefixEntries.len & " entries)")
+  else:
+    logGui("Failed to build SearchIndex")
+
+proc deinitSearchIndex*() =
+  if gHasSearchIndex:
+    deinit(gSearchIndex)
+    gHasSearchIndex = false
+
+proc performSearch*(query: string): seq[GuiItem] =
   result = @[]
   acquire(addr gIndexLock)
   defer: release(addr gIndexLock)
 
+  # Check if background USN sync processed new records; if so, update/rebuild SearchIndex
+  if gHasMonitor:
+    let currentProcessed = gMonitor.recordsProcessed
+    if currentProcessed != gLastProcessedCount:
+      gLastProcessedCount = currentProcessed
+      rebuildSearchIndex()
+
   let drivePrefix = if gIndexer.driveLetter != '\0': $gIndexer.driveLetter & ":\\" else: "C:\\"
   let qTrimmed = query.strip()
-  let qLower = qTrimmed.toLowerAscii()
+  let isWildcardAll = qTrimmed.len == 0 or qTrimmed == "*" or qTrimmed == "*.*"
 
-  var count = 0
-  for frn, slabId in gIndexer.nodes.pairs:
-    if not gIndexer.slab.contains(slabId):
-      continue
-    let node = gIndexer.slab[slabId]
-    let nameStr = gIndexer.names.resolveString(node.name)
-
-    var matches = false
-    if qLower.len == 0:
-      matches = true
-    else:
-      matches = matchGlob(nameStr, qLower)
-
-    if matches:
+  if gHasSearchIndex and not isWildcardAll:
+    let searchResults = gSearchIndex.search(qTrimmed, limit = 2000)
+    result = newSeqOfCap[GuiItem](searchResults.len)
+    for sr in searchResults:
+      if not gIndexer.slab.contains(sr.slabId):
+        continue
+      let node = gIndexer.slab[sr.slabId]
+      let pathRes = gIndexer.resolvePath(sr.slabId)
+      let fullPath = if pathRes.isOk and pathRes.get().len > 0:
+                       let p = pathRes.get()
+                       if p.len >= 2 and p[1] == ':': p else: drivePrefix & p
+                     else:
+                       drivePrefix & sr.name
+      result.add(GuiItem(
+        name: sr.name,
+        path: fullPath,
+        size: node.size,
+        isDir: node.isDir
+      ))
+  elif gHasSearchIndex and isWildcardAll:
+    # Empty query or wildcard all: return top items up to 2000 from prefixEntries
+    let total = min(2000, gSearchIndex.prefixEntries.len)
+    result = newSeqOfCap[GuiItem](total)
+    for i in 0 ..< total:
+      let slabId = gSearchIndex.prefixEntries[i].slabId
+      if not gIndexer.slab.contains(slabId):
+        continue
+      let node = gIndexer.slab[slabId]
+      let nameStr = gIndexer.names.resolveString(node.name)
       let pathRes = gIndexer.resolvePath(slabId)
       let fullPath = if pathRes.isOk and pathRes.get().len > 0:
                        let p = pathRes.get()
@@ -60,11 +103,40 @@ proc performSearch(query: string): seq[GuiItem] =
         size: node.size,
         isDir: node.isDir
       ))
-      inc(count)
-      if count >= 2000:
-        break
+  else:
+    # Fallback to linear scan if SearchIndex not yet built
+    let qLower = qTrimmed.toLowerAscii()
+    var count = 0
+    for frn, slabId in gIndexer.nodes.pairs:
+      if not gIndexer.slab.contains(slabId):
+        continue
+      let node = gIndexer.slab[slabId]
+      let nameStr = gIndexer.names.resolveString(node.name)
 
-proc startBackgroundUsnMonitor() =
+      var matches = false
+      if qLower.len == 0 or qLower == "*" or qLower == "*.*":
+        matches = true
+      else:
+        matches = matchGlob(nameStr, qLower)
+
+      if matches:
+        let pathRes = gIndexer.resolvePath(slabId)
+        let fullPath = if pathRes.isOk and pathRes.get().len > 0:
+                         let p = pathRes.get()
+                         if p.len >= 2 and p[1] == ':': p else: drivePrefix & p
+                       else:
+                         drivePrefix & nameStr
+        result.add(GuiItem(
+          name: nameStr,
+          path: fullPath,
+          size: node.size,
+          isDir: node.isDir
+        ))
+        inc(count)
+        if count >= 2000:
+          break
+
+proc startBackgroundUsnMonitor*() =
   if not gConfig.autosync:
     return
   let driveChar = if gConfig.drives.len > 0 and gConfig.drives[0].len > 0: gConfig.drives[0][0] else: 'C'
@@ -76,14 +148,27 @@ proc startBackgroundUsnMonitor() =
     pollIntervalMs = 100
   )
   if monRes.isOk:
-    copyMem(addr gMonitor, addr monRes.val, sizeof(UsnMonitor))
-    zeroMem(addr monRes.val, sizeof(UsnMonitor))
+    gMonitor = move(monRes.val)
     gHasMonitor = true
 
-proc stopBackgroundUsnMonitor() =
+proc stopBackgroundUsnMonitor*() =
   if gHasMonitor:
     gMonitor.stop()
     gHasMonitor = false
+
+proc syncIndex*(driveChar: char = '\0'): Result[int, IOError] =
+  ## Synchronously syncs USN Journal changes into gIndexer and rebuilds SearchIndex.
+  acquire(addr gIndexLock)
+  defer: release(addr gIndexLock)
+  let d = if driveChar != '\0': driveChar
+          elif gConfig.drives.len > 0 and gConfig.drives[0].len > 0: gConfig.drives[0][0]
+          else: 'C'
+  var nextUsn: USN = 0
+  let res = syncVolume(gIndexer, d, gIndexer.lastUsn, nextUsn)
+  if res.isOk:
+    gIndexer.lastUsn = nextUsn
+    rebuildSearchIndex()
+  res
 
 proc mainGuiApp*(promptFirstLaunch: bool = true): int32 =
   # 0. Ensure directories exist
@@ -120,6 +205,9 @@ proc mainGuiApp*(promptFirstLaunch: bool = true): int32 =
   # Initialize concurrency lock for thread-safe live updates
   gIndexLock = initSysLock()
 
+  # Rebuild/init SearchIndex after index loading finishes
+  rebuildSearchIndex()
+
   # 4. Start background real-time USN monitor thread
   startBackgroundUsnMonitor()
 
@@ -135,6 +223,7 @@ proc mainGuiApp*(promptFirstLaunch: bool = true): int32 =
   if gState.isNil:
     logGui("Failed to create main window")
     stopBackgroundUsnMonitor()
+    deinitSearchIndex()
     deinitSysLock(gIndexLock)
     deinit(gIndexer)
     return 1
@@ -157,6 +246,8 @@ proc mainGuiApp*(promptFirstLaunch: bool = true): int32 =
 
   # Auto-save config
   discard saveConfig(gConfig)
+
+  deinitSearchIndex()
 
   deinitSysLock(gIndexLock)
   deinit(gIndexer)

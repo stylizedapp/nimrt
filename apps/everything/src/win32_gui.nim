@@ -951,6 +951,7 @@ proc createMainWindow*(
   )
 
   if hWnd.isNil:
+    `=destroy`(state[])
     dealloc(state)
     return nil
 
@@ -986,5 +987,6 @@ proc runMessageLoop*(state: ptr AppState): int32 =
     discard dispatchMessageW(addr msg)
 
   let exitCode = int32(msg.wParam)
+  `=destroy`(state[])
   dealloc(state)
   exitCode

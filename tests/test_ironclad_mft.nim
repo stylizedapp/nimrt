@@ -66,6 +66,8 @@ type
   FixtureOptions = object
     recordNumber: uint32
     sequenceNumber: uint16
+    linkCount: uint16
+    baseRecordFrn: uint64
     isInUse: bool
     isDir: bool
     magic: uint32
@@ -81,6 +83,8 @@ proc initDefaultOptions(): FixtureOptions =
   FixtureOptions(
     recordNumber: 1024,
     sequenceNumber: 2,
+    linkCount: 1'u16,
+    baseRecordFrn: 0'u64,
     isInUse: true,
     isDir: false,
     magic: MFT_MAGIC_FILE,
@@ -110,7 +114,7 @@ proc createRawRecordBase(opts: FixtureOptions): array[1024, byte] =
 
   # 4. Sequence Number (0x10) & Link Count (0x12)
   putU16(result, 16, opts.sequenceNumber)
-  putU16(result, 18, 1'u16)
+  putU16(result, 18, opts.linkCount)
 
   # 5. First Attribute Offset (0x14)
   putU16(result, 20, 56'u16)
@@ -126,7 +130,7 @@ proc createRawRecordBase(opts: FixtureOptions): array[1024, byte] =
   putU32(result, 28, 1024'u32)
 
   # 8. Base Record (0x20)
-  putU64(result, 32, 0'u64)
+  putU64(result, 32, opts.baseRecordFrn)
 
   # 9. Next Attr ID (0x28)
   putU16(result, 40, 5'u16)
@@ -268,6 +272,36 @@ proc appendIndexRoot(
 proc appendEndMarker(rec: var openArray[byte], offset: int) =
   putU32(rec, offset, ATTR_END_MARKER)
 
+# Helper to append resident $ATTRIBUTE_LIST (0x20)
+proc appendAttributeList(
+  rec: var openArray[byte],
+  offset: var int,
+  entries: openArray[tuple[attrType: uint32, startVcn: int64, childFrn: uint64, attrId: uint16]]
+) =
+  let entrySize = 32
+  let bodyLen = entries.len * entrySize
+  let attrLen = (24 + bodyLen + 7) and (not 7)
+
+  putU32(rec, offset + 0, ATTR_ATTRIBUTE_LIST)
+  putU32(rec, offset + 4, uint32(attrLen))
+  rec[offset + 8] = 0 # resident
+  rec[offset + 9] = 0 # unnamed
+  putU32(rec, offset + 16, uint32(bodyLen))
+  putU16(rec, offset + 20, 24'u16)
+
+  var pOff = offset + 24
+  for e in entries:
+    putU32(rec, pOff + 0, e.attrType)
+    putU16(rec, pOff + 4, uint16(entrySize))
+    rec[pOff + 6] = 0 # nameLen
+    rec[pOff + 7] = 0 # nameOffset
+    putI64(rec, pOff + 8, e.startVcn)
+    putU64(rec, pOff + 16, e.childFrn)
+    putU16(rec, pOff + 24, e.attrId)
+    pOff += entrySize
+
+  offset += attrLen
+
 # =============================================================================
 # 2. Test Fixture Builders for Specific Scenarios
 # =============================================================================
@@ -371,6 +405,112 @@ proc fixtureFolderRecord(
   appendFileName(result, off, parentFrn = parentFrn, name = name, namespaceVal = 1'u8, flags = 0x00000010'u32)
   # $INDEX_ROOT attribute
   appendIndexRoot(result, off)
+  appendEndMarker(result, off)
+
+proc appendNonResidentAttributeList(
+  rec: var openArray[byte],
+  offset: var int,
+  allocatedSize: int64,
+  runlistBytes: openArray[byte]
+) =
+  let attrLen = (64 + runlistBytes.len + 7) and (not 7)
+  putU32(rec, offset + 0, ATTR_ATTRIBUTE_LIST)
+  putU32(rec, offset + 4, uint32(attrLen))
+  rec[offset + 8] = 1 # Non-resident
+  rec[offset + 9] = 0 # Unnamed
+  putU16(rec, offset + 32, 64'u16) # runlist offset
+  putI64(rec, offset + 40, allocatedSize)
+  putI64(rec, offset + 48, allocatedSize)
+  putI64(rec, offset + 56, allocatedSize)
+  for i in 0 ..< runlistBytes.len:
+    rec[offset + 64 + i] = runlistBytes[i]
+  offset += attrLen
+
+proc fixtureBaseRecordWithAttrList*(
+  recNum: uint32 = 3000,
+  childRecNum: uint32 = 3001,
+  name: string = "winsxs_ext.dll",
+  realSize: int64 = 100_000,
+  initialClusters: int64 = 10,
+  clusterSize: int64 = 4096
+): array[1024, byte] =
+  var opts = initDefaultOptions()
+  opts.recordNumber = recNum
+  opts.sequenceNumber = 1
+  opts.linkCount = 2'u16
+  opts.baseRecordFrn = 0'u64
+  result = createRawRecordBase(opts)
+
+  var off = 56
+  appendStandardInfo(result, off)
+  appendFileName(result, off, parentFrn = 0x0001_0000_0000_0005'u64, name = name, namespaceVal = 1'u8)
+
+  # Resident $ATTRIBUTE_LIST pointing to child record (recNum = 3001) for $DATA
+  let childFrn = (1'u64 shl 48) or uint64(childRecNum)
+  let attrListEntries = [
+    (attrType: ATTR_DATA, startVcn: 10'i64, childFrn: childFrn, attrId: 3'u16)
+  ]
+  appendAttributeList(result, off, attrListEntries)
+
+  # Initial $DATA runlist: 10 clusters (40960 bytes at cluster size 4096)
+  var rl: seq[byte] = @[]
+  rl.add(0x21'u8) # offBytes=2, lenBytes=1
+  rl.add(byte(initialClusters)) # 10 clusters
+  rl.add(0x88'u8); rl.add(0x13'u8) # LCN 5000 (0x1388)
+  rl.add(0x00'u8) # terminator
+
+  let allocatedBytes = initialClusters * clusterSize
+  appendNonResidentData(result, off, realSize = realSize, allocatedSize = allocatedBytes, runlistBytes = rl)
+  appendEndMarker(result, off)
+
+proc fixtureChildExtensionRecord*(
+  recNum: uint32 = 3001,
+  baseRecNum: uint32 = 3000,
+  realSize: int64 = 100_000,
+  additionalClusters: int64 = 15,
+  clusterSize: int64 = 4096
+): array[1024, byte] =
+  var opts = initDefaultOptions()
+  opts.recordNumber = recNum
+  opts.sequenceNumber = 1
+  opts.linkCount = 1'u16
+  opts.baseRecordFrn = (1'u64 shl 48) or uint64(baseRecNum) # base FRN: 3000 | (1 shl 48)
+  result = createRawRecordBase(opts)
+
+  var off = 56
+  # Child record holds extension $DATA runlist: 15 clusters (61440 bytes at cluster size 4096)
+  var rl: seq[byte] = @[]
+  rl.add(0x21'u8) # offBytes=2, lenBytes=1
+  rl.add(byte(additionalClusters)) # 15 clusters
+  rl.add(0x70'u8); rl.add(0x17'u8) # LCN 6000 (0x1770)
+  rl.add(0x00'u8) # terminator
+
+  let allocatedBytes = additionalClusters * clusterSize
+  appendNonResidentData(result, off, realSize = realSize, allocatedSize = allocatedBytes, runlistBytes = rl)
+  appendEndMarker(result, off)
+
+proc fixtureNonResidentAttrListRecord*(
+  recNum: uint32 = 4000,
+  name: string = "huge_attrlist.bin",
+  attrListClusters: int64 = 2,
+  clusterSize: int64 = 4096
+): array[1024, byte] =
+  var opts = initDefaultOptions()
+  opts.recordNumber = recNum
+  opts.sequenceNumber = 1
+  result = createRawRecordBase(opts)
+
+  var off = 56
+  appendStandardInfo(result, off)
+  appendFileName(result, off, parentFrn = 5'u64, name = name, namespaceVal = 1'u8)
+
+  var rl: seq[byte] = @[]
+  rl.add(0x21'u8) # offBytes=2, lenBytes=1
+  rl.add(byte(attrListClusters)) # 2 clusters
+  rl.add(0x10'u8); rl.add(0x20'u8) # LCN delta
+  rl.add(0x00'u8)
+
+  appendNonResidentAttributeList(result, off, allocatedSize = attrListClusters * clusterSize, runlistBytes = rl)
   appendEndMarker(result, off)
 
 # =============================================================================
@@ -571,8 +711,113 @@ proc testNamespacePriorityAndUtf16() =
   doAssert entryMulti.name == multiLangName, &"Multilingual name mismatch: expected '{multiLangName}', got '{entryMulti.name}'"
   echo "  [PASS] 5.2: Multilingual UTF-16LE (Cyrillic + Katakana + Emoji U+1F680 surrogate pair) parsed with zero allocations"
 
+proc testAttributeListAndHardlinkDeduplication() =
+  echo "[TEST 6] $ATTRIBUTE_LIST, Extension Record Merging & Hardlink Deduplication"
+
+  let baseRecNum = 3000'u32
+  let childRecNum = 3001'u32
+  let expectedBaseFrn = (1'u64 shl 48) or uint64(baseRecNum)
+  let expectedChildFrn = (1'u64 shl 48) or uint64(childRecNum)
+  let expectedFileSize = 100_000'i64
+  let initialSizeOnDisk = 10'i64 * 4096'i64  # 40960 bytes
+  let childSizeOnDisk = 15'i64 * 4096'i64    # 61440 bytes
+  let totalMergedSizeOnDisk = initialSizeOnDisk + childSizeOnDisk # 102400 bytes
+
+  # 6.1: Parse Base MFT Record (recNum = 3000)
+  var baseRec = fixtureBaseRecordWithAttrList(
+    recNum = baseRecNum,
+    childRecNum = childRecNum,
+    name = "winsxs_ext.dll",
+    realSize = expectedFileSize,
+    initialClusters = 10
+  )
+  var baseEntry: MftEntry
+  let baseRes = parseMftRecord(baseRec, baseEntry, recordIndex = uint64(baseRecNum), bytesPerCluster = 4096)
+  doAssert baseRes.isOk and baseRes.get, "parseMftRecord failed for base record"
+
+  doAssert baseEntry.frn == expectedBaseFrn, &"Base FRN mismatch: expected {expectedBaseFrn}, got {baseEntry.frn}"
+  doAssert baseEntry.baseRecordFrn == 0'u64, "Base record baseRecordFrn must be 0"
+  doAssert baseEntry.name == "winsxs_ext.dll", &"Filename mismatch: expected 'winsxs_ext.dll', got '{baseEntry.name}'"
+  doAssert baseEntry.hasAttrList == true, "Base record hasAttrList must be true"
+  doAssert baseEntry.childFrns.len == 1, &"Expected 1 child FRN, got {baseEntry.childFrns.len}"
+  doAssert baseEntry.childFrns.contains(expectedChildFrn), &"childFrns must contain {expectedChildFrn}"
+  doAssert (baseEntry.childFrns[0] and 0x0000FFFFFFFFFFFF'u64) == uint64(childRecNum), "childFrns lower 48-bit record number mismatch"
+  doAssert baseEntry.fileSize == expectedFileSize, &"fileSize mismatch: expected {expectedFileSize}, got {baseEntry.fileSize}"
+  doAssert baseEntry.sizeOnDisk == initialSizeOnDisk, &"sizeOnDisk mismatch: expected {initialSizeOnDisk}, got {baseEntry.sizeOnDisk}"
+  doAssert baseEntry.linkCount == 2'u16, &"linkCount mismatch: expected 2, got {baseEntry.linkCount}"
+  echo "  [PASS] 6.1: Base record parsed: hasAttrList == true, childFrns contains 3001, initial sizeOnDisk == 40960"
+
+  # 6.2: Parse Child Extension Record (recNum = 3001)
+  var childRec = fixtureChildExtensionRecord(
+    recNum = childRecNum,
+    baseRecNum = baseRecNum,
+    realSize = expectedFileSize,
+    additionalClusters = 15
+  )
+  var childEntry: MftEntry
+  let childRes = parseMftRecord(childRec, childEntry, recordIndex = uint64(childRecNum), bytesPerCluster = 4096)
+  doAssert childRes.isOk and childRes.get, "parseMftRecord failed for child record"
+
+  doAssert childEntry.frn == expectedChildFrn, &"Child FRN mismatch: expected {expectedChildFrn}, got {childEntry.frn}"
+  doAssert childEntry.baseRecordFrn == expectedBaseFrn, &"Child baseRecordFrn must point to base FRN: expected {expectedBaseFrn}, got {childEntry.baseRecordFrn}"
+  doAssert (childEntry.baseRecordFrn and 0x0000FFFFFFFFFFFF'u64) == uint64(baseRecNum), "Child baseRecordFrn lower 48 bits mismatch"
+  doAssert childEntry.fileSize == expectedFileSize, &"Child fileSize mismatch: expected {expectedFileSize}, got {childEntry.fileSize}"
+  doAssert childEntry.sizeOnDisk == childSizeOnDisk, &"Child sizeOnDisk mismatch: expected {childSizeOnDisk}, got {childEntry.sizeOnDisk}"
+  echo "  [PASS] 6.2: Child extension record parsed: baseRecordFrn points to base record (3000 | (1 shl 48)), sizeOnDisk == 61440"
+
+  # 6.3: mergeExtensionRecord Verification
+  var mergedBase = baseEntry
+  mergeExtensionRecord(mergedBase, childEntry)
+  doAssert mergedBase.sizeOnDisk == totalMergedSizeOnDisk, &"Merged sizeOnDisk mismatch: expected {totalMergedSizeOnDisk}, got {mergedBase.sizeOnDisk}"
+  doAssert mergedBase.fileSize == expectedFileSize, &"Merged fileSize mismatch: expected {expectedFileSize}, got {mergedBase.fileSize}"
+  doAssert mergedBase.name == "winsxs_ext.dll", "Merged entry must retain filename"
+  doAssert mergedBase.childFrns.len == 1, "childFrns should not duplicate existing child FRN"
+  echo "  [PASS] 6.3: mergeExtensionRecord correctly summed extents: sizeOnDisk == 102400 (40960 + 61440), fileSize == 100000"
+
+  # 6.4: MftVolumeCalculator Deduplication and Extension Merging
+  var calc = initMftVolumeCalculator()
+
+  # Step 6.4a: Add base record -> returns true, activeFiles == 1, totalSizeOnDisk == 40960
+  let resAddBase = calc.addRecord(baseEntry)
+  doAssert resAddBase == true, "Expected addRecord(baseEntry) to return true"
+  doAssert calc.activeFiles == 1, &"Expected activeFiles == 1, got {calc.activeFiles}"
+  doAssert calc.activeDirs == 0, &"Expected activeDirs == 0, got {calc.activeDirs}"
+  doAssert calc.totalBytes == expectedFileSize, &"Expected totalBytes == {expectedFileSize}, got {calc.totalBytes}"
+  doAssert calc.totalSizeOnDisk == initialSizeOnDisk, &"Expected totalSizeOnDisk == {initialSizeOnDisk}, got {calc.totalSizeOnDisk}"
+  doAssert calc.extensionsMerged == 0, "extensionsMerged should be 0"
+  doAssert calc.hardlinksDeduplicated == 0, "hardlinksDeduplicated should be 0"
+
+  # Step 6.4b: Add child extension record -> returns false, merges 61440 to totalSizeOnDisk, activeFiles stays 1
+  let resAddChild = calc.addRecord(childEntry)
+  doAssert resAddChild == false, "Expected addRecord(childEntry) to return false (extension merged)"
+  doAssert calc.extensionsMerged == 1, &"Expected extensionsMerged == 1, got {calc.extensionsMerged}"
+  doAssert calc.activeFiles == 1, &"Expected activeFiles to remain 1, got {calc.activeFiles}"
+  doAssert calc.totalBytes == expectedFileSize, &"Expected totalBytes to remain {expectedFileSize}, got {calc.totalBytes}"
+  doAssert calc.totalSizeOnDisk == totalMergedSizeOnDisk, &"Expected totalSizeOnDisk == {totalMergedSizeOnDisk}, got {calc.totalSizeOnDisk}"
+  doAssert calc.hardlinksDeduplicated == 0, "hardlinksDeduplicated should still be 0"
+
+  # Step 6.4c: Add base record again representing second hardlink -> returns false, increments hardlinksDeduplicated
+  var hardlinkEntry = baseEntry
+  hardlinkEntry.name = "winsxs_ext_link2.dll" # Different hardlink name, same FRN
+  let resAddLink = calc.addRecord(hardlinkEntry)
+  doAssert resAddLink == false, "Expected addRecord(hardlinkEntry) to return false (hardlink deduplicated)"
+  doAssert calc.hardlinksDeduplicated == 1, &"Expected hardlinksDeduplicated == 1, got {calc.hardlinksDeduplicated}"
+  doAssert calc.activeFiles == 1, &"Expected activeFiles to remain 1 (no duplicate file count), got {calc.activeFiles}"
+  doAssert calc.totalBytes == expectedFileSize, &"Expected totalBytes to remain {expectedFileSize}, got {calc.totalBytes}"
+  doAssert calc.totalSizeOnDisk == totalMergedSizeOnDisk, &"Expected totalSizeOnDisk to remain {totalMergedSizeOnDisk} (counted once), got {calc.totalSizeOnDisk}"
+  echo "  [PASS] 6.4: MftVolumeCalculator verified: base added (true), child merged (false, +61440), hardlink deduplicated (false, totalSizeOnDisk counted once, activeFiles == 1)"
+
+  # 6.5: Non-Resident $ATTRIBUTE_LIST Allocated Size Parsing
+  let nonResAlRec = fixtureNonResidentAttrListRecord(recNum = 4000, attrListClusters = 3, clusterSize = 4096)
+  var nonResAlEntry: MftEntry
+  let resAl = parseMftRecord(nonResAlRec, nonResAlEntry, recordIndex = 4000, bytesPerCluster = 4096)
+  doAssert resAl.isOk and resAl.get
+  doAssert nonResAlEntry.hasAttrList == true, "Non-resident $ATTRIBUTE_LIST must set hasAttrList == true"
+  doAssert nonResAlEntry.sizeOnDisk == 3 * 4096, &"Non-resident $ATTRIBUTE_LIST sizeOnDisk mismatch: expected {3 * 4096}, got {nonResAlEntry.sizeOnDisk}"
+  echo "  [PASS] 6.5: Non-resident $ATTRIBUTE_LIST correctly sets hasAttrList == true and accounts for allocated cluster size"
+
 proc testTrackingAllocatorZeroLeaks() =
-  echo "[TEST 6] Memory Leak Audit under TrackingAllocator & ARC/ORC"
+  echo "[TEST 7] Memory Leak Audit under TrackingAllocator & ARC/ORC"
 
   var tracker = initTrackingAllocator()
   let alloc = tracker.allocator
@@ -588,26 +833,28 @@ proc testTrackingAllocatorZeroLeaks() =
     var residentRec = fixtureValidResidentRecord(recNum = 1, name = "test_alloc_1.txt", content = "Test Content")
     var folderRec = fixtureFolderRecord(recNum = 2, name = "test_folder")
     let (nonResRec, _, _) = fixtureNonResidentRunlistRecord(recNum = 3, name = "test_large.bin")
+    var baseRec = fixtureBaseRecordWithAttrList(recNum = 4, childRecNum = 5)
+    var childRec = fixtureChildExtensionRecord(recNum = 5, baseRecNum = 4)
 
     var entry: MftEntry
 
-    for i in 0 ..< 20_000:
-      let which = i mod 3
-      if which == 0:
-        let r = parseMftRecord(residentRec, entry, recordIndex = uint64(i))
-        doAssert r.isOk and r.get
-      elif which == 1:
-        let r = parseMftRecord(folderRec, entry, recordIndex = uint64(i))
-        doAssert r.isOk and r.get
-      else:
-        let r = parseMftRecord(nonResRec, entry, recordIndex = uint64(i))
-        doAssert r.isOk and r.get
+    for i in 0 ..< 25_000:
+      let which = i mod 5
+      let r = case which
+        of 0: parseMftRecord(residentRec, entry, recordIndex = uint64(i))
+        of 1: parseMftRecord(folderRec, entry, recordIndex = uint64(i))
+        of 2: parseMftRecord(nonResRec, entry, recordIndex = uint64(i))
+        of 3: parseMftRecord(baseRec, entry, recordIndex = uint64(i))
+        else: parseMftRecord(childRec, entry, recordIndex = uint64(i))
+      doAssert r.isOk and r.get
 
     # Validate testWithLeakCheck harness block
     testWithLeakCheck("Batch MFT processing under testWithLeakCheck"):
       var e: MftEntry
       for i in 0 ..< 5_000:
         discard parseMftRecord(residentRec, e, recordIndex = uint64(i))
+        discard parseMftRecord(baseRec, e, recordIndex = uint64(i))
+        discard parseMftRecord(childRec, e, recordIndex = uint64(i))
 
   # Final 0-leak verification
   echo &"  [TRACKER] allocCount={tracker.allocCount}, freeCount={tracker.freeCount}, activeAllocs={tracker.activeAllocs}, activeBytes={tracker.activeBytes}"
@@ -629,6 +876,7 @@ proc runAllIroncladMftTests() =
   testNonResidentMultiExtentRunlist()
   testFolderRecordExtraction()
   testNamespacePriorityAndUtf16()
+  testAttributeListAndHardlinkDeduplication()
   testTrackingAllocatorZeroLeaks()
   echo "================================================================="
   echo ">>> [PASS] ALL IRONCLAD MFT TESTS COMPLETED WITH 100% SUCCESS <<<"

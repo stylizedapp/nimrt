@@ -10,7 +10,10 @@
 import std/[os, json, strutils, widestrs]
 import corex
 import everything/src/config
+import everything/src/indexer
+import everything/src/search
 import everything/src/win32_gui
+import everything/src/gui
 
 proc testConfigSerialization() =
   echo "--- Testing Config Serialization & Parsing ---"
@@ -250,6 +253,93 @@ proc testWindowMessageRouting() =
 
   echo "  [OK] Window message routing and dispinfo formatting passed."
 
+proc testAppStateLifecycle() =
+  echo "--- Testing AppState Lifecycle & Memory Cleanup ---"
+
+  testWithLeakCheck("AppState create, populate, =destroy and dealloc"):
+    let state = create(AppState)
+    state.config = defaultConfig()
+    state.config.hotkey = "Ctrl+Shift+E"
+    state.config.indexPath = "C:\\test\\path.idx"
+    state.debounce = initDebounceTracker(50)
+    state.debounce.triggerDebounce("query_test")
+    state.model.items = @[
+      GuiItem(name: "file1.txt", path: "C:\\file1.txt", size: 100, isDir: false),
+      GuiItem(name: "file2.txt", path: "C:\\file2.txt", size: 200, isDir: false)
+    ]
+    state.searchCallback = proc(q: string): seq[GuiItem] = @[]
+
+    doAssert state.model.items.len == 2
+    doAssert state.debounce.pendingQuery == "query_test"
+
+    # Properly free managed strings, closures, and sequences before dealloc
+    `=destroy`(state[])
+    dealloc(state)
+
+  echo "  [OK] AppState lifecycle freed cleanly under testWithLeakCheck."
+
+proc testSearchIndexGuiIntegration() =
+  echo "--- Testing SearchIndex GUI Integration (performSearch & rebuild) ---"
+
+  testWithLeakCheck("SearchIndex GUI integration in performSearch"):
+    let alloc = testAlloc
+    var idx = newIndexer(alloc, 4096, driveLetter = 'C').unwrap()
+    gIndexer = move(idx)
+    gIndexLock = initSysLock()
+
+    # Populate indexer with test records
+    discard gIndexer.insertOrUpdate(1001'u64, 5'u64, "report_annual.pdf", false).unwrap()
+    discard gIndexer.insertOrUpdate(1002'u64, 5'u64, "report_q1.xlsx", false).unwrap()
+    discard gIndexer.insertOrUpdate(1003'u64, 5'u64, "notes.txt", false).unwrap()
+    discard gIndexer.insertOrUpdate(1004'u64, 5'u64, "photo.png", false).unwrap()
+
+    # Rebuild search index
+    rebuildSearchIndex(alloc)
+    doAssert gHasSearchIndex
+    doAssert gSearchIndex.prefixEntries.len == 4
+
+    # 1. Empty / wildcard all search
+    let allItems = performSearch("")
+    doAssert allItems.len == 4
+
+    let starItems = performSearch("*")
+    doAssert starItems.len == 4
+
+    # 2. Prefix search
+    let pfxItems = performSearch("report*")
+    doAssert pfxItems.len == 2
+    for it in pfxItems:
+      doAssert it.name.startsWith("report")
+
+    # 3. Suffix search
+    let sfxItems = performSearch("*.pdf")
+    doAssert sfxItems.len == 1
+    doAssert sfxItems[0].name == "report_annual.pdf"
+
+    # 4. Substring search
+    let subItems = performSearch("*notes*")
+    doAssert subItems.len == 1
+    doAssert subItems[0].name == "notes.txt"
+
+    # 5. Ranked query
+    let ranked = performSearch("photo")
+    doAssert ranked.len >= 1
+    doAssert ranked[0].name == "photo.png"
+
+    # 6. Add new node and rebuild
+    discard gIndexer.insertOrUpdate(1005'u64, 5'u64, "report_final.docx", false).unwrap()
+    rebuildSearchIndex(alloc)
+    let updatedPfx = performSearch("report*")
+    doAssert updatedPfx.len == 3
+
+    # Cleanup
+    deinitSearchIndex()
+    deinitSysLock(gIndexLock)
+    gIndexer.deinit()
+    idx.deinit()
+
+  echo "  [OK] SearchIndex GUI integration passed with 0 memory leaks."
+
 proc main() =
   echo "=========================================================="
   echo " RUNNING EVERYTHING-NIM GUI HEADLESS UNIT TESTS"
@@ -259,6 +349,8 @@ proc main() =
   testDebounceLogic()
   testVirtualListDataMapping()
   testWindowMessageRouting()
+  testAppStateLifecycle()
+  testSearchIndexGuiIntegration()
 
   echo "=========================================================="
   echo " ALL HEADLESS GUI TESTS PASSED SUCCESSFULLY!"

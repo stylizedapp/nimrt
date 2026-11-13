@@ -12,6 +12,7 @@
 ## - Zero exceptions: All APIs return `Result[T, int32]` and invoke `raises: []` callbacks.
 
 import std/widestrs
+import std/atomics
 import ./result
 import ./memory
 import ./allocators
@@ -103,7 +104,6 @@ when defined(windows):
       zeroMem(result.storage, sizeof(OverlappedCtx) * cap)
       for i in 0 ..< cap:
         let ctx = addr result.storage[i]
-        ctx.pool = addr result
         discard result.queue.push(ctx)
 
   proc isPreallocated(pool: ptr OverlappedPool, ctx: ptr OverlappedCtx): bool {.inline, raises: [].} =
@@ -376,14 +376,16 @@ when defined(windows):
   # 3. Global Default AsyncReactor Facade
   # =============================================================================
 
-  var gDefaultReactor: ptr AsyncReactor
+  var gDefaultReactor: Atomic[pointer]
   var gDefaultReactorLock: SysLock = initSysLock()
 
   proc getDefaultReactor*(pool: ptr ThreadPool = nil): ptr AsyncReactor {.raises: [].} =
     ## Returns the process-wide shared default AsyncReactor instance, initialized lazily.
-    if gDefaultReactor == nil:
+    var r = cast[ptr AsyncReactor](gDefaultReactor.load(moAcquire))
+    if r == nil:
       acquire(gDefaultReactorLock)
-      if gDefaultReactor == nil:
+      r = cast[ptr AsyncReactor](gDefaultReactor.load(moAcquire))
+      if r == nil:
         var tp = pool
         if tp == nil:
           try:
@@ -392,18 +394,19 @@ when defined(windows):
             tp = nil
         let res = newAsyncReactor(tp)
         if res.isOk:
-          gDefaultReactor = res.val
+          r = res.val
+          gDefaultReactor.store(cast[pointer](r), moRelease)
       release(gDefaultReactorLock)
-    gDefaultReactor
+    r
 
   proc shutdownAsyncReactor*() {.raises: [].} =
     ## Gracefully shuts down and frees the process-wide default AsyncReactor.
-    if gDefaultReactor != nil:
+    if gDefaultReactor.load(moAcquire) != nil:
       acquire(gDefaultReactorLock)
-      if gDefaultReactor != nil:
-        let r = gDefaultReactor
-        gDefaultReactor = nil
-        destroy(r)
+      let p = gDefaultReactor.load(moAcquire)
+      if p != nil:
+        gDefaultReactor.store(nil, moRelease)
+        destroy(cast[ptr AsyncReactor](p))
       release(gDefaultReactorLock)
 
   # =============================================================================
@@ -471,7 +474,11 @@ when defined(windows):
     if h.isNil or h == INVALID_HANDLE_VALUE:
       return err[AsyncFile, int32](int32(winGetLastError()))
 
-    initAsyncFile(reactor, h, ownsHandle = true)
+    let initRes = initAsyncFile(reactor, h, ownsHandle = true)
+    if not initRes.isOk:
+      discard closeHandle(h)
+      return initRes
+    initRes
 
   proc openAsyncFile*(
     path: string,

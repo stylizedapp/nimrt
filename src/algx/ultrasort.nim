@@ -140,10 +140,6 @@ proc sortBucket3Level(
     copyMem(addr data[startIdx], addr aux[startIdx], length * sizeof(int64))
     guardedInsertionSort(data, startIdx, endIdx)
     return
-  if length > 65_536:
-    copyMem(addr data[startIdx], addr aux[startIdx], length * sizeof(int64))
-    fallbackQuicksort(data, startIdx, endIdx - 1)
-    return
 
   # Уровень 2 (Кэш L2): 8 бит (биты 48..55, 256 подкорзин)
   var count2: array[256, uint32]

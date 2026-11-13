@@ -66,6 +66,8 @@ type
   MftEntry* = object
     frn*: uint64
     parentFrn*: uint64
+    baseRecordFrn*: uint64
+    linkCount*: uint16
     fileSize*: int64
     sizeOnDisk*: int64
     flags*: uint32
@@ -73,6 +75,8 @@ type
     isDir*: bool
     creationTime*: int64
     modificationTime*: int64
+    hasAttrList*: bool
+    childFrns*: seq[uint64]
 
   MftDataRun* = object
     lcn*: int64
@@ -382,7 +386,9 @@ proc parseMftRecord*(
 
   let isRecordDir = (recordFlags and MFT_RECORD_IS_DIRECTORY) != 0
   let sequenceNumber = cast[ptr uint16](addr rec[16])[]
+  let linkCount = cast[ptr uint16](addr rec[18])[]
   let firstAttrOffset = int(cast[ptr uint16](addr rec[20])[])
+  let baseRecordFrn = cast[ptr uint64](addr rec[32])[]
 
   var recNum = recordIndex
   if recNum == 0:
@@ -394,6 +400,8 @@ proc parseMftRecord*(
 
   entry.frn = frn
   entry.parentFrn = 0'u64
+  entry.baseRecordFrn = baseRecordFrn
+  entry.linkCount = linkCount
   entry.fileSize = 0'i64
   entry.sizeOnDisk = 0'i64
   entry.flags = if isRecordDir: 0x00000010'u32 else: 0'u32
@@ -401,6 +409,8 @@ proc parseMftRecord*(
   entry.creationTime = 0'i64
   entry.modificationTime = 0'i64
   entry.name.setLen(0)
+  entry.hasAttrList = false
+  entry.childFrns.setLen(0)
 
   var bestNamespaceRank = -1
   var attrOffset = firstAttrOffset
@@ -430,6 +440,37 @@ proc parseMftRecord*(
           entry.flags = entry.flags or siFlags
           if (siFlags and 0x00000010'u32) != 0:
             entry.isDir = true
+
+    of ATTR_ATTRIBUTE_LIST:
+      entry.hasAttrList = true
+      if not nonResident:
+        let valLen = int(cast[ptr uint32](addr rec[attrOffset + 16])[])
+        let valOff = int(cast[ptr uint16](addr rec[attrOffset + 20])[])
+        let pOff = attrOffset + valOff
+        let pEnd = min(pOff + valLen, MFT_RECORD_SIZE)
+        var curOff = pOff
+        while curOff + 24 <= pEnd:
+          let alRecLen = int(cast[ptr uint16](addr rec[curOff + 4])[])
+          if alRecLen < 24:
+            break
+          let childFrn = cast[ptr uint64](addr rec[curOff + 16])[]
+          if childFrn != 0 and (childFrn and 0x0000FFFFFFFFFFFF'u64) != (frn and 0x0000FFFFFFFFFFFF'u64):
+            var alreadyPresent = false
+            for c in entry.childFrns:
+              if c == childFrn:
+                alreadyPresent = true
+                break
+            if not alreadyPresent:
+              entry.childFrns.add(childFrn)
+          curOff += alRecLen
+      else:
+        if attrOffset + 40 <= MFT_RECORD_SIZE:
+          let runListOff = int(cast[ptr uint16](addr rec[attrOffset + 32])[])
+          if runListOff > 0 and attrOffset + runListOff < MFT_RECORD_SIZE:
+            let maxRunBytes = min(int(attrLen) - runListOff, MFT_RECORD_SIZE - (attrOffset + runListOff))
+            let allocatedClusters = calculateAllocatedClusters(rec, attrOffset + runListOff, maxRunBytes)
+            if bytesPerCluster > 0'u32:
+              entry.sizeOnDisk += allocatedClusters * int64(bytesPerCluster)
 
     of ATTR_FILE_NAME:
       if not nonResident:
@@ -524,7 +565,74 @@ iterator parseMftBuffer*(
       yield entry
 
 # =============================================================================
-# 5. Volume Raw Streamer (Elevated Administrator Access)
+# 5. Extension Record Merging & Hardlink Deduplication
+# =============================================================================
+
+proc mergeExtensionRecord*(baseEntry: var MftEntry, childEntry: MftEntry) {.raises: [].} =
+  ## Merges child MFT record (extension record) extents into baseEntry:
+  ## - Sums sizeOnDisk across all extents from the child record into the base file record.
+  ## - Updates fileSize if child holds larger stream size.
+  ## - Preserves filename from child if base record filename was in extension record.
+  baseEntry.sizeOnDisk += childEntry.sizeOnDisk
+  if childEntry.fileSize > baseEntry.fileSize:
+    baseEntry.fileSize = childEntry.fileSize
+  if baseEntry.name.len == 0 and childEntry.name.len > 0:
+    baseEntry.name = childEntry.name
+    baseEntry.parentFrn = childEntry.parentFrn
+  var found = false
+  for c in baseEntry.childFrns:
+    if c == childEntry.frn:
+      found = true
+      break
+  if not found:
+    baseEntry.childFrns.add(childEntry.frn)
+
+type
+  MftVolumeCalculator* = object
+    processedFrns*: seq[uint64]
+    totalBytes*: int64
+    totalSizeOnDisk*: int64
+    activeFiles*: int64
+    activeDirs*: int64
+    hardlinksDeduplicated*: int64
+    extensionsMerged*: int64
+
+proc initMftVolumeCalculator*(): MftVolumeCalculator {.raises: [].} =
+  result.processedFrns = @[]
+  result.totalBytes = 0
+  result.totalSizeOnDisk = 0
+  result.activeFiles = 0
+  result.activeDirs = 0
+  result.hardlinksDeduplicated = 0
+  result.extensionsMerged = 0
+
+proc addRecord*(calc: var MftVolumeCalculator, entry: MftEntry): bool {.raises: [].} =
+  ## Adds an MftEntry to the volume calculation with hardlink and extension deduplication:
+  ## - Child extension records (baseRecordFrn != 0) sum sizeOnDisk without incrementing file count.
+  ## - Files with multiple hardlinks (linkCount > 1) have their physical clusters counted exactly once.
+  ## Returns true if counted as a new active entity, false if deduplicated / merged.
+  if entry.baseRecordFrn != 0:
+    inc calc.extensionsMerged
+    calc.totalSizeOnDisk += entry.sizeOnDisk
+    return false
+
+  let rawFrn = entry.frn and 0x0000FFFFFFFFFFFF'u64
+  for existing in calc.processedFrns:
+    if existing == rawFrn:
+      inc calc.hardlinksDeduplicated
+      return false
+
+  calc.processedFrns.add(rawFrn)
+  if entry.isDir:
+    inc calc.activeDirs
+  else:
+    inc calc.activeFiles
+    calc.totalBytes += entry.fileSize
+    calc.totalSizeOnDisk += entry.sizeOnDisk
+  return true
+
+# =============================================================================
+# 6. Volume Raw Streamer (Elevated Administrator Access)
 # =============================================================================
 
 when defined(windows):

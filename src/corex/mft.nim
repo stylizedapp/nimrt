@@ -27,6 +27,8 @@ else:
     MftEntry* = object
       frn*: uint64
       parentFrn*: uint64
+      baseRecordFrn*: uint64
+      linkCount*: uint16
       fileSize*: int64
       sizeOnDisk*: int64
       flags*: uint32
@@ -34,6 +36,8 @@ else:
       isDir*: bool
       creationTime*: int64
       modificationTime*: int64
+      hasAttrList*: bool
+      childFrns*: seq[uint64]
 
     MftDataRun* = object
       lcn*: int64

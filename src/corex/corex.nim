@@ -23,6 +23,7 @@
 ## - `unicode`: RFC 3629 валидация, декодирование рун, UAX #29 графемы и displayWidth
 ## - `async`: Асинхронный I/O реактор на базе Windows IOCP и интеграция с Work-Stealing пулом потоков
 ## - `mft`: Парсер Master File Table (MFT) NTFS, многосекторные FIXUP массивы и прямой стриминг томов
+## - `signals`: Высокопроизводительный Data-Oriented реактивный движок (SolidJS/Slint-style)
 
 import ./result
 import ./adt
@@ -45,5 +46,6 @@ import ./bitops
 import ./unicode
 import ./async
 import ./mft
+import ./signals
 
-export result, adt, allocators, memory, containers, concurrency, traits, testing, io, fs, bufmap, slab, stringarena, arc, diagnostic, smallvec, interner, bitops, unicode, async, mft
+export result, adt, allocators, memory, containers, concurrency, traits, testing, io, fs, bufmap, slab, stringarena, arc, diagnostic, smallvec, interner, bitops, unicode, async, mft, signals

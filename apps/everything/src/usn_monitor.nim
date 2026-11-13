@@ -235,6 +235,7 @@ proc startUsnMonitor*(
     createThread(mon.thread, usnMonitorWorker, ctx)
     mon.running = true
   except CatchableError as e:
+    ctx.vol.closeVolume()
     deallocShared(ctx)
     return err[UsnMonitor, IOError](IOError(msg: "Failed to spawn USN monitor thread: " & e.msg))
   ok[UsnMonitor, IOError](mon)

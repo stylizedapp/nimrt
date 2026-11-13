@@ -48,10 +48,25 @@ proc `=wasMoved`*(si: var SearchIndex) {.inline, raises: [].} =
 proc `=sink`*(dest: var SearchIndex, src: SearchIndex) {.raises: [].} =
   `=destroy`(dest)
   dest.idx = src.idx
-  dest.prefixEntries = src.prefixEntries
-  dest.suffixEntries = src.suffixEntries
-  dest.signatures = src.signatures
+  dest.prefixEntries.data = src.prefixEntries.data
+  dest.prefixEntries.len = src.prefixEntries.len
+  dest.prefixEntries.cap = src.prefixEntries.cap
+  dest.prefixEntries.alloc = src.prefixEntries.alloc
+
+  dest.suffixEntries.data = src.suffixEntries.data
+  dest.suffixEntries.len = src.suffixEntries.len
+  dest.suffixEntries.cap = src.suffixEntries.cap
+  dest.suffixEntries.alloc = src.suffixEntries.alloc
+
+  dest.signatures.data = src.signatures.data
+  dest.signatures.len = src.signatures.len
+  dest.signatures.cap = src.signatures.cap
+  dest.signatures.alloc = src.signatures.alloc
+
   dest.alloc = src.alloc
+
+  let pSrc = cast[ptr SearchIndex](unsafeAddr src)
+  `=wasMoved`(pSrc[])
 
 proc deinit*(si: var SearchIndex) {.inline, raises: [].} =
   `=destroy`(si)

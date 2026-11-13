@@ -123,6 +123,7 @@ src/
 │   ├── unicode.nim             # RFC 3629 UTF-8 validation, UAX #29 graphemes, SWAR ASCII
 │   ├── async.nim               # AsyncReactor, IOCP completion dequeuing & WorkStealing integration
 │   ├── mft.nim                 # Uniform NTFS Master File Table parser & volume streamer facade
+│   ├── signals.nim             # High-performance zero-overhead reactive graph (Signal, Computed, Effect, batch)
 │   ├── io.nim                  # RAII FileHandle, BufferedReader, BufferedWriter
 │   ├── fs.nim                  # Cross-platform FileStat, DirEntry, walkDirFast
 │   ├── traits.nim              # Dyn[Trait] fat-pointer polymorphism
@@ -201,7 +202,15 @@ src/
    - Exposes `MftEntry`, `MftDataRun`, `MftStreamStats`, `parseMftRecord`, and `parseMftBuffer`.
    - On Windows, routes directly to `corex/platform/windows/win32_mft`.
 
-9. **Traits & Testing (`corex/traits`, `corex/testing`)**:
+9. **Zero-Overhead Reactive Engine (`corex/signals`)**:
+   - High-performance, data-oriented reactive dependency graph (SolidJS / Slint style) without virtual DOM.
+   - `ReactiveRuntime`: Stores graph nodes in `Slab[ReactiveNode]` and subscription edges in a doubly-linked pool `Slab[EdgeNode]`, eliminating dynamic per-node sequence allocations.
+   - Type-safe distinct identifiers: `SignalId`, `ComputedId`, `EffectId`.
+   - Core primitives: `Signal[T]` (`createSignal`, `get`, `set`, `peek`), `Computed[T]` (lazy, memoized, glitch-free with dirty flags), `Effect` (automatic tracking and untracking before re-run).
+   - Grouping: `batch(rt, body)` guarantees effects fire exactly once at batch completion.
+   - Deterministic cleanup: `dispose` and `destroy` guarantee 0 bytes leaked under ARC/ORC and `TrackingAllocator`.
+
+10. **Traits & Testing (`corex/traits`, `corex/testing`)**:
    - `Dyn[Trait]`: Zero-heap fat-pointer dynamic dispatch without `ref object of RootObj`.
    - `testWithLeakCheck`: Test harness verifying zero byte leaks under ARC/ORC.
    - `quickCheck`: Property-based randomized fuzzing.
@@ -246,6 +255,8 @@ The platform layer isolates operating system specifics behind high-level, cross-
 3. **Windows Raw MFT Parser & Streamer (`corex/platform/windows/win32_mft`)**:
    - **1024-byte MFT Record Parser**: Signature validation ('FILE' vs 'BAAD'), multi-sector FIXUP array restoration (validating and restoring check words at 512-byte sector ends).
    - **Attribute Extraction**: Enumerate `$STANDARD_INFORMATION` (timestamps, flags), `$FILE_NAME` (parent FRN, Win32/DOS namespace priority, zero-allocation UTF-16LE decoding), and `$DATA` (resident data and non-resident compressed runlists with variable-length LCN arithmetic).
+   - **$ATTRIBUTE_LIST (0x20) & Child Extensions**: Resident and non-resident attribute list parsing into `childFrns`, resolving child MFT records (extension records) with fragmented runlists, and merging `sizeOnDisk` across all extents into the base record.
+   - **Hardlink Deduplication**: Tracking `baseRecordFrn` (offset 0x20) and `linkCount` (offset 0x12) via `MftVolumeCalculator` to ensure physical disk clusters of multi-hardlinked files are accounted for strictly once.
    - **Raw Volume Streamer**: Opens `\\.\<drive>:` with `FILE_FLAG_NO_BUFFERING` and `FILE_FLAG_SEQUENTIAL_SCAN`, queries `FSCTL_GET_NTFS_VOLUME_DATA`, allocates `VirtualAlloc` page-aligned sector buffers, streaming full volume records with zero heap allocations.
 
 4. **POSIX Fallback Core (`corex/platform/posix/posix_fs`)**:

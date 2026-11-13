@@ -1743,16 +1743,19 @@ proc parallelFor*(pool: ptr ThreadPool, start, `end`: int, fn: proc(i: int) {.gc
 # Global Default ThreadPool Facade
 # =============================================================================
 
-var gDefaultPool: ptr ThreadPool
-var gDefaultPoolLock: SysLock
+var gDefaultPool: Atomic[pointer]
+var gDefaultPoolLock: SysLock = initSysLock()
 
 proc getDefaultPool*(): ptr ThreadPool =
   ## Returns the process-wide shared default ThreadPool instance, initializing it lazily.
-  if gDefaultPool == nil:
+  var p = cast[ptr ThreadPool](gDefaultPool.load(moAcquire))
+  if p == nil:
     withLock(gDefaultPoolLock):
-      if gDefaultPool == nil:
-        gDefaultPool = newThreadPool()
-  return gDefaultPool
+      p = cast[ptr ThreadPool](gDefaultPool.load(moAcquire))
+      if p == nil:
+        p = newThreadPool()
+        gDefaultPool.store(cast[pointer](p), moRelease)
+  return p
 
 proc spawn*(task: proc() {.gcsafe.}) {.inline.} =
   ## Spawns a task on the global default ThreadPool.
@@ -1768,9 +1771,10 @@ proc parallelFor*(start, `end`: int, fn: proc(i: int) {.gcsafe.}) {.inline.} =
 
 proc shutdownThreadPool*() =
   ## Shuts down the global default ThreadPool and frees its resources.
-  if gDefaultPool != nil:
+  if gDefaultPool.load(moAcquire) != nil:
     withLock(gDefaultPoolLock):
-      if gDefaultPool != nil:
-        gDefaultPool.shutdown()
-        deallocShared(gDefaultPool)
-        gDefaultPool = nil
+      let p = cast[ptr ThreadPool](gDefaultPool.load(moAcquire))
+      if p != nil:
+        gDefaultPool.store(nil, moRelease)
+        p.shutdown()
+        deallocShared(p)

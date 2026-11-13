@@ -65,14 +65,11 @@ proc `=wasMoved`*(idx: var Indexer) {.inline, raises: [].} =
   idx.driveLetter = 'C'
 
 proc `=sink`*(dest: var Indexer, src: Indexer) {.raises: [].} =
-  `=destroy`(dest)
-  dest.nodes = src.nodes
-  dest.slab = src.slab
-  dest.names = src.names
-  dest.alloc = src.alloc
-  dest.clusterSize = src.clusterSize
-  dest.lastUsn = src.lastUsn
-  dest.driveLetter = src.driveLetter
+  if cast[pointer](unsafeAddr dest) != cast[pointer](unsafeAddr src):
+    `=destroy`(dest)
+    copyMem(addr dest, unsafeAddr src, sizeof(Indexer))
+    let pSrc = cast[ptr Indexer](unsafeAddr src)
+    `=wasMoved`(pSrc[])
 
 # =============================================================================
 # Construction & Operations

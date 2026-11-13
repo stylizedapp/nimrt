@@ -19,6 +19,7 @@
 | M10 | Расширение ядра (`bitops`, `unicode`), SWAR-ускорение (`swissmap`, `bufmap`, `heap`) и «железные» тесты | Принят. `BitSet[N]`, SWAR 8-byte matching, UAX #29 графемы (8.19M runes/s), UTF-8 (до 9.85 GB/s), $O(N)$ `heapify` (56.9M ops/s), 3.6x ускорение промахов в FastMap. 4/4 стресс-сьюта пройдены с 0 ошибок и 0 утечек |
 | M11 | Zero-Exception Hardening & Безопасность ядра (`heap`, `swissmap`, `concurrency`, `win32_fs`) | Принят. Устранены `KeyError` и `ValueError` из горячих путей; `FastMap.get` и `BinaryHeap.tryPeek/tryPop` возвращают `Option[T]`; защита кучи в `-d:danger`; проверка Win32 API диска; удалены мусорные бинарники |
 | M12 | Нативный IOCP Async рантайм & Парсер Raw MFT (`corex/async`, `corex/mft`, `win32_iocp`, `win32_mft`) | Принят. Батчевый IOCP (`GetQueuedCompletionStatusEx` до 64 пакетов), интеграция с Chase-Lev ThreadPool (0 утечек на 3072 асинхронных операциях); парсер 1024-байтных записей `$MFT` с валидацией FIXUP, декодером цепочек кластеров runlist для точного `fileSize` и `sizeOnDisk`, потоковым чтением томов `\\.\<drive>:`. Все тесты пройдены |
+| M13 | Стабилизация ядра, Реактивный движок (`corex/signals`) и MFT+IOCP конвейер | Принят. Устранён dangling pointer в `OverlappedPool`, `gDefaultReactor`/`gDefaultPool` переведены на `Atomic[pointer]` с `moAcquire`/`moRelease`; zero-overhead реактивный граф `corex/signals` (Slab-backed узлы и рёбра, glitch-free diamond, динамическая отписка веток, батчинг, 10k циклов 0 утечек); парсинг `$ATTRIBUTE_LIST` (0x20) и дедупликация Hardlinks в MFT; Everything-Nim GUI интеграция `SearchIndex` и фикс утечек `AppState` через `=destroy(state[])` |
 
 ---
 
@@ -35,6 +36,10 @@
 | `.agents/teamwork/teamwork_worker_m2_r2/test_remediation_suite.nim` | ✅ 7/7 сьютов | Без утечек под TrackingAllocator |
 | `.agents/teamwork/teamwork_reviewer_m2_r2_1/test_reviewer_suite.nim` | ✅ 11/11 сьютов | Без утечек под TrackingAllocator |
 | `.agents/teamwork/challenger_m3_r2_1/test_move_semantics.nim` | ✅ 9/9 тестов | Move/Sink семантика и деструкторы проверены |
+| `tests/test_ironclad_signals.nim` | ✅ 5/5 тестов | 0 ошибок, glitch-free diamond, dynamic unsubscription, 10,000 циклов с 0 байт утечек |
+| `tests/test_ironclad_mft.nim` | ✅ 7/7 сьютов | 0 ошибок, $ATTRIBUTE_LIST 0x20 и Hardlink дедупликация, 25,000 записей с 0 байт утечек |
+| `tests/test_ironclad_async_iocp.nim` | ✅ 4/4 сьюта | 0 ошибок, 1024 concurrent read/write, 0 байт утечек под TrackingAllocator |
+| `tests/test_gui_headless.nim` | ✅ 2/2 сьюта | 0 ошибок, SearchIndex интеграция, AppState lifecycle с 0 байт утечек |
 | `test_adversarial_m5.nim` | ✅ 5/5 стресс-тестов | Буферы >64KB, суррогаты UTF-16, 48-bit MFT, кластеры |
 
 ---

@@ -6,7 +6,6 @@ license       = "MIT"
 srcDir        = "src"
 
 # Dependencies
-requires "nim >= 2.0.0"
 
 # Tasks
 task test, "Run the automated ecosystem test suite":
@@ -18,6 +17,10 @@ task test, "Run the automated ecosystem test suite":
   exec "nim c -r tests/test_ironclad_unicode.nim"
   exec "nim c -r tests/test_ironclad_mft.nim"
   exec "nim c -r tests/test_ironclad_async_iocp.nim"
+  exec "nim c -r tests/test_ironclad_signals.nim"
+
+task test_signals, "Run Ironclad Signals reactive engine test suite":
+  exec "nim c -r tests/test_ironclad_signals.nim"
 
 task test_mft, "Run Ironclad MFT parser & fixup test suite":
   exec "nim c -r tests/test_ironclad_mft.nim"

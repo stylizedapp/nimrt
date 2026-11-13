@@ -25,7 +25,7 @@ import ./usn_monitor
 
 when defined(windows):
   proc deviceIoControl(
-    hDevice: HANDLE,
+    hDevice: win32_fs.HANDLE,
     dwIoControlCode: DWORD,
     lpInBuffer: pointer,
     nInBufferSize: DWORD,
