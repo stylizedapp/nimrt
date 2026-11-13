@@ -142,11 +142,12 @@ proc add*[T](s: var BufSeq[T], item: sink T) {.raises: [].} =
   if res.isErr:
     raise (ref OutOfMemDefect)(msg: "BufSeq.add: out of memory")
 
-proc clear*[T](s: var BufSeq[T]) {.inline, raises: [].} =
+proc clear*[T](s: var BufSeq[T]) {.inline, gcsafe, raises: [].} =
   if not s.data.isNil:
-    for i in 0 ..< s.len:
-      `=destroy`(s.data[i])
-      zeroMem(addr s.data[i], sizeof(T))
+    {.cast(gcsafe).}:
+      for i in 0 ..< s.len:
+        `=destroy`(s.data[i])
+        zeroMem(addr s.data[i], sizeof(T))
   s.len = 0
 
 proc `[]`*[T](s: BufSeq[T], i: int): lent T {.inline, raises: [].} =

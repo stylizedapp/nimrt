@@ -237,8 +237,8 @@ proc clearSourceObservers*(rt: ptr ReactiveRuntime, sId: SlabId) {.raises: [].} 
 # Forward Declarations
 # =============================================================================
 
-proc runEffect*(rt: ptr ReactiveRuntime, effId: SlabId) {.raises: [].}
-proc flushPendingEffects*(rt: ptr ReactiveRuntime) {.raises: [].}
+proc runEffect*(rt: ptr ReactiveRuntime, effId: SlabId) {.gcsafe, raises: [].}
+proc flushPendingEffects*(rt: ptr ReactiveRuntime) {.gcsafe, raises: [].}
 proc dispose*(rt: ptr ReactiveRuntime, id: SlabId) {.raises: [].}
 proc destroy*(rt: var ReactiveRuntime) {.raises: [].}
 
@@ -270,7 +270,7 @@ proc markDirtyAndPropagate*(rt: ptr ReactiveRuntime, sourceId: SlabId) {.raises:
         discard
     edgeId = nextEdge
 
-proc flushPendingEffects*(rt: ptr ReactiveRuntime) {.raises: [].} =
+proc flushPendingEffects*(rt: ptr ReactiveRuntime) {.gcsafe, raises: [].} =
   if rt.isNil or rt.batchDepth > 0:
     return
 
@@ -285,7 +285,7 @@ proc flushPendingEffects*(rt: ptr ReactiveRuntime) {.raises: [].} =
         rt.runEffect(effId)
   rt.pendingEffects.clear()
 
-proc runEffect*(rt: ptr ReactiveRuntime, effId: SlabId) {.raises: [].} =
+proc runEffect*(rt: ptr ReactiveRuntime, effId: SlabId) {.gcsafe, raises: [].} =
   if rt.isNil or not rt.nodes.contains(effId):
     return
   if rt.nodes[effId].kind != nkEffect:
@@ -437,7 +437,7 @@ proc get*[T](sig: Signal[T]): T {.raises: [].} =
     sig.rt.addDependency(sourceId = id, observerId = tCurrentObserver)
   peek(sig)
 
-proc set*[T](sig: Signal[T], newVal: sink T) {.raises: [].} =
+proc set*[T](sig: Signal[T], newVal: sink T) {.gcsafe, raises: [].} =
   let id = sig.id.toSlabId
   doAssert not sig.rt.isNil and sig.rt.nodes.contains(id), "Invalid Signal"
   let pVal = cast[ptr T](sig.rt.nodes[id].valPtr)
