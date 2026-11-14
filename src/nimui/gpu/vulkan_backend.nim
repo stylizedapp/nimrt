@@ -195,6 +195,35 @@ proc cleanupSwapchain(backend: var VulkanBackend) {.raises: [].} =
     backend.api.vkDestroySwapchainKHR(backend.device, backend.swapchain, nil)
     backend.swapchain = 0
 
+proc initSurfaceConfig*(backend: var VulkanBackend, width, height: uint32): bool {.raises: [].} =
+  var surfCaps: VkSurfaceCapabilitiesKHR
+  if backend.api.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(backend.physicalDevice, backend.surface, addr surfCaps) != VK_SUCCESS:
+    return false
+
+  var desiredExtent = VkExtent2D(width: width, height: height)
+  if surfCaps.currentExtent.width != 0xFFFFFFFF'u32:
+    desiredExtent = surfCaps.currentExtent
+  else:
+    desiredExtent.width = max(surfCaps.minImageExtent.width, min(surfCaps.maxImageExtent.width, desiredExtent.width))
+    desiredExtent.height = max(surfCaps.minImageExtent.height, min(surfCaps.maxImageExtent.height, desiredExtent.height))
+  backend.swapchainExtent = desiredExtent
+
+  # Query surface formats
+  var formatCount: uint32 = 0
+  discard backend.api.vkGetPhysicalDeviceSurfaceFormatsKHR(backend.physicalDevice, backend.surface, addr formatCount, nil)
+  if formatCount == 0:
+    return false
+  var formats = newSeq[VkSurfaceFormatKHR](formatCount)
+  discard backend.api.vkGetPhysicalDeviceSurfaceFormatsKHR(backend.physicalDevice, backend.surface, addr formatCount, addr formats[0])
+
+  var chosenFormat = formats[0]
+  for f in formats:
+    if (f.format == VK_FORMAT_B8G8R8A8_UNORM or f.format == VK_FORMAT_R8G8B8A8_UNORM) and f.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR:
+      chosenFormat = f
+      break
+  backend.swapchainFormat = chosenFormat.format
+  true
+
 proc createSwapchain(backend: var VulkanBackend, width, height: uint32, oldSwapchain: VkSwapchainKHR = 0): bool {.raises: [].} =
   var surfCaps: VkSurfaceCapabilitiesKHR
   if backend.api.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(backend.physicalDevice, backend.surface, addr surfCaps) != VK_SUCCESS:
@@ -973,12 +1002,17 @@ proc initVulkanBackend*(hwnd: pointer, width, height: uint32, fontAtlas: FontAtl
       return err[VulkanBackend, string]("Failed to map ring instance buffer")
     b.mappedInstances[i] = cast[ptr UncheckedArray[UiDrawInstance]](pMapped)
 
-  # 8. Pipeline & Render Pass
+  # 8. Configure Surface Format & Extent
+  if not initSurfaceConfig(b, width, height):
+    b.destroy()
+    return err[VulkanBackend, string]("Failed to configure surface formats")
+
+  # 9. Pipeline & Render Pass (Uses configured b.swapchainFormat)
   if not createPipeline(b, fontAtlas):
     b.destroy()
     return err[VulkanBackend, string]("Failed to create SDF graphics pipeline")
 
-  # 9. Swapchain & Framebuffers
+  # 10. Swapchain & Framebuffers
   if not createSwapchain(b, width, height):
     b.destroy()
     return err[VulkanBackend, string]("Failed to create swapchain")
@@ -1058,11 +1092,11 @@ proc renderInstances*(
   )
   discard backend.api.vkBeginCommandBuffer(cmdBuf, addr beginInfo)
 
-  # Unpack clear color
-  let cr = float32(clearColor and 0xFF'u32) / 255.0f
-  let cg = float32((clearColor shr 8) and 0xFF'u32) / 255.0f
-  let cb = float32((clearColor shr 16) and 0xFF'u32) / 255.0f
-  let ca = float32((clearColor shr 24) and 0xFF'u32) / 255.0f
+  # Unpack clear color (0xRRGGBBAA)
+  let cr = float32((clearColor shr 24) and 0xFF'u32) / 255.0f
+  let cg = float32((clearColor shr 16) and 0xFF'u32) / 255.0f
+  let cb = float32((clearColor shr 8) and 0xFF'u32) / 255.0f
+  let ca = float32(clearColor and 0xFF'u32) / 255.0f
 
   var clearValue: VkClearValue
   clearValue.color.float32Values = [cr, cg, cb, ca]

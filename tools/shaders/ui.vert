@@ -30,10 +30,10 @@ layout(location = 9) flat out float outIsText;
 
 vec4 unpackRGBA(uint c) {
     return vec4(
-        float(c & 0xFFu) / 255.0,
-        float((c >> 8u) & 0xFFu) / 255.0,
+        float((c >> 24u) & 0xFFu) / 255.0,
         float((c >> 16u) & 0xFFu) / 255.0,
-        float((c >> 24u) & 0xFFu) / 255.0
+        float((c >> 8u) & 0xFFu) / 255.0,
+        float(c & 0xFFu) / 255.0
     );
 }
 

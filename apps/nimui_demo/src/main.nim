@@ -522,6 +522,7 @@ proc main() =
   var lastFpsTime = getMonoTime()
   var currentFps = 60.0f
   var avgCpuMs = 0.05f
+  var primeFrames = 5
 
   while win.running:
     let frameStart = getMonoTime()
@@ -588,14 +589,18 @@ proc main() =
       tree.isDirty = true
 
     # 4. Render Single Instanced vkCmdDrawIndexed (if dirty)
+    if primeFrames > 0:
+      dec(primeFrames)
+      tree.isDirty = true
+
     if tree.isDirty:
-      let instancesPtr = tree.buildDrawInstances(fontAtlas)
       let frameRes = backend.beginFrame(uint32(win.width), uint32(win.height))
       if frameRes.isOk:
+        let instancesPtr = tree.buildDrawInstances(fontAtlas)
         let imgIndex = frameRes.get()
         backend.renderInstances(imgIndex, instancesPtr, tree.drawInstances.len, 0x121214FF'u32)
-      elif backend.needsResize:
-        discard
+      else:
+        tree.isDirty = true
 
     let frameEnd = getMonoTime()
     let frameCpuMs = float(inNanoseconds(frameEnd - frameStart)) / 1_000_000.0

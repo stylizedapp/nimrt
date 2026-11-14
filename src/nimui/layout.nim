@@ -383,15 +383,16 @@ proc layoutNode*(
         childW = (childNode.widthMode.val / totalFlexWeight) * remainingSpace
 
       var childY = innerY
-      case nodePtr.alignItems
-      of aiStart, aiStretch:
-        childY = innerY
-        if nodePtr.alignItems == aiStretch:
-          childH = innerH
-      of aiCenter:
-        childY = innerY + (innerH - childH) * 0.5f
-      of aiEnd:
-        childY = innerY + (innerH - childH)
+      if childNode.heightMode.kind == smFlexGrow or nodePtr.alignItems == aiStretch:
+        childH = innerH
+      else:
+        case nodePtr.alignItems
+        of aiStart, aiStretch:
+          childY = innerY
+        of aiCenter:
+          childY = innerY + (innerH - childH) * 0.5f
+        of aiEnd:
+          childY = innerY + (innerH - childH)
 
       layoutNode(tree, childId, curMain, childY, childW, childH, clip)
       curMain += childW + nodePtr.gap
@@ -400,15 +401,16 @@ proc layoutNode*(
         childH = (childNode.heightMode.val / totalFlexWeight) * remainingSpace
 
       var childX = innerX
-      case nodePtr.alignItems
-      of aiStart, aiStretch:
-        childX = innerX
-        if nodePtr.alignItems == aiStretch:
-          childW = innerW
-      of aiCenter:
-        childX = innerX + (innerW - childW) * 0.5f
-      of aiEnd:
-        childX = innerX + (innerW - childW)
+      if childNode.widthMode.kind == smFlexGrow or nodePtr.alignItems == aiStretch:
+        childW = innerW
+      else:
+        case nodePtr.alignItems
+        of aiStart, aiStretch:
+          childX = innerX
+        of aiCenter:
+          childX = innerX + (innerW - childW) * 0.5f
+        of aiEnd:
+          childX = innerX + (innerW - childW)
 
       layoutNode(tree, childId, childX, curMain, childW, childH, clip)
       curMain += childH + nodePtr.gap
