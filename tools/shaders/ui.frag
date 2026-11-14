@@ -22,7 +22,7 @@ float sdRoundedBox(vec2 p, vec2 b, float r) {
 
 void main() {
     vec2 screenPixel = gl_FragCoord.xy;
-    if (inClipRect.z > 0.0 || inClipRect.w > 0.0) {
+    if (inClipRect.z > inClipRect.x && inClipRect.w > inClipRect.y) {
         if (screenPixel.x < inClipRect.x || screenPixel.x > inClipRect.z ||
             screenPixel.y < inClipRect.y || screenPixel.y > inClipRect.w) {
             discard;

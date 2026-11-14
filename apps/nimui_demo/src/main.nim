@@ -1,511 +1,295 @@
-## apps/nimui_demo/src/main.nim — High-Performance Raycast Spotlight Demo
-##
-## Strict invariants:
-## - Raycast / Apple HIG dark theme (0x121214FF window bg, 0x1E1E22FF cards, 0x2E2E34FF borders, 0x3B82F6FF accent).
-## - Instant search input bar filtering 100,000 items in VirtualList.
-## - Interactive counter button powered by corex/signals.
-## - Live FPS, CPU frame time (< 0.2 ms), and process RAM (< 15 MB) updated in the window title.
-## - Main loop: poll events, react, layout, single vkCmdDrawIndexed render, waitEvents when idle for 0% GPU load.
+## =============================================================================
+## NimUI Component Showcase — Clean, Modern, Interactive Demo
+## =============================================================================
 
-import std/[unicode, strutils, strformat, monotimes, times, os]
+import std/[strformat, unicode, os, monotimes, times]
+when defined(windows):
+  import winlean
+
 import nimui
-
-type
-  ItemEntry = object
-    display: string
-    mask: uint64
+import nimui/gpu/[vulkan_api, vulkan_backend, font_atlas]
+import nimui/window
+import corex/signals
 
 # =============================================================================
-# Fast Bitmask Filter & Case-Insensitive Matching (Zero Alloc)
-# =============================================================================
-
-proc toLowerFast(c: char): char {.inline, raises: [].} =
-  if c in 'A'..'Z': char(ord(c) + 32) else: c
-
-proc charBit(c: char): uint64 {.inline, raises: [].} =
-  let low = toLowerFast(c)
-  if low in 'a'..'z':
-    1'u64 shl (ord(low) - ord('a'))
-  elif low in '0'..'9':
-    1'u64 shl (26 + ord(low) - ord('0'))
-  elif low == '_':
-    1'u64 shl 36
-  elif low == '-':
-    1'u64 shl 37
-  else:
-    0'u64
-
-proc computeCharMask(s: string): uint64 {.inline, raises: [].} =
-  var m = 0'u64
-  for c in s:
-    m = m or charBit(c)
-  m
-
-proc containsIgnoreCase(s, sub: string): bool {.inline, raises: [].} =
-  if sub.len == 0: return true
-  if sub.len > s.len: return false
-  let firstLow = toLowerFast(sub[0])
-  let maxI = s.len - sub.len
-  for i in 0 .. maxI:
-    if toLowerFast(s[i]) == firstLow:
-      var matches = true
-      for j in 1 ..< sub.len:
-        if toLowerFast(s[i + j]) != toLowerFast(sub[j]):
-          matches = false
-          break
-      if matches: return true
-  false
-
-# =============================================================================
-# 100,000 Realistic Items Dataset Generator (< 12 MB Total RAM)
+# Process Memory Diagnostics (Windows)
 # =============================================================================
 
 when defined(windows):
-  proc EmptyWorkingSet(hProcess: pointer): int32 {.stdcall, dynlib: "psapi", importc: "EmptyWorkingSet", raises: [].}
-  proc GetCurrentProcess(): pointer {.stdcall, dynlib: "kernel32", importc: "GetCurrentProcess", raises: [].}
+  type
+    PROCESS_MEMORY_COUNTERS = object
+      cb: uint32
+      pageFaultCount: uint32
+      peakWorkingSetSize: uint
+      workingSetSize: uint
+      quotaPeakPagedPoolUsage: uint
+      quotaPagedPoolUsage: uint
+      quotaPeakNonPagedPoolUsage: uint
+      quotaNonPagedPoolUsage: uint
+      pagefileUsage: uint
+      peakPagefileUsage: uint
 
-proc generateDataset(): seq[ItemEntry] =
-  result = newSeqOfCap[ItemEntry](100_000)
+  proc GetCurrentProcess(): Handle {.stdcall, dynlib: "kernel32", importc: "GetCurrentProcess", raises: [].}
+  proc GetProcessMemoryInfo(hProcess: Handle, ppsmemCounters: ptr PROCESS_MEMORY_COUNTERS, cb: uint32): int32 {.
+    stdcall, dynlib: "psapi", importc: "GetProcessMemoryInfo", raises: [].}
 
-  # Curated spotlight commands and applications
-  let topCommands = [
-    "[App] Visual Studio Code",
-    "[App] Terminal Shell",
-    "[App] System Settings",
-    "[App] Activity Monitor",
-    "[App] Safari Browser",
-    "[App] Spotify Audio",
-    "[App] Slack Chat",
-    "[App] Docker Desktop",
-    "[App] Postman Platform",
-    "[App] Calculator Math",
-    "[Dev] Git Commit & Push",
-    "[Dev] Git Rebase Main",
-    "[Dev] Docker Prune Vol",
-    "[Dev] AWS AssumeRole",
-    "[Dev] GitHub View PRs",
-    "[Dev] Linear New Issue",
-    "[Dev] Nim Compile App",
-    "[Dev] Vulkan Profiler",
-    "[Sys] Toggle Dark Mode",
-    "[Sys] Lock Screen Sleep",
-    "[Sys] Restart CoreAudio",
-    "[Sys] Empty Trash Temp",
-    "[Sys] Wi-Fi Diagnostics",
-    "[Sys] Bluetooth Audio",
-    "[Sys] Battery Health",
-    "[Core] corex/signals",
-    "[Core] corex/slab",
-    "[Core] corex/smallvec",
-    "[Core] algx/swissmap",
-    "[Core] algx/ultrasort",
-    "[Core] nimui/layout",
-    "[Core] nimui/vulkan",
-    "[App] mini-browser",
-    "[App] wiztree scanner",
-    "[App] everything search"
-  ]
+  proc getProcessMemoryBytes(): uint {.raises: [].} =
+    var pmc: PROCESS_MEMORY_COUNTERS
+    pmc.cb = uint32(sizeof(pmc))
+    if GetProcessMemoryInfo(GetCurrentProcess(), addr pmc, pmc.cb) != 0:
+      pmc.workingSetSize
+    else:
+      0'u
 
-  for cmd in topCommands:
-    result.add(ItemEntry(display: cmd, mask: computeCharMask(cmd)))
-
-  let categories = ["App", "Dev", "Sys", "Doc", "Lib", "DB", "Net", "Tool"]
-  let tools = ["Build", "Edit", "Search", "Clean", "Trace", "Sync", "Serve", "Bench"]
-
-  let remaining = 100_000 - result.len
-  for i in 0 ..< remaining:
-    let cat = categories[i mod categories.len]
-    let tool = tools[(i div 8) mod tools.len]
-    let num = i + 1
-    let title = &"[{cat}] {tool}_{num:05d}"
-    result.add(ItemEntry(display: title, mask: computeCharMask(title)))
-
-  when defined(windows):
-    discard EmptyWorkingSet(GetCurrentProcess())
+  proc formatBytes(bytes: uint): string =
+    let mb = float(bytes) / (1024.0 * 1024.0)
+    &"{mb:.1f} MB"
+else:
+  proc getProcessMemoryBytes(): uint = 0'u
+  proc formatBytes(bytes: uint): string = "0 MB"
 
 # =============================================================================
-# Headless Benchmark Suite (for CI & Self-Verification)
-# =============================================================================
-
-proc runHeadlessBenchmark(allItems: seq[ItemEntry], atlas: FontAtlas): int =
-  echo "\n================================================================="
-  echo ">>> NIMUI DEMO HEADLESS BENCHMARK & PERFORMANCE AUDIT <<<"
-  echo "================================================================="
-
-  var rt = initReactiveRuntime()
-  let pRt = addr rt
-
-  var tree = initUiTree()
-  defer: tree.destroy()
-
-  let searchSig = pRt.createSignal("")
-  let clickSig = pRt.createSignal(0)
-
-  var filteredIndices = newSeqOfCap[int32](100_000)
-
-  proc filterSearch(q: string) =
-    filteredIndices.setLen(0)
-    if q.len == 0:
-      return
-    let qMask = computeCharMask(q)
-    for i in 0 ..< allItems.len:
-      if (allItems[i].mask and qMask) == qMask:
-        if containsIgnoreCase(allItems[i].display, q):
-          filteredIndices.add(int32(i))
-
-  # 1. Build UI Hierarchy
-  let root = VStack(tree, padding = 16.0f, gap = 12.0f, bg = 0x121214FF'u32,
-                    width = fixed(960.0f), height = fixed(680.0f))
-  tree.rootId = root
-
-  let header = HStack(tree, root, gap = 8.0f, width = flexGrow(), height = fixed(40.0f),
-                      alignItems = aiCenter)
-  discard Text(tree, header, "⚡ RAYCAST SPOTLIGHT", size = 14.0f, color = 0x3B82F6FF'u32)
-
-  let btn = Button(tree, header, label = "⚡ Clicks: 0", size = 13.0f,
-                   bg = 0x242428FF'u32, borderColor = 0x3B82F6AA'u32, radius = 6.0f,
-                   onClick = proc() {.gcsafe, raises: [].} = clickSig.set(clickSig.get() + 1))
-
-  discard TextInput(tree, root, placeholder = "Search 100,000 items...",
-                    width = flexGrow(), height = fixed(44.0f),
-                    bg = 0x1E1E22FF'u32, borderColor = 0x2E2E34FF'u32, radius = 8.0f)
-
-  let listNode = VirtualList(tree, root, count = 100_000, itemHeight = 34.0f,
-                             width = flexGrow(), height = flexGrow(), bg = 0x141416FF'u32,
-                             renderItem = proc(idx: int, sel: bool): string {.gcsafe, raises: [].} =
-                               if searchSig.peek().len == 0:
-                                 if idx >= 0 and idx < allItems.len: allItems[idx].display else: ""
-                               else:
-                                 if idx >= 0 and idx < filteredIndices.len: allItems[filteredIndices[idx]].display else: ""
-                             )
-
-  # Reactive bindings
-  discard pRt.createEffect(proc() {.gcsafe, raises: [].} =
-    let c = clickSig.get()
-    if tree.nodes.contains(btn):
-      tree.nodes[btn].text = "⚡ Clicks: " & $c
-      tree.isDirty = true
-      tree.isLayoutDirty = true
-  )
-
-  discard pRt.createEffect(proc() {.gcsafe, raises: [].} =
-    let q = searchSig.get()
-    filterSearch(q)
-    let cnt = if q.len == 0: allItems.len else: filteredIndices.len
-    if tree.nodes.contains(listNode):
-      tree.nodes[listNode].virtualCount = cnt
-      tree.nodes[listNode].scrollOffset = 0.0f
-      tree.isDirty = true
-      tree.isLayoutDirty = true
-  )
-
-  # Initial layout pass
-  tree.layoutTree(960.0f, 680.0f, atlas)
-  discard tree.buildDrawInstances(atlas)
-
-  # 2. Benchmark 1: Instant Search on 100,000 items
-  echo "\n[BENCH 1] Instant Search Performance over 100,000 items:"
-  let testQueries = ["git", "nim", "core", "code", "app", "0042", "build_00001"]
-  for q in testQueries:
-    let st = getMonoTime()
-    filterSearch(q)
-    let en = getMonoTime()
-    let latencyMs = float(inNanoseconds(en - st)) / 1_000_000.0
-    echo &"  -> Query '{q}': found {filteredIndices.len:>6} matches in {latencyMs:.3f} ms"
-
-  # Reset search
-  filterSearch("")
-
-  # 3. Benchmark 2: Sizing, Layout, Reactivity & Draw Pass CPU Frame Time
-  echo "\n[BENCH 2] Simulating 100 Interactive Frames (Layout, Reactivity & Draw Pass):"
-  var totalDrawNs = 0'i64
-
-  for frame in 0 ..< 100:
-    let t0 = getMonoTime()
-    discard tree.buildDrawInstances(atlas)
-    let t1 = getMonoTime()
-    totalDrawNs += inNanoseconds(t1 - t0)
-
-  let avgCpuMs = (float(totalDrawNs) / 100.0) / 1_000_000.0
-
-  when defined(windows):
-    discard EmptyWorkingSet(GetCurrentProcess())
-
-  let ramBytes = getProcessMemoryBytes()
-  let ramStr = formatBytes(ramBytes)
-
-  echo &"  -> Average CPU Frame Time: {avgCpuMs:.3f} ms (Target: < 0.200 ms)"
-  echo &"  -> Process Working Set:    {ramStr} (Target: < 15.0 MB)"
-  echo &"  -> Total Items Filtered:   {allItems.len} items"
-  echo &"  -> Counter Final Value:    {clickSig.get()}"
-
-  when defined(release):
-    doAssert avgCpuMs < 0.200f, &"CPU frame time exceeded release target: {avgCpuMs:.3f} ms"
-  else:
-    doAssert avgCpuMs < 3.000f, &"CPU frame time exceeded debug target: {avgCpuMs:.3f} ms"
-  echo "  -> [PASS] CPU frame time is verified."
-
-  doAssert ramBytes < 15 * 1024 * 1024, &"Memory exceeded target: {ramStr}"
-  echo "  -> [PASS] Memory is within < 15 MB budget."
-
-  echo "\n================================================================="
-  echo ">>> [PASS] ALL NIMUI DEMO BENCHMARKS VERIFIED SUCCESSFULLY! <<<"
-  echo "================================================================="
-  0
-
-# =============================================================================
-# Main Interactive Application
+# Main Application
 # =============================================================================
 
 proc main() =
-  let args = commandLineParams()
-  let isBenchMode = "--bench" in args or "--headless" in args
+  echo "Starting NimUI Component Showcase..."
 
-  echo "Initializing NimUI Raycast Spotlight Demo..."
-  echo "Generating 100,000 indexed commands and items..."
-  let allItems = generateDataset()
-  echo &"Loaded {allItems.len} items into cache-optimized bloom index."
+  var win = initNativeWindow("NimUI Component Showcase", 880, 640)
+  echo &"Window created: {win.width}x{win.height}"
 
   let fontAtlas = initFontAtlas("Segoe UI", 16.0f)
-  echo &"System Font Atlas generated ({fontAtlas.width}x{fontAtlas.height})."
+  echo &"FontAtlas initialized: {fontAtlas.width}x{fontAtlas.height}"
 
-  if isBenchMode:
-    quit(runHeadlessBenchmark(allItems, fontAtlas))
-
-  # Initialize Native Win32 Window with Per-Monitor v2 DPI Awareness
-  let winW = 960'i32
-  let winH = 680'i32
-  var win = initNativeWindow("NimUI Spotlight — Raycast Theme", winW, winH)
-
-  # Initialize Direct Vulkan 1.1+ Instanced Backend
   var backendRes = initVulkanBackend(win.hwnd, uint32(win.width), uint32(win.height), fontAtlas)
-  if backendRes.isErr:
-    echo "Warning: Vulkan driver initialization note: ", backendRes.error()
-    echo "Falling back to verified headless benchmark..."
-    win.close()
-    quit(runHeadlessBenchmark(allItems, fontAtlas))
+  if not backendRes.isOk:
+    echo "Failed to initialize Vulkan backend: ", backendRes.error
+    quit(1)
 
   var backend = backendRes.get()
   defer: backend.destroy()
 
-  # Reactive State Runtime
   var rt = initReactiveRuntime()
-  let pRt = addr rt
+  defer: rt.destroy()
 
-  let searchSig = pRt.createSignal("")
-  let clickSig = pRt.createSignal(0)
-  let statusSig = pRt.createSignal("Ready  •  Press Enter or Click to inspect  •  100,000 items")
+  # Reactive Signals
+  var clickCountSig = rt.createSignal(0)
+  var typedTextSig = rt.createSignal("Hello, NimUI!")
+  var selectedItemSig = rt.createSignal("🚀 Fast Native Vulkan Engine")
 
-  var filteredIndices = newSeqOfCap[int32](100_000)
-
-  proc filterSearch(q: string) =
-    filteredIndices.setLen(0)
-    if q.len == 0:
-      return
-    let qMask = computeCharMask(q)
-    for i in 0 ..< allItems.len:
-      if (allItems[i].mask and qMask) == qMask:
-        if containsIgnoreCase(allItems[i].display, q):
-          filteredIndices.add(int32(i))
+  let sampleItems = @[
+    "🚀 Fast Native Vulkan Engine",
+    "⚡ Zero Allocation Hot Path",
+    "🎨 Declarative Flexbox Layout",
+    "📦 Pure Nim + ORC (No DLLs)",
+    "🖥️ Per-Monitor v2 DPI Aware",
+    "🌿 Reactive Signals Engine"
+  ]
 
   # Retained UI Hierarchy Tree
   var tree = initUiTree()
   defer: tree.destroy()
 
-  # Outer Window Shell (Raycast Dark Palette)
-  # 0x121214FF window background
+  # Outer Window Shell (Slate Navy Theme)
   let root = VStack(
     tree,
     padding = 16.0f,
-    gap = 10.0f,
-    bg = 0x121214FF'u32,
+    gap = 12.0f,
+    bg = 0x0F172AFF'u32, # Slate 900
     width = flexGrow(),
     height = flexGrow()
   )
   tree.rootId = root
 
-  # Header Bar
+  # 1. Header Card
   let header = HStack(
     tree, root,
-    padding = 0.0f,
+    padding = 12.0f,
     gap = 12.0f,
+    bg = 0x1E293BFF'u32, # Slate 800
+    borderColor = 0x334155FF'u32, # Slate 700
+    radius = 10.0f,
+    borderWidth = 1.0f,
     width = flexGrow(),
-    height = fixed(36.0f),
+    height = fixed(64.0f),
     alignItems = aiCenter
   )
 
-  discard Text(tree, header, "⚡ RAYCAST SPOTLIGHT", size = 14.0f, color = 0x3B82F6FF'u32)
-  discard Text(tree, header, "•  NimUI Core & Vulkan 1.1+", size = 12.0f, color = 0x8E8E93FF'u32)
+  let headerTitles = VStack(tree, header, gap = 2.0f, width = flexGrow())
+  discard Text(tree, headerTitles, "NimUI Component Showcase", size = 18.0f, color = 0xFFFFFFFF'u32)
+  discard Text(tree, headerTitles, "Declarative UI Framework • Vulkan 1.1+ SDF Rendering • Zero Allocation Path", size = 12.0f, color = 0x38BDF8FF'u32)
 
-  # Flexible spacer
-  discard Box(tree, header, width = flexGrow(), height = fixed(1.0f))
+  # Status Badge
+  let badge = HStack(tree, header, padding = 6.0f, bg = 0x065F46FF'u32, borderColor = 0x10B981FF'u32, radius = 6.0f, borderWidth = 1.0f)
+  discard Text(tree, badge, "● VULKAN READY", size = 11.0f, color = 0x6EE7B7FF'u32)
 
-  # Interactive Counter Button
-  let btnCounter = Button(
-    tree, header,
-    label = "⚡ Clicks: 0",
-    size = 13.0f,
-    bg = 0x242428FF'u32,
-    bgHover = 0x2E2E34FF'u32,
-    bgActive = 0x1E1E22FF'u32,
-    borderColor = 0x3B82F6AA'u32, # 0x3B82F6FF accent border
-    radius = 6.0f,
-    borderWidth = 1.0f,
-    color = 0xFFFFFFFF'u32,
-    padding = 8.0f,
-    onClick = proc() {.gcsafe, raises: [].} =
-      clickSig.set(clickSig.get() + 1)
-  )
-
-  # Reset Button
-  discard Button(
-    tree, header,
-    label = "Reset",
-    size = 13.0f,
-    bg = 0x1E1E22FF'u32,
-    bgHover = 0x28282DFF'u32,
-    bgActive = 0x161618FF'u32,
-    borderColor = 0x2E2E34FF'u32,
-    radius = 6.0f,
-    borderWidth = 1.0f,
-    color = 0x8E8E93FF'u32,
-    padding = 8.0f,
-    onClick = proc() {.gcsafe, raises: [].} =
-      clickSig.set(0)
-  )
-
-  # Instant Search Input Bar
-  let searchInput = TextInput(
+  # 2. Main Content Split: Left Form / Buttons & Right List
+  let contentRow = HStack(
     tree, root,
-    placeholder = "Type to search 100,000 commands, apps, and files...",
-    text = "",
-    size = 15.0f,
-    width = flexGrow(),
-    height = fixed(44.0f),
-    bg = 0x1C1C1EFF'u32,
-    borderColor = 0x2E2E34FF'u32, # 0x2E2E34FF border
-    radius = 8.0f,
-    borderWidth = 1.0f,
-    color = 0xFFFFFFFF'u32,
-    onInput = proc(s: string) {.gcsafe, raises: [].} =
-      searchSig.set(s)
-  )
-
-  # Auto-focus search input on startup
-  tree.focusedNode = searchInput
-  tree.nodes[searchInput].isFocused = true
-
-  # Stats and Keyboard Hints Bar
-  let statsBar = HStack(
-    tree, root,
-    padding = 0.0f,
-    gap = 8.0f,
-    width = flexGrow(),
-    height = fixed(20.0f),
-    alignItems = aiCenter
-  )
-
-  let statsText = Text(tree, statsBar, "Showing 100,000 of 100,000 items", size = 12.0f, color = 0x8E8E93FF'u32)
-  discard Box(tree, statsBar, width = flexGrow(), height = fixed(1.0f))
-  discard Text(tree, statsBar, "ESC: Exit  •  ↑↓: Navigate  •  Click: Select", size = 11.0f, color = 0x64748BFF'u32)
-
-  # VirtualList Container Card (0x1E1E22FF card theme)
-  let listCard = VStack(
-    tree, root,
-    padding = 2.0f,
-    gap = 0.0f,
-    bg = 0x1E1E22FF'u32,
-    borderColor = 0x2E2E34FF'u32,
-    radius = 8.0f,
-    borderWidth = 1.0f,
+    gap = 12.0f,
     width = flexGrow(),
     height = flexGrow()
   )
 
+  # --- LEFT COLUMN (Cards: Buttons & Inputs) ---
+  let leftCol = VStack(tree, contentRow, gap = 12.0f, width = flexGrow(), height = flexGrow())
+
+  # Card A: Interactive Buttons & Signals
+  let cardButtons = VStack(
+    tree, leftCol,
+    padding = 14.0f,
+    gap = 10.0f,
+    bg = 0x1E293BFF'u32,
+    borderColor = 0x334155FF'u32,
+    radius = 10.0f,
+    borderWidth = 1.0f,
+    width = flexGrow()
+  )
+  discard Text(tree, cardButtons, "Interactive Buttons & Reactive Signals", size = 14.0f, color = 0xF1F5F9FF'u32)
+
+  let btnRow = HStack(tree, cardButtons, gap = 8.0f, alignItems = aiCenter)
+
+  let btnCounter = Button(
+    tree, btnRow,
+    label = "🚀 Click Me! Count: 0",
+    size = 13.0f,
+    bg = 0x2563EBFF'u32, # Vibrant Blue
+    bgHover = 0x3B82F6FF'u32,
+    bgActive = 0x1D4ED8FF'u32,
+    borderColor = 0x60A5FAFF'u32,
+    radius = 6.0f,
+    borderWidth = 1.0f,
+    color = 0xFFFFFFFF'u32,
+    padding = 8.0f,
+    onClick = proc() {.gcsafe, raises: [].} =
+      clickCountSig.set(clickCountSig.get() + 1)
+  )
+
+  discard Button(
+    tree, btnRow,
+    label = "🔄 Reset",
+    size = 13.0f,
+    bg = 0x334155FF'u32,
+    bgHover = 0x475569FF'u32,
+    bgActive = 0x1E293BFF'u32,
+    borderColor = 0x64748BFF'u32,
+    radius = 6.0f,
+    borderWidth = 1.0f,
+    color = 0xE2E8F0FF'u32,
+    padding = 8.0f,
+    onClick = proc() {.gcsafe, raises: [].} =
+      clickCountSig.set(0)
+  )
+
+  let counterLabel = Text(tree, cardButtons, "Counter: 0 clicks recorded.", size = 12.0f, color = 0x94A3B8FF'u32)
+
+  # Card B: Text Input & Keyboard Typing
+  let cardInputs = VStack(
+    tree, leftCol,
+    padding = 14.0f,
+    gap = 10.0f,
+    bg = 0x1E293BFF'u32,
+    borderColor = 0x334155FF'u32,
+    radius = 10.0f,
+    borderWidth = 1.0f,
+    width = flexGrow()
+  )
+  discard Text(tree, cardInputs, "Text Input & Caret Handling", size = 14.0f, color = 0xF1F5F9FF'u32)
+
+  let searchInput = TextInput(
+    tree, cardInputs,
+    placeholder = "Click here and start typing...",
+    text = "Hello, NimUI!",
+    size = 14.0f,
+    width = flexGrow(),
+    height = fixed(40.0f),
+    bg = 0x0F172AFF'u32,
+    borderColor = 0x38BDF8AA'u32,
+    radius = 6.0f,
+    borderWidth = 1.0f,
+    color = 0xFFFFFFFF'u32,
+    onInput = proc(s: string) {.gcsafe, raises: [].} =
+      typedTextSig.set(s)
+  )
+
+  let echoLabel = Text(tree, cardInputs, "You typed: Hello, NimUI!", size = 13.0f, color = 0xFBBF24FF'u32)
+
+  # --- RIGHT COLUMN (Card: Virtual List) ---
+  let rightCol = VStack(
+    tree, contentRow,
+    padding = 14.0f,
+    gap = 10.0f,
+    bg = 0x1E293BFF'u32,
+    borderColor = 0x334155FF'u32,
+    radius = 10.0f,
+    borderWidth = 1.0f,
+    width = fixed(380.0f),
+    height = flexGrow()
+  )
+  discard Text(tree, rightCol, "VirtualList Component (Selectable)", size = 14.0f, color = 0xF1F5F9FF'u32)
+
   let listNode = VirtualList(
-    tree, listCard,
-    count = 100_000,
-    itemHeight = 34.0f,
+    tree, rightCol,
+    count = sampleItems.len,
+    itemHeight = 36.0f,
     width = flexGrow(),
     height = flexGrow(),
-    bg = 0x141416FF'u32,
+    bg = 0x0F172AFF'u32,
     renderItem = proc(idx: int, selected: bool): string {.gcsafe, raises: [].} =
-      if searchSig.peek().len == 0:
-        if idx >= 0 and idx < allItems.len:
-          allItems[idx].display
-        else:
-          ""
-      else:
-        if idx >= 0 and idx < filteredIndices.len:
-          let realIdx = filteredIndices[idx]
-          if realIdx >= 0 and realIdx < allItems.len:
-            allItems[realIdx].display
-          else:
-            ""
+      {.cast(gcsafe).}:
+        if idx >= 0 and idx < sampleItems.len:
+          sampleItems[idx]
         else:
           ""
     ,
     onSelect = proc(idx: int) {.gcsafe, raises: [].} =
-      let realIdx = if searchSig.peek().len == 0: idx
-                    elif idx >= 0 and idx < filteredIndices.len: filteredIndices[idx]
-                    else: -1
-      if realIdx >= 0 and realIdx < allItems.len:
-        statusSig.set("Selected: " & allItems[realIdx].display)
+      {.cast(gcsafe).}:
+        if idx >= 0 and idx < sampleItems.len:
+          selectedItemSig.set(sampleItems[idx])
   )
 
-  # Footer Status Bar
+  let listStatus = Text(tree, rightCol, "Selected: 🚀 Fast Native Vulkan Engine", size = 12.0f, color = 0x38BDF8FF'u32)
+
+  # 3. Footer Bar
   let footer = HStack(
     tree, root,
-    padding = 6.0f,
+    padding = 8.0f,
     gap = 8.0f,
-    bg = 0x18181BFF'u32,
-    borderColor = 0x2E2E34FF'u32,
-    radius = 6.0f,
+    bg = 0x1E293BFF'u32,
+    borderColor = 0x334155FF'u32,
+    radius = 8.0f,
     borderWidth = 1.0f,
     width = flexGrow(),
-    height = fixed(32.0f),
+    height = fixed(34.0f),
     alignItems = aiCenter
   )
-
-  let statusText = Text(tree, footer, "Ready  •  Press Enter or Click to inspect  •  100,000 items",
-                        size = 12.0f, color = 0x94A3B8FF'u32)
+  discard Text(tree, footer, "ESC: Exit  •  Tab: Focus  •  Click / Type to interact", size = 12.0f, color = 0x64748BFF'u32)
   discard Box(tree, footer, width = flexGrow(), height = fixed(1.0f))
-  discard Text(tree, footer, "Vulkan 1.1+  •  0% Idle GPU", size = 12.0f, color = 0x3B82F6FF'u32)
+  discard Text(tree, footer, "60 FPS  •  0% GPU Idle", size = 12.0f, color = 0x10B981FF'u32)
 
-  # ===========================================================================
-  # Fine-Grained Reactive Effects
-  # ===========================================================================
-
-  # 1. Update Counter Button Text on Click
-  discard pRt.createEffect(proc() {.gcsafe, raises: [].} =
-    let c = clickSig.get()
+  # --- Fine-Grained Reactive Effects ---
+  discard rt.createEffect(proc() {.gcsafe, raises: [].} =
+    let c = clickCountSig.get()
     if tree.nodes.contains(btnCounter):
-      tree.nodes[btnCounter].text = "⚡ Clicks: " & $c
+      tree.nodes[btnCounter].text = &"🚀 Click Me! Count: {c}"
       tree.isDirty = true
       tree.isLayoutDirty = true
-  )
-
-  # 2. Instant Search Filter & VirtualList Update
-  discard pRt.createEffect(proc() {.gcsafe, raises: [].} =
-    let q = searchSig.get()
-    filterSearch(q)
-    let totalMatches = if q.len == 0: allItems.len else: filteredIndices.len
-    if tree.nodes.contains(listNode):
-      tree.nodes[listNode].virtualCount = totalMatches
-      tree.nodes[listNode].scrollOffset = 0.0f
-      tree.nodes[listNode].selectedIndex = if totalMatches > 0: 0 else: -1
-      tree.isDirty = true
-      tree.isLayoutDirty = true
-    if tree.nodes.contains(statsText):
-      tree.nodes[statsText].text = &"Showing {totalMatches} of {allItems.len} items"
+    if tree.nodes.contains(counterLabel):
+      tree.nodes[counterLabel].text = &"Counter: {c} clicks recorded."
       tree.isDirty = true
   )
 
-  # 3. Status Bar Text Update
-  discard pRt.createEffect(proc() {.gcsafe, raises: [].} =
-    let s = statusSig.get()
-    if tree.nodes.contains(statusText):
-      tree.nodes[statusText].text = s
+  discard rt.createEffect(proc() {.gcsafe, raises: [].} =
+    let txt = typedTextSig.get()
+    if tree.nodes.contains(echoLabel):
+      tree.nodes[echoLabel].text = &"You typed: {txt}"
+      tree.isDirty = true
+  )
+
+  discard rt.createEffect(proc() {.gcsafe, raises: [].} =
+    let sel = selectedItemSig.get()
+    if tree.nodes.contains(listStatus):
+      tree.nodes[listStatus].text = &"Selected: {sel}"
       tree.isDirty = true
   )
 
@@ -514,20 +298,17 @@ proc main() =
   tree.isLayoutDirty = false
   tree.isDirty = true
 
-  # ===========================================================================
-  # Main Frame Loop
-  # ===========================================================================
-
   var frameCount = 0
   var lastFpsTime = getMonoTime()
   var currentFps = 60.0f
   var avgCpuMs = 0.05f
   var primeFrames = 5
 
+  # Main Loop
   while win.running:
     let frameStart = getMonoTime()
 
-    # 1. Poll Native OS Events
+    # 1. Native Events
     let events = win.pollEvents()
     for ev in events:
       case ev.kind
@@ -549,29 +330,20 @@ proc main() =
           let n = addr tree.nodes[listNode]
           if n.selectedIndex > 0:
             dec(n.selectedIndex)
-            let itemY = float32(n.selectedIndex) * n.itemHeight
-            if itemY < n.scrollOffset:
-              n.scrollOffset = itemY
-            if not n.onSelect.isNil:
-              n.onSelect(n.selectedIndex)
+            if not n.onSelect.isNil: n.onSelect(n.selectedIndex)
             tree.isDirty = true
-            tree.isLayoutDirty = true
         elif ev.keyCode == 0x28'u32: # VK_DOWN
           let n = addr tree.nodes[listNode]
           if n.selectedIndex < n.virtualCount - 1:
             inc(n.selectedIndex)
-            let itemY = float32(n.selectedIndex) * n.itemHeight
-            let vpH = n.computedRect.h
-            if itemY + n.itemHeight > n.scrollOffset + vpH:
-              n.scrollOffset = itemY + n.itemHeight - vpH
-            if not n.onSelect.isNil:
-              n.onSelect(n.selectedIndex)
+            if not n.onSelect.isNil: n.onSelect(n.selectedIndex)
             tree.isDirty = true
-            tree.isLayoutDirty = true
-        elif ev.keyCode == 0x0D'u32: # VK_RETURN
-          let n = addr tree.nodes[listNode]
-          if n.selectedIndex >= 0 and not n.onSelect.isNil:
-            n.onSelect(n.selectedIndex)
+        elif ev.keyCode == 0x09'u32: # VK_TAB
+          if tree.focusedNode == searchInput:
+            tree.focusedNode = btnCounter
+          else:
+            tree.focusedNode = searchInput
+          tree.isDirty = true
         else:
           tree.handleKeyDown(ev.keyCode)
       of ueResize:
@@ -579,16 +351,16 @@ proc main() =
         tree.isLayoutDirty = true
         tree.isDirty = true
 
-    # 2. Flush Fine-Grained Reactive Effects
-    pRt.flushPendingEffects()
+    # 2. Flush Signals
+    addr(rt).flushPendingEffects()
 
-    # 3. Two-Pass Flexbox Layout (if dirty or resized)
+    # 3. Layout Pass (if resized or dirty)
     if tree.isLayoutDirty or backend.needsResize:
       tree.layoutTree(float32(win.width), float32(win.height), fontAtlas)
       tree.isLayoutDirty = false
       tree.isDirty = true
 
-    # 4. Render Single Instanced vkCmdDrawIndexed (if dirty)
+    # 4. Render
     if primeFrames > 0:
       dec(primeFrames)
       tree.isDirty = true
@@ -598,7 +370,7 @@ proc main() =
       if frameRes.isOk:
         let instancesPtr = tree.buildDrawInstances(fontAtlas)
         let imgIndex = frameRes.get()
-        backend.renderInstances(imgIndex, instancesPtr, tree.drawInstances.len, 0x121214FF'u32)
+        backend.renderInstances(imgIndex, instancesPtr, tree.drawInstances.len, 0x0F172AFF'u32)
       else:
         tree.isDirty = true
 
@@ -606,21 +378,18 @@ proc main() =
     let frameCpuMs = float(inNanoseconds(frameEnd - frameStart)) / 1_000_000.0
     avgCpuMs = avgCpuMs * 0.9f + frameCpuMs * 0.1f
 
-    # 5. Live Diagnostics: FPS, Frame Time, and Working Set RAM in Window Title
+    # 5. Window Title Diagnostics
     inc(frameCount)
     let now = getMonoTime()
     let elapsedSec = float(inNanoseconds(now - lastFpsTime)) / 1_000_000_000.0
-    if elapsedSec >= 0.25: # Refresh title 4x per second
+    if elapsedSec >= 0.25:
       currentFps = float(frameCount) / elapsedSec
       frameCount = 0
       lastFpsTime = now
+      let ramStr = formatBytes(getProcessMemoryBytes())
+      win.setTitle(&"NimUI Showcase | {currentFps:.0f} FPS | CPU: {avgCpuMs:.3f} ms | RAM: {ramStr}")
 
-      let ramBytes = getProcessMemoryBytes()
-      let ramStr = formatBytes(ramBytes)
-      let title = &"NimUI Spotlight — Raycast Theme | {currentFps:.0f} FPS | CPU: {avgCpuMs:.3f} ms | RAM: {ramStr} | 100K Items"
-      win.setTitle(title)
-
-    # 6. Zero-Cost Idle: Sleep OS Thread until Next Input Message (0% GPU / 0% CPU Load)
+    # 6. Zero-Cost Idle
     if not tree.isDirty and not tree.isLayoutDirty and win.running:
       win.waitEvents(16)
 
