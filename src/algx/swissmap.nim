@@ -12,7 +12,7 @@
 ## 3. Раздельные массивы метаданных (`ctrl`), ключей (`keys`) и значений (`vals`) в стиле SwissTable.
 ## 4. Сверхбыстрый 64-битный хэш-миксер SplitMix64 / Fibonacci.
 
-import std/[hashes, bitops]
+import std/bitops
 import corex/adt
 export adt
 
@@ -58,17 +58,45 @@ proc nextPow2(x: int): int {.inline, raises: [].} =
     v = v or (v shr 32)
   v + 1
 
+proc splitMix64*(z0: uint64): uint64 {.inline, raises: [].} =
+  var z = z0
+  z = (z xor (z shr 30)) * 0xBF58_476D_1CE4_E5B9'u64
+  z = (z xor (z shr 27)) * 0x94D0_49BB_1331_11EB'u64
+  z xor (z shr 31)
+
+proc hashBytes64*(p: pointer, length: int): uint64 {.inline, raises: [].} =
+  var h = 0xCBF2_9CE4_8422_2325'u64
+  if p != nil and length > 0:
+    let bytes = cast[ptr UncheckedArray[byte]](p)
+    var i = 0
+    while i + 8 <= length:
+      var w: uint64
+      copyMem(addr w, addr bytes[i], 8)
+      h = splitMix64(h xor w)
+      i += 8
+    while i < length:
+      h = (h xor uint64(bytes[i])) * 0x0000_0100_0000_01B3'u64
+      inc(i)
+  splitMix64(h xor uint64(length))
+
 proc fastHash*[K](key: K): uint64 {.inline, raises: [].} =
   when K is SomeInteger:
-    var z = cast[uint64](key)
-    z = (z xor (z shr 30)) * 0xBF58_476D_1CE4_E5B9'u64
-    z = (z xor (z shr 27)) * 0x94D0_49BB_1331_11EB'u64
-    z xor (z shr 31)
+    when K is SomeUnsignedInt:
+      splitMix64(uint64(key))
+    else:
+      splitMix64(cast[uint64](int64(key)))
+  elif K is enum:
+    splitMix64(uint64(ord(key)))
+  elif K is pointer or K is ptr:
+    splitMix64(cast[uint64](key))
+  elif K is string:
+    hashBytes64(if key.len > 0: unsafeAddr key[0] else: nil, key.len)
   else:
-    var z = cast[uint64](hash(key))
-    z = (z xor (z shr 30)) * 0xBF58_476D_1CE4_E5B9'u64
-    z = (z xor (z shr 27)) * 0x94D0_49BB_1331_11EB'u64
-    z xor (z shr 31)
+    mixin hash
+    when compiles(hash(key)):
+      splitMix64(cast[uint64](int64(hash(key))))
+    else:
+      hashBytes64(unsafeAddr key, sizeof(K))
 
 proc extractTag(h: uint64): uint8 {.inline, raises: [].} =
   let raw = uint8(h shr 56)
@@ -229,6 +257,9 @@ proc getOrDefault*[K, V](m: FastMap[K, V], key: K, defaultVal: V): V {.inline, r
 
     inc step
     g = (g + step) and groupMask
+
+proc getOrDefault*[K, V](m: FastMap[K, V], key: K): V {.inline, raises: [].} =
+  getOrDefault(m, key, default(V))
 
 proc contains*[K, V](m: FastMap[K, V], key: K): bool {.inline, raises: [].} =
   if m.count == 0 or m.ctrl.len == 0:

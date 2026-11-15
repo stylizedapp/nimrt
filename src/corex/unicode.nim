@@ -104,6 +104,8 @@ func validateUtf8*(s: openArray[char]): bool {.raises: [].} =
 # 2. Fast Rune Decoding & Encoding
 # =============================================================================
 
+{.push stacktrace: off, linetrace: off.}
+
 func decodeRune*(s: openArray[char], pos: int): tuple[rune: uint32, len: int] {.inline, raises: [].} =
   ## Decodes a single Unicode code point from `s` starting at index `pos`.
   ## Returns the decoded `rune` and byte `len`.
@@ -149,6 +151,8 @@ func decodeRune*(s: openArray[char], pos: int): tuple[rune: uint32, len: int] {.
     return (0xFFFD'u32, 1)
   else:
     return (0xFFFD'u32, 1)
+
+{.pop.}
 
 func encodeRune*(rune: uint32): string {.raises: [].} =
   ## Encodes `rune` as a UTF-8 string (1 to 4 bytes).
@@ -404,3 +408,83 @@ proc displayWidth*(s: string): int {.raises: [].} =
   for g in graphemes(s):
     total += clusterWidth(g.text)
   total
+
+# =============================================================================
+# 5. Self-Contained Rune Type & Zero-Allocation Helpers
+# =============================================================================
+
+type
+  Rune* = distinct uint32
+
+{.push stacktrace: off, linetrace: off.}
+
+proc `==`*(a, b: Rune): bool {.borrow, inline, raises: [].}
+proc `<`*(a, b: Rune): bool {.inline, raises: [].} = uint32(a) < uint32(b)
+proc `<=`*(a, b: Rune): bool {.inline, raises: [].} = uint32(a) <= uint32(b)
+
+proc toUTF8*(r: Rune): string {.inline, raises: [].} =
+  encodeRune(uint32(r))
+
+proc `$`*(r: Rune): string {.inline, raises: [].} =
+  encodeRune(uint32(r))
+
+proc runesToUtf8(runes: openArray[Rune]): string {.raises: [].} =
+  result = newStringOfCap(runes.len)
+  for r in runes:
+    result.add(encodeRune(uint32(r)))
+
+proc `$`*(runes: openArray[Rune]): string {.inline, raises: [].} =
+  runesToUtf8(runes)
+
+proc `$`*(runes: seq[Rune]): string {.inline, raises: [].} =
+  runesToUtf8(runes)
+
+template fastRuneAt*(s: openArray[char], i: int, result: untyped, doInc: static bool = true) =
+  block:
+    let decRes = decodeRune(s, i)
+    result = Rune(decRes.rune)
+    when doInc:
+      i += decRes.len
+
+iterator runes*(s: openArray[char]): Rune {.inline, raises: [].} =
+  var pos = 0
+  while pos < s.len:
+    let (r, length) = decodeRune(s, pos)
+    if length <= 0:
+      break
+    pos += length
+    yield Rune(r)
+
+proc runeLen*(s: openArray[char]): int {.inline, raises: [].} =
+  var pos = 0
+  while pos < s.len:
+    let (_, length) = decodeRune(s, pos)
+    if length <= 0:
+      break
+    pos += length
+    inc(result)
+
+proc toRunes*(s: openArray[char]): seq[Rune] {.raises: [].} =
+  result = newSeqOfCap[Rune](s.len)
+  var pos = 0
+  while pos < s.len:
+    let (r, length) = decodeRune(s, pos)
+    if length <= 0:
+      break
+    pos += length
+    result.add(Rune(r))
+
+proc runeByteOffset*(s: openArray[char], runeIdx: int): int {.inline, raises: [].} =
+  if runeIdx <= 0:
+    return 0
+  var pos = 0
+  var count = 0
+  while pos < s.len and count < runeIdx:
+    let (_, length) = decodeRune(s, pos)
+    if length <= 0:
+      break
+    pos += length
+    inc(count)
+  pos
+
+{.pop.}

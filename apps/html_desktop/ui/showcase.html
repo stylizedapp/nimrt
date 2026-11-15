@@ -1,0 +1,794 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <title>NimUI HTML5/CSS3 Desktop Showcase — Замена Tauri</title>
+  <style>
+    /* Reset браузерных отступов для идентичной раскладки в браузере и NimUI Vulkan SDF */
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      line-height: 1.25;
+    }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      background-color: #090A0F;
+      color: #F8FAFC;
+      font-size: 13px;
+    }
+
+    body {
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      padding: 12px;
+      gap: 10px;
+    }
+
+    /* ======================== 1. ШАПКА И НАВИГАЦИЯ ======================== */
+    .top-bar {
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+      justify-content: space-between;
+      width: 100%;
+      padding: 10px 16px;
+      background-color: midnight;
+      border: 1px solid #242636;
+      border-radius: 10px;
+      gap: 16px;
+    }
+
+    .brand-box {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .brand-box > h1 {
+      font-size: 17px;
+      color: #F8FAFC;
+    }
+
+    .brand-sub {
+      font-size: 11px;
+      color: #94A3B8;
+    }
+
+    .nav-row {
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+      gap: 8px;
+    }
+
+    button.nav-btn {
+      height: 32px;
+      padding: 6px 14px;
+      background-color: #191B26;
+      border: 1px solid #2E3248;
+      border-radius: 6px;
+      color: #CBD5E1;
+      font-size: 12px;
+    }
+
+    button.nav-btn:hover {
+      background-color: #26293B;
+      border-color: #6366F1;
+    }
+
+    button.nav-btn:active {
+      background-color: #121420;
+    }
+
+    button.nav-btn.active {
+      background-color: #312E81;
+      border: 1px solid indigo;
+      color: white;
+    }
+
+    .header-badges {
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .mode-pill {
+      padding: 5px 10px;
+      background-color: rgba(99, 102, 241, 0.16);
+      border: 1px solid #6366F1;
+      border-radius: 6px;
+      color: #C7D2FE;
+      font-size: 11px;
+    }
+
+    .ram-pill {
+      padding: 5px 10px;
+      background-color: rgba(16, 185, 129, 0.15);
+      border: 1px solid emerald;
+      border-radius: 6px;
+      color: #34D399;
+      font-size: 11px;
+    }
+
+    /* ======================== 2. РАБОЧАЯ ОБЛАСТЬ ======================== */
+    .workspace {
+      display: flex;
+      flex-direction: row;
+      align-items: stretch;
+      width: 100%;
+      flex: 1;
+      gap: 12px;
+    }
+
+    /* ---------------- ЛЕВЫЙ САЙДБАР ---------------- */
+    .sidebar {
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      width: 300px;
+      gap: 12px;
+    }
+
+    .side-card {
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      padding: 14px;
+      background-color: #111218;
+      border: 1px solid #232534;
+      border-radius: 10px;
+      gap: 8px;
+    }
+
+    .side-card.grow-card {
+      flex: 1;
+    }
+
+    .card-hdr {
+      font-size: 14px;
+      color: #F8FAFC;
+    }
+
+    .card-sub {
+      font-size: 11px;
+      color: #64748B;
+    }
+
+    .cmp-row {
+      display: flex;
+      flex-direction: row;
+      justify-content: space-between;
+      align-items: center;
+      padding: 7px 10px;
+      background-color: #171923;
+      border: 1px solid #232636;
+      border-radius: 6px;
+    }
+
+    .cmp-label {
+      font-size: 12px;
+      color: #CBD5E1;
+    }
+
+    .cmp-nim {
+      font-size: 11px;
+      color: #34D399;
+    }
+
+    .cmp-other {
+      font-size: 11px;
+      color: #64748B;
+    }
+
+    .cap-list {
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      gap: 6px;
+    }
+
+    .cap-list .cap-item {
+      display: flex;
+      flex-direction: row;
+      justify-content: space-between;
+      align-items: center;
+      padding: 7px 10px;
+      background-color: #171923;
+      border: 1px solid #26293B;
+      border-radius: 6px;
+      gap: 8px;
+    }
+
+    .cap-list .cap-item:hover {
+      background-color: #202334;
+      border-color: #4F46E5;
+    }
+
+    .cap-name {
+      font-size: 12px;
+      color: #E2E8F0;
+    }
+
+    .cap-tag {
+      font-size: 10px;
+      color: #818CF8;
+    }
+
+    /* ---------------- ЦЕНТРАЛЬНАЯ КОЛОНКА ---------------- */
+    .center-col {
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      flex: 1;
+      gap: 12px;
+    }
+
+    .kpi-row {
+      display: flex;
+      flex-direction: row;
+      align-items: stretch;
+      width: 100%;
+      height: 98px;
+      gap: 12px;
+    }
+
+    .kpi-card {
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      flex: 1;
+      padding: 12px 14px;
+      background-color: #111218;
+      border: 1px solid #232534;
+      border-radius: 10px;
+      gap: 4px;
+    }
+
+    #kpi-hero {
+      background-color: #151728;
+      border: 2px solid #6366F1;
+    }
+
+    .kpi-title {
+      font-size: 11px;
+      color: #94A3B8;
+    }
+
+    .kpi-val {
+      font-size: 19px;
+      color: #F8FAFC;
+    }
+
+    .kpi-foot {
+      font-size: 11px;
+      color: #10B981;
+    }
+
+    .kpi-foot.indigo-txt {
+      color: #818CF8;
+    }
+
+    .split-row {
+      display: flex;
+      flex-direction: row;
+      align-items: stretch;
+      width: 100%;
+      flex: 1;
+      gap: 12px;
+    }
+
+    .main-card {
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      flex: 1;
+      padding: 14px;
+      background-color: #111218;
+      border: 1px solid #232534;
+      border-radius: 10px;
+      gap: 9px;
+    }
+
+    .form-wrap {
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      gap: 8px;
+      flex: 1;
+    }
+
+    .field-lbl {
+      font-size: 11px;
+      color: #94A3B8;
+    }
+
+    .form-input {
+      width: 100%;
+      height: 34px;
+      padding: 6px 10px;
+      background-color: #090A0F;
+      border: 1px solid #2E3248;
+      border-radius: 6px;
+      color: #F8FAFC;
+      font-size: 13px;
+    }
+
+    .form-input:hover {
+      border-color: #6366F1;
+    }
+
+    .summary-card {
+      display: flex;
+      flex-direction: column;
+      padding: 10px 12px;
+      background-color: rgba(79, 70, 229, 0.14);
+      border: 1px solid #4338CA;
+      border-radius: 8px;
+      gap: 4px;
+    }
+
+    .summary-hdr {
+      font-size: 11px;
+      color: #A5B4FC;
+    }
+
+    .summary-val {
+      font-size: 12px;
+      color: #E0E7FF;
+    }
+
+    .btn-row {
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .btn {
+      height: 32px;
+      padding: 6px 12px;
+      background-color: #1E293B;
+      border: 1px solid #334155;
+      border-radius: 6px;
+      color: #F8FAFC;
+      font-size: 12px;
+    }
+
+    .btn:hover {
+      background-color: #334155;
+      border-color: #64748B;
+    }
+
+    .btn:active {
+      background-color: #0F172A;
+    }
+
+    .btn.primary {
+      background-color: #4F46E5;
+      border-color: #6366F1;
+    }
+
+    .btn.primary:hover {
+      background-color: #4338CA;
+    }
+
+    .btn.emerald-btn {
+      background-color: #065F46;
+      border-color: emerald;
+    }
+
+    .btn.emerald-btn:hover {
+      background-color: #047857;
+    }
+
+    .btn.amber-btn {
+      background-color: #78350F;
+      border-color: amber;
+    }
+
+    .btn.amber-btn:hover {
+      background-color: #92400E;
+    }
+
+    /* ---------------- МАТРИЦА CSS3 + SDF СВОЙСТВ ---------------- */
+    .sdf-grid {
+      display: flex;
+      flex-direction: row;
+      align-items: stretch;
+      gap: 10px;
+    }
+
+    .sdf-tile {
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+      padding: 10px 12px;
+      gap: 4px;
+    }
+
+    .sdf-tile.indigo-tile {
+      background-color: rgba(99, 102, 241, 0.16);
+      border: 2px solid #6366F1;
+      border-radius: 4px;
+    }
+
+    .sdf-tile.emerald-tile {
+      background-color: rgba(16, 185, 129, 0.16);
+      border: 2px solid #10B981;
+      border-radius: 10px;
+    }
+
+    .sdf-tile.amber-tile {
+      background-color: rgba(245, 158, 11, 0.16);
+      border: 1px solid #F59E0B;
+      border-radius: 14px;
+    }
+
+    .sdf-tile.rose-tile {
+      background-color: rgba(244, 63, 94, 0.16);
+      border: 1px solid rose;
+      border-radius: 8px;
+    }
+
+    .tile-title {
+      font-size: 12px;
+      color: #F8FAFC;
+    }
+
+    .tile-sub {
+      font-size: 11px;
+      color: #CBD5E1;
+    }
+
+    .align-demo-box {
+      display: flex;
+      flex-direction: column;
+      padding: 10px 12px;
+      background-color: #161822;
+      border: 1px solid #292C3E;
+      border-radius: 8px;
+      gap: 6px;
+    }
+
+    .align-center {
+      padding: 5px 10px;
+      background-color: #1E293B;
+      border-radius: 5px;
+      text-align: center;
+      color: #93C5FD;
+      font-size: 12px;
+    }
+
+    .align-right {
+      padding: 5px 10px;
+      background-color: #1C2722;
+      border-radius: 5px;
+      text-align: right;
+      color: #6EE7B7;
+      font-size: 12px;
+    }
+
+    .profile-pill {
+      padding: 8px 12px;
+      background-color: #13251E;
+      border: 1px solid #10B981;
+      border-radius: 8px;
+      color: #34D399;
+      font-size: 12px;
+      text-align: center;
+    }
+
+    .cascade-note {
+      padding: 8px 10px;
+      background-color: rgb(20, 22, 32);
+      border: 1px solid #30344A;
+      border-radius: 6px;
+      color: #94A3B8;
+      font-size: 11px;
+    }
+
+    /* ---------------- ПРОКРУЧИВАЕМЫЙ ЖУРНАЛ ТЕЛЕМЕТРИИ ---------------- */
+    .log-panel {
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      width: 100%;
+      height: 158px;
+      padding: 10px 14px;
+      background-color: #0E1016;
+      border: 1px solid #232534;
+      border-radius: 10px;
+      gap: 5px;
+      overflow-y: auto;
+    }
+
+    .log-hdr-row {
+      display: flex;
+      flex-direction: row;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .log-row {
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+      padding: 4px 8px;
+      background-color: #151822;
+      border-radius: 5px;
+      gap: 10px;
+    }
+
+    .log-row > .log-tag {
+      font-size: 11px;
+      color: #818CF8;
+    }
+
+    .log-row > .log-tag.ok {
+      color: #34D399;
+    }
+
+    .log-row > .log-tag.sec {
+      color: #FB7185;
+    }
+
+    .log-msg {
+      font-size: 12px;
+      color: #CBD5E1;
+    }
+
+    .log-live {
+      font-size: 12px;
+      color: #FDE68A;
+    }
+
+    /* ======================== 3. ПОДВАЛ ======================== */
+    .footer-bar {
+      display: flex;
+      flex-direction: row;
+      justify-content: space-between;
+      align-items: center;
+      width: 100%;
+      padding: 8px 14px;
+      background-color: #111218;
+      border: 1px solid #232534;
+      border-radius: 8px;
+    }
+
+    .footer-left {
+      font-size: 11px;
+      color: #64748B;
+    }
+
+    .footer-status {
+      font-size: 12px;
+      color: #38BDF8;
+    }
+  </style>
+</head>
+<body>
+  <header id="top-bar" class="top-bar">
+    <div class="brand-box">
+      <h1>NimUI Native HTML5/CSS3 Desktop</h1>
+      <span class="brand-sub">Альтернатива Tauri &amp; Electron • Без Chromium, WebView2 и JS • Vulkan 1.1+ SDF</span>
+    </div>
+
+    <nav class="nav-row">
+      <button id="nav-tab-0" class="nav-btn active" data-click="nav-0">Обзор &amp; Формы</button>
+      <button id="nav-tab-1" class="nav-btn" data-click="nav-1">CSS3 Каскад</button>
+      <button id="nav-tab-2" class="nav-btn" data-click="nav-2">Vulkan SDF</button>
+      <button id="nav-tab-3" class="nav-btn" data-click="nav-3">Безопасность</button>
+    </nav>
+
+    <div class="header-badges">
+      <div id="header-mode" class="mode-pill" data-text="header-mode">Режим: Обзор &amp; Формы</div>
+      <div id="ram-badge" class="ram-pill" data-text="ram-badge">RAM: 2.4 MB • ORC 0-Leak</div>
+    </div>
+  </header>
+
+  <main class="workspace">
+    <aside class="sidebar">
+      <section class="side-card">
+        <h3 class="card-hdr">Сравнение с Tauri / Electron</h3>
+        <span class="card-sub">Оценка на типовом десктоп-окне</span>
+        <div class="cmp-row">
+          <span class="cmp-label">Память (RAM)</span>
+          <span class="cmp-nim">2.4 MB vs 85+ MB</span>
+        </div>
+        <div class="cmp-row">
+          <span class="cmp-label">Размер бинарника</span>
+          <span class="cmp-nim">0.9 MB vs 9+ MB</span>
+        </div>
+        <div class="cmp-row">
+          <span class="cmp-label">Раскладка 1M строк</span>
+          <span class="cmp-nim">55 µs vs 40+ ms</span>
+        </div>
+        <div class="cmp-row">
+          <span class="cmp-label">JS Runtime</span>
+          <span class="cmp-nim">0 B (Zero-JS)</span>
+        </div>
+        <div class="cmp-row">
+          <span class="cmp-label">Движок рендера</span>
+          <span class="cmp-other">Vulkan SDF / Direct GDI</span>
+        </div>
+      </section>
+
+      <section class="side-card grow-card">
+        <h3 class="card-hdr">Поддержка HTML5 / CSS3</h3>
+        <span class="card-sub">Нажмите строку для проверки события</span>
+        <ul class="cap-list">
+          <li id="cap-0" class="cap-item" data-click="inspect-css">
+            <span class="cap-name">Селекторы #id &gt; .cls &gt; tag</span>
+            <span class="cap-tag">CSS3 OK</span>
+          </li>
+          <li id="cap-1" class="cap-item" data-click="inspect-css">
+            <span class="cap-name">Комбинаторы .a .b и .a &gt; .b</span>
+            <span class="cap-tag">CSS3 OK</span>
+          </li>
+          <li id="cap-2" class="cap-item" data-click="inspect-css">
+            <span class="cap-name">Псевдоклассы :hover и :active</span>
+            <span class="cap-tag">CSS3 OK</span>
+          </li>
+          <li id="cap-3" class="cap-item" data-click="inspect-css">
+            <span class="cap-name">Flexbox row / col / gap / flex</span>
+            <span class="cap-tag">LAYOUT OK</span>
+          </li>
+          <li id="cap-4" class="cap-item" data-click="inspect-css">
+            <span class="cap-name">Цвета #hex, rgba(), named</span>
+            <span class="cap-tag">COLOR OK</span>
+          </li>
+          <li id="cap-5" class="cap-item" data-click="inspect-css">
+            <span class="cap-name">UTF-8 Кириллица &amp; &lt;entities&gt;</span>
+            <span class="cap-tag">UNICODE OK</span>
+          </li>
+          <li id="cap-6" class="cap-item" data-click="inspect-css">
+            <span class="cap-name">Атрибуты data-bind / data-click</span>
+            <span class="cap-tag">NIM DAG</span>
+          </li>
+        </ul>
+      </section>
+    </aside>
+
+    <section class="center-col">
+      <div class="kpi-row">
+        <div id="kpi-hero" class="kpi-card">
+          <span class="kpi-title">ПРОИЗВОДИТЕЛЬНОСТЬ КАДРА</span>
+          <span id="kpi-fps" class="kpi-val" data-text="kpi-fps">1 650 FPS (0.60 ms)</span>
+          <span class="kpi-foot indigo-txt">Vulkan 1.1+ Instanced SDF (64B)</span>
+        </div>
+        <div class="kpi-card">
+          <span class="kpi-title">АУДИТ ПАМЯТИ (--mm:orc)</span>
+          <span id="kpi-mem" class="kpi-val" data-text="kpi-mem">2.4 MB (0 утечек)</span>
+          <span class="kpi-foot">TrackingAllocator • Slab[UiNode]</span>
+        </div>
+        <div class="kpi-card">
+          <span class="kpi-title">ДЕРЕВО DOM &amp; ПРАВИЛА CSS3</span>
+          <span id="kpi-dom" class="kpi-val" data-text="kpi-dom">82 узла • 46 правил</span>
+          <span class="kpi-foot">Загружено из showcase.html</span>
+        </div>
+        <div class="kpi-card">
+          <span class="kpi-title">ПОЛИТИКА ZERO-JS</span>
+          <span id="kpi-sec" class="kpi-val" data-text="kpi-sec">ЗАЩИТА АКТИВНА</span>
+          <span class="kpi-foot">Фильтр &lt;script&gt;, on*, javascript:</span>
+        </div>
+      </div>
+
+      <div class="split-row">
+        <article class="main-card">
+          <h2 class="card-hdr">Реактивная HTML5 Форма (data-bind &lt;-&gt; Signal&lt;T&gt;)</h2>
+          <span class="card-sub">Ввод и кнопки обновляют Nim-состояние и интерфейс напрямую без JavaScript</span>
+          <form class="form-wrap">
+            <label class="field-lbl">Название приложения (data-bind="app-name")</label>
+            <input id="inp-app-name" class="form-input" data-bind="app-name" data-input="on-app-name" value="NimUI Tauri-Killer" placeholder="Введите имя..." />
+
+            <label class="field-lbl">Заголовок узла / окна (data-bind="win-title")</label>
+            <input id="inp-win-title" class="form-input" data-bind="win-title" data-input="on-win-title" value="Vulkan SDF Телеметрия" placeholder="Заголовок..." />
+
+            <label class="field-lbl">Шина IPC на базе Nim (data-bind="ipc-url")</label>
+            <input id="inp-ipc-channel" class="form-input" data-bind="ipc-url" data-input="on-ipc-url" value="ipc://corex/zero-alloc" placeholder="ipc://..." />
+
+            <div class="summary-card">
+              <span class="summary-hdr">Живая сводка из графа сигналов (Signal&lt;string&gt;):</span>
+              <span id="live-summary" class="summary-val" data-text="live-summary">NimUI Tauri-Killer • Vulkan SDF Телеметрия • ipc://corex/zero-alloc</span>
+            </div>
+          </form>
+
+          <div class="btn-row">
+            <button id="btn-preset-prod" class="btn primary" data-click="preset-prod">Профиль: Продакшн</button>
+            <button id="btn-preset-edge" class="btn emerald-btn" data-click="preset-edge">Профиль: Edge AI</button>
+            <button id="btn-boost" class="btn amber-btn" data-click="boost-load">+ Нагрузка</button>
+            <button id="btn-reset" class="btn" data-click="reset-state">Сброс</button>
+          </div>
+        </article>
+
+        <article class="main-card">
+          <h2 class="card-hdr">Матрица CSS3 Каскада и GPU SDF-примитивов</h2>
+          <span class="card-sub">RGBA-слои, border-radius (4px–14px), рамки 1px/2px, text-align и приоритет #id</span>
+
+          <div class="sdf-grid">
+            <div class="sdf-tile indigo-tile">
+              <strong class="tile-title">SDF Radius 4px</strong>
+              <span class="tile-sub">rgba(99,102,241,0.16) • 2px border</span>
+            </div>
+            <div class="sdf-tile emerald-tile">
+              <strong class="tile-title">SDF Radius 10px</strong>
+              <span class="tile-sub">rgba(16,185,129,0.16) • #10B981</span>
+            </div>
+          </div>
+
+          <div class="sdf-grid">
+            <div class="sdf-tile amber-tile">
+              <strong class="tile-title">SDF Radius 14px</strong>
+              <span class="tile-sub">rgba(245,158,11,0.16) • 1px amber</span>
+            </div>
+            <div class="sdf-tile rose-tile">
+              <strong class="tile-title">Named Rose Color</strong>
+              <span class="tile-sub">rgba(244,63,94,0.16) • border: rose</span>
+            </div>
+          </div>
+
+          <div class="align-demo-box">
+            <div class="align-center">text-align: center • Выравнивание по центру через Flexbox</div>
+            <div class="align-right">text-align: right • Правое выравнивание текста © 2026</div>
+          </div>
+
+          <div id="active-profile-pill" class="profile-pill" data-text="active-profile-pill">Активный профиль: Стандартный кластер • Нагрузка 1x</div>
+
+          <div class="cascade-note">Специфичность: #kpi-hero (10000) &gt; .btn.primary (200) &gt; .cap-list .cap-item:hover (200) &gt; tag (1)</div>
+        </article>
+      </div>
+
+      <div id="telemetry-log" class="log-panel">
+        <div class="log-hdr-row">
+          <h3 class="card-hdr">Прокручиваемый журнал событий (overflow-y: auto + Scissor Clip)</h3>
+          <span class="card-sub">Колесо мыши прокручивает контейнер прямо в HTML DOM</span>
+        </div>
+        <div class="log-row">
+          <span class="log-tag ok">[LIVE]</span>
+          <span id="log-latest" class="log-live" data-text="log-latest">Движок готов: нажмите кнопки профиля или вкладки навигации сверху</span>
+        </div>
+        <div class="log-row">
+          <span class="log-tag ok">[HTML5]</span>
+          <span class="log-msg">Парсер разобрал семантику header / nav / main / aside / section / article / form / ul / li / footer</span>
+        </div>
+        <div class="log-row">
+          <span class="log-tag">[CSS3]</span>
+          <span class="log-msg">Применены правила каскада, вложенные комбинаторы (.log-row &gt; .log-tag) и inline style</span>
+        </div>
+        <div class="log-row">
+          <span class="log-tag ok">[VULKAN]</span>
+          <span class="log-msg">Геометрия конвертирована в массив 64-байтных UiDrawInstance без единой промежуточной аллокации</span>
+        </div>
+        <div class="log-row">
+          <span class="log-tag sec">[ZERO-JS]</span>
+          <span class="log-msg">Изолированный режим подтверждён: код скриптов отсутствует на уровне парсера</span>
+        </div>
+        <div class="log-row">
+          <span class="log-tag">[UNICODE]</span>
+          <span class="log-msg">Атлас GDI/Fallback отрисовал кириллицу, типографику (• ©) и ASCII с субпиксельным сглаживанием</span>
+        </div>
+        <div class="log-row">
+          <span class="log-tag">[SLAB]</span>
+          <span class="log-msg">Дерево UI размещено в плоском пуле Slab[UiNode] + SmallVec без утечек при --mm:orc --threads:on</span>
+        </div>
+        <div class="log-row">
+          <span class="log-tag">[IPC]</span>
+          <span class="log-msg">Прямое связывание data-click / data-bind / data-input подключено к Nim-сигналам за O(1)</span>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer-bar">
+    <span class="footer-left">Файл: apps/html_desktop/ui/showcase.html • Совместим с браузерами (HTML5/CSS3) и нативным рендером NimUI</span>
+    <span id="footer-status" class="footer-status" data-text="footer-status">Статус: Ожидание действий (Pure-Nim Zero-JS Reactive Mode)</span>
+  </footer>
+</body>
+</html>

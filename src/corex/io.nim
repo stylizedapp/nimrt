@@ -7,14 +7,15 @@
 ## - 64KB `BufferedWriter` with auto-flush on buffer saturation and `=destroy`.
 ## - Monadic error handling using `Result[T, IOError]` and `?` operator.
 
-import std/options
 import std/widestrs
 when defined(posix):
   import std/posix
 
+import ./adt
 import ./result
 import ./allocators
 import ./memory
+export adt
 
 # =============================================================================
 # Platform C Bindings & OS Handle Types
@@ -361,10 +362,12 @@ proc `=destroy`*(w: var BufferedWriter) =
     w.buffer = nil
     w.capacity = 0
     w.tail = 0
+  `=destroy`(w.file)
 
 proc `=copy`*(dest: var BufferedWriter, src: BufferedWriter) {.error: "BufferedWriter cannot be copied; use move semantics".}
 
 proc `=wasMoved`*(w: var BufferedWriter) {.inline.} =
+  `=wasMoved`(w.file)
   w.buffer = nil
   w.capacity = 0
   w.tail = 0
@@ -489,10 +492,12 @@ proc `=destroy`*(r: var BufferedReader) =
     r.capacity = 0
     r.head = 0
     r.tail = 0
+  `=destroy`(r.file)
 
 proc `=copy`*(dest: var BufferedReader, src: BufferedReader) {.error: "BufferedReader cannot be copied; use move semantics".}
 
 proc `=wasMoved`*(r: var BufferedReader) {.inline.} =
+  `=wasMoved`(r.file)
   r.buffer = nil
   r.capacity = 0
   r.head = 0

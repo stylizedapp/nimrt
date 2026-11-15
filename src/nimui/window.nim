@@ -7,8 +7,9 @@
 ## - 0% CPU/GPU idle wait via MsgWaitForMultipleObjectsEx / WaitMessage.
 ## - Live RAM working set query via psapi GetProcessMemoryInfo.
 
-import std/unicode
 import std/strformat
+import ../corex/unicode
+export unicode
 
 when defined(windows):
   import std/widestrs
@@ -94,6 +95,8 @@ when defined(windows):
     WM_MOUSEMOVE*: uint32 = 0x0200
     WM_LBUTTONDOWN*: uint32 = 0x0201
     WM_LBUTTONUP*: uint32 = 0x0202
+    WM_RBUTTONDOWN*: uint32 = 0x0204
+    WM_RBUTTONUP*: uint32 = 0x0205
     WM_MOUSEWHEEL*: uint32 = 0x020A
     WM_DPICHANGED*: uint32 = 0x02E0
 
@@ -101,7 +104,11 @@ when defined(windows):
     VK_BACK*: uint32 = 0x08
     VK_TAB*: uint32 = 0x09
     VK_RETURN*: uint32 = 0x0D
+    VK_SHIFT*: uint32 = 0x10
+    VK_CONTROL*: uint32 = 0x11
     VK_ESCAPE*: uint32 = 0x1B
+    VK_END*: uint32 = 0x23
+    VK_HOME*: uint32 = 0x24
     VK_LEFT*: uint32 = 0x25
     VK_UP*: uint32 = 0x26
     VK_RIGHT*: uint32 = 0x27
@@ -109,6 +116,7 @@ when defined(windows):
     VK_DELETE*: uint32 = 0x2E
 
   proc DefWindowProcW(hWnd: HWND, Msg: uint32, wParam: WPARAM, lParam: LPARAM): LRESULT {.stdcall, dynlib: "user32", importc: "DefWindowProcW", raises: [].}
+  proc GetKeyState(nVirtKey: int32): int16 {.stdcall, dynlib: "user32", importc: "GetKeyState", raises: [].}
   proc RegisterClassExW(lpwcx: ptr WNDCLASSEXW): ATOM {.stdcall, dynlib: "user32", importc: "RegisterClassExW", raises: [].}
   proc CreateWindowExW(
     dwExStyle: uint32, lpClassName: WideCString, lpWindowName: WideCString,
@@ -132,6 +140,7 @@ when defined(windows):
   proc GetModuleHandleW(lpModuleName: pointer): HINSTANCE {.stdcall, dynlib: "kernel32", importc: "GetModuleHandleW", raises: [].}
   proc SetProcessDpiAwarenessContext(value: pointer): BOOL {.stdcall, dynlib: "user32", importc: "SetProcessDpiAwarenessContext", raises: [].}
   proc SetProcessDPIAware(): BOOL {.stdcall, dynlib: "user32", importc: "SetProcessDPIAware", raises: [].}
+  proc AdjustWindowRectEx(lpRect: ptr RECT, dwStyle: uint32, bMenu: BOOL, dwExStyle: uint32): BOOL {.stdcall, dynlib: "user32", importc: "AdjustWindowRectEx", raises: [].}
 
   # PSAPI
   proc GetProcessMemoryInfo(hProcess: pointer, ppsmps: ptr PROCESS_MEMORY_COUNTERS, cb: uint32): BOOL {.stdcall, dynlib: "psapi", importc: "GetProcessMemoryInfo", raises: [].}
@@ -142,6 +151,8 @@ type
     ueMouseMove
     ueMouseDown
     ueMouseUp
+    ueRightMouseDown
+    ueRightMouseUp
     ueMouseWheel
     ueChar
     ueKeyDown
@@ -154,6 +165,8 @@ type
     wheelDelta*: float32
     charVal*: Rune
     keyCode*: uint32
+    ctrlDown*: bool
+    shiftDown*: bool
     newWidth*: int32
     newHeight*: int32
 
@@ -192,7 +205,9 @@ when defined(windows):
       of WM_LBUTTONDOWN:
         let x = float32(cast[int16](lParam and 0xFFFF))
         let y = float32(cast[int16]((lParam shr 16) and 0xFFFF))
-        pWin.pendingEvents.add(UiEvent(kind: ueMouseDown, mouseX: x, mouseY: y))
+        let shift = GetKeyState(0x10'i32) < 0
+        let ctrl = GetKeyState(0x11'i32) < 0
+        pWin.pendingEvents.add(UiEvent(kind: ueMouseDown, mouseX: x, mouseY: y, ctrlDown: ctrl, shiftDown: shift))
         return 0
 
       of WM_LBUTTONUP:
@@ -201,8 +216,20 @@ when defined(windows):
         pWin.pendingEvents.add(UiEvent(kind: ueMouseUp, mouseX: x, mouseY: y))
         return 0
 
+      of WM_RBUTTONDOWN:
+        let x = float32(cast[int16](lParam and 0xFFFF))
+        let y = float32(cast[int16]((lParam shr 16) and 0xFFFF))
+        pWin.pendingEvents.add(UiEvent(kind: ueRightMouseDown, mouseX: x, mouseY: y))
+        return 0
+
+      of WM_RBUTTONUP:
+        let x = float32(cast[int16](lParam and 0xFFFF))
+        let y = float32(cast[int16]((lParam shr 16) and 0xFFFF))
+        pWin.pendingEvents.add(UiEvent(kind: ueRightMouseUp, mouseX: x, mouseY: y))
+        return 0
+
       of WM_MOUSEWHEEL:
-        let delta = float32(cast[int16]((wParam shr 16) and 0xFFFF))
+        let delta = float32(cast[int16]((wParam shr 16) and 0xFFFF)) / 120.0f
         pWin.pendingEvents.add(UiEvent(kind: ueMouseWheel, wheelDelta: delta))
         return 0
 
@@ -213,7 +240,9 @@ when defined(windows):
 
       of WM_KEYDOWN:
         let code = uint32(wParam)
-        pWin.pendingEvents.add(UiEvent(kind: ueKeyDown, keyCode: code))
+        let shift = GetKeyState(0x10'i32) < 0
+        let ctrl = GetKeyState(0x11'i32) < 0
+        pWin.pendingEvents.add(UiEvent(kind: ueKeyDown, keyCode: code, ctrlDown: ctrl, shiftDown: shift))
         return 0
 
       of WM_CLOSE:
@@ -266,11 +295,17 @@ proc initNativeWindow*(title: string, width, height: int32): NativeWindow {.rais
     )
     discard RegisterClassExW(addr wc)
 
+    let winStyle = WS_OVERLAPPEDWINDOW or WS_VISIBLE
+    var wr = RECT(left: 0, top: 0, right: width, bottom: height)
+    discard AdjustWindowRectEx(addr wr, winStyle, 0, 0)
+    let winW = wr.right - wr.left
+    let winH = wr.bottom - wr.top
+
     let wTitle = newWideCString(title)
     let hwnd = CreateWindowExW(
       0, className, wTitle,
-      WS_OVERLAPPEDWINDOW or WS_VISIBLE,
-      CW_USEDEFAULT, CW_USEDEFAULT, width, height,
+      winStyle,
+      CW_USEDEFAULT, CW_USEDEFAULT, winW, winH,
       nil, nil, hInstance, nil
     )
 

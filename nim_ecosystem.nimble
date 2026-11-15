@@ -37,6 +37,29 @@ task bench, "Run the core performance benchmark suite":
 task showcase, "Run the ultra showcase comparison":
   exec "nim c -d:danger --opt:speed --mm:orc --threads:on -r benchmarks/nim_ultra_showcase.nim"
 
+task showcase_html, "Generate Nim vs Rust HTML comparison report in benchmarks/":
+  exec "python benchmarks/generate_showcase.py"
+
+task test_ui, "Run NimUI layout, widget, and Zero-JS HTML/CSS tests":
+  exec "nim c -r tests/test_nimui_layout.nim"
+  exec "nim c -r tests/test_nimui_widgets.nim"
+  exec "nim c -r tests/test_nimui_html_css.nim"
+
+task test_showcase, "Run automated headless verification of all 4 showcase apps":
+  exec "nim c -r tests/test_showcase_apps.nim"
+
+task html_desktop, "Run standalone HTML5/CSS3 Desktop Renderer (Tauri alternative)":
+  exec "nim c -r apps/html_desktop/src/main.nim"
+
+task studio, "Run NimUI HTML5/CSS3 Zero-JS Studio":
+  exec "nim c -r apps/html_css_studio/src/main.nim"
+
+task gallery, "Run NimUI Component, SDF & Unicode Gallery":
+  exec "nim c -r apps/widget_gallery/src/main.nim"
+
+task demo, "Run Singularity Lab Relativistic Kerr Black Hole Demo":
+  exec "nim c -r apps/nimui_demo/src/main.nim"
+
 task test_wiztree, "Run WizTree engine verification test suite":
   exec "nim c -r tests/test_wiztree.nim"
 

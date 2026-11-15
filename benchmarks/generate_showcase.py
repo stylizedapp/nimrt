@@ -250,7 +250,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 """
 
 def main():
-    output_path = Path("showcase.html")
+    output_path = Path(__file__).parent / "showcase.html"
     output_path.write_text(HTML_TEMPLATE, encoding="utf-8")
     print(f"[OK] Витрина успешно сгенерирована: {output_path.resolve()}")
 

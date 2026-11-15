@@ -55,6 +55,10 @@ proc bindInput*(
     if tree != nil and tree.nodes.contains(id):
       if tree.nodes[id].text != val:
         tree.nodes[id].text = val
+        let rLen = runeLen(val)
+        tree.nodes[id].caretPos = clamp(tree.nodes[id].caretPos, 0, rLen)
+        tree.nodes[id].selStart = clamp(tree.nodes[id].selStart, 0, rLen)
+        tree.nodes[id].selEnd = clamp(tree.nodes[id].selEnd, 0, rLen)
         tree.isLayoutDirty = true
         tree.isDirty = true
   )

@@ -15,7 +15,7 @@ layout(location = 6) in uint inBorderColor;
 layout(location = 7) in float inCornerRadius;
 layout(location = 8) in float inBorderWidth;
 layout(location = 9) in float inSoftness;
-layout(location = 10) in vec4 inClipRect;
+layout(location = 10) in uvec4 inClipRect;
 
 layout(location = 0) out vec2 outLocalPos;
 layout(location = 1) out vec2 outHalfSize;
@@ -50,6 +50,6 @@ void main() {
     outRadius = inCornerRadius;
     outBorderWidth = inBorderWidth;
     outSoftness = max(inSoftness, 1.0);
-    outClipRect = inClipRect;
+    outClipRect = vec4(float(inClipRect.x), float(inClipRect.y), float(inClipRect.z), float(inClipRect.w));
     outIsText = (inUvSize.x > 0.0) ? 1.0 : 0.0;
 }

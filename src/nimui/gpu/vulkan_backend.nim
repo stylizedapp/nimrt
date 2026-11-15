@@ -16,7 +16,7 @@ import corex/allocators
 
 const
   MaxFramesInFlight* = 2
-  MaxInstancesPerFrame* = 65536 # 4MB per frame, supports 65K UI primitives per frame
+  MaxInstancesPerFrame* = 16384 # 1MB per frame (2MB total ring buffer), supports 16K UI primitives per frame
 
 type
   UiDrawInstance* {.packed.} = object

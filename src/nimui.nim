@@ -12,6 +12,11 @@ import nimui/gpu/font_atlas
 import nimui/window
 import nimui/layout
 import nimui/dsl
+import nimui/controls
+import nimui/clipboard
+import nimui/multiline
+import nimui/rasterizer
+import nimui/html_css
 import corex/signals
 import corex/result
 import corex/slab
@@ -22,6 +27,11 @@ export font_atlas
 export window
 export layout
 export dsl
+export controls
+export clipboard
+export multiline
+export rasterizer
+export html_css
 export signals
 export result
 export slab

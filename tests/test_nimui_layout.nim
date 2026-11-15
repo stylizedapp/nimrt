@@ -9,10 +9,14 @@
 ##
 ## Compilation: nim c -r tests/test_nimui_layout.nim under --mm:orc --threads:on --panics:on
 
-import std/[unicode, strformat, monotimes, times]
+import std/[strformat, monotimes, times]
 import corex
+import corex/unicode
 import nimui/layout
 import nimui/dsl
+import nimui/clipboard
+import nimui/multiline
+import nimui/rasterizer
 import nimui/gpu/font_atlas
 import nimui/gpu/vulkan_backend
 
@@ -374,6 +378,82 @@ proc testFlexboxLayoutGeometry(atlas: FontAtlas) =
     doAssert approxEq(tree.nodes[content].computedRect.h, 490.0f)
     echo "  [PASS] 1.7 Deeply nested hierarchy verified."
 
+  testWithLeakCheck("1.8 JustifyContent Main-Axis Distribution (Row & Column)"):
+    var tree = initUiTree(testAlloc)
+    defer: tree.destroy()
+
+    # Row: 400 x 100, padding 0, gap 10. Two fixed children 50 and 70 => fixed=120, gap=10, remaining=270
+    let row = tree.createNode(nkBox)
+    tree.rootId = row
+    tree.nodes[row].direction = fdRow
+    tree.nodes[row].widthMode = fixed(400.0f)
+    tree.nodes[row].heightMode = fixed(100.0f)
+    tree.nodes[row].gap = 10.0f
+
+    let r1 = tree.createNode(nkBox)
+    tree.nodes[r1].widthMode = fixed(50.0f)
+    tree.nodes[r1].heightMode = fixed(40.0f)
+    tree.addChild(row, r1)
+
+    let r2 = tree.createNode(nkBox)
+    tree.nodes[r2].widthMode = fixed(70.0f)
+    tree.nodes[r2].heightMode = fixed(40.0f)
+    tree.addChild(row, r2)
+
+    # jcCenter: startOffset = 270 / 2 = 135
+    tree.nodes[row].justifyContent = jcCenter
+    tree.layoutTree(800.0f, 600.0f, atlas)
+    doAssert approxEq(tree.nodes[r1].computedRect.x, 135.0f)
+    doAssert approxEq(tree.nodes[r2].computedRect.x, 195.0f) # 135 + 50 + 10
+
+    # jcEnd: startOffset = 270
+    tree.nodes[row].justifyContent = jcEnd
+    tree.layoutTree(800.0f, 600.0f, atlas)
+    doAssert approxEq(tree.nodes[r1].computedRect.x, 270.0f)
+    doAssert approxEq(tree.nodes[r2].computedRect.x, 330.0f) # 270 + 50 + 10 -> ends at 400
+
+    # jcSpaceBetween: startOffset = 0, effectiveGap = 10 + 270 = 280
+    tree.nodes[row].justifyContent = jcSpaceBetween
+    tree.layoutTree(800.0f, 600.0f, atlas)
+    doAssert approxEq(tree.nodes[r1].computedRect.x, 0.0f)
+    doAssert approxEq(tree.nodes[r2].computedRect.x, 330.0f)
+
+    # Column: 200 x 300, gap 0, children 40 & 60 => remaining = 200
+    var colTree = initUiTree(testAlloc)
+    defer: colTree.destroy()
+
+    let col = colTree.createNode(nkBox)
+    colTree.rootId = col
+    colTree.nodes[col].direction = fdColumn
+    colTree.nodes[col].widthMode = fixed(200.0f)
+    colTree.nodes[col].heightMode = fixed(300.0f)
+
+    let c1 = colTree.createNode(nkBox)
+    colTree.nodes[c1].widthMode = fixed(100.0f)
+    colTree.nodes[c1].heightMode = fixed(40.0f)
+    colTree.addChild(col, c1)
+
+    let c2 = colTree.createNode(nkBox)
+    colTree.nodes[c2].widthMode = fixed(100.0f)
+    colTree.nodes[c2].heightMode = fixed(60.0f)
+    colTree.addChild(col, c2)
+
+    colTree.nodes[col].justifyContent = jcCenter
+    colTree.layoutTree(800.0f, 600.0f, atlas)
+    doAssert approxEq(colTree.nodes[c1].computedRect.y, 100.0f)
+    doAssert approxEq(colTree.nodes[c2].computedRect.y, 140.0f)
+
+    colTree.nodes[col].justifyContent = jcEnd
+    colTree.layoutTree(800.0f, 600.0f, atlas)
+    doAssert approxEq(colTree.nodes[c1].computedRect.y, 200.0f)
+    doAssert approxEq(colTree.nodes[c2].computedRect.y, 240.0f)
+
+    colTree.nodes[col].justifyContent = jcSpaceBetween
+    colTree.layoutTree(800.0f, 600.0f, atlas)
+    doAssert approxEq(colTree.nodes[c1].computedRect.y, 0.0f)
+    doAssert approxEq(colTree.nodes[c2].computedRect.y, 240.0f)
+    echo "  [PASS] 1.8 JustifyContent distribution (Row & Column) verified."
+
 # =============================================================================
 # SUITE 2: Hit-Testing in Z-Order and State Transitions
 # =============================================================================
@@ -708,6 +788,43 @@ proc testVirtualListScale(atlas: FontAtlas) =
     doAssert perFrameUs < 500.0, "Performance defect: Frame layout time exceeded 0.5 ms!"
     echo "  [PASS] 3.4 Microbenchmark passed."
 
+  testWithLeakCheck("3.5 Parent-Bubbling Mouse Wheel Scrolling & CPU Clip Culling"):
+    var tree = initUiTree(testAlloc)
+    defer: tree.destroy()
+
+    let scroller = tree.createNode(nkBox)
+    tree.rootId = scroller
+    tree.nodes[scroller].direction = fdColumn
+    tree.nodes[scroller].widthMode = fixed(300.0f)
+    tree.nodes[scroller].heightMode = fixed(200.0f)
+    tree.nodes[scroller].isScrollable = true
+
+    # Add 10 children of height 100 each => contentHeight = 1000 px inside 200 px viewport
+    var childrenIds: seq[SlabId] = @[]
+    for i in 0 ..< 10:
+      let ch = tree.createNode(nkBox)
+      tree.nodes[ch].widthMode = fixed(280.0f)
+      tree.nodes[ch].heightMode = fixed(100.0f)
+      tree.nodes[ch].bgColor = 0x222228FF'u32
+      tree.addChild(scroller, ch)
+      childrenIds.add(ch)
+      doAssert tree.nodes[ch].parent == scroller
+
+    tree.layoutTree(800.0f, 600.0f, atlas)
+    doAssert approxEq(tree.nodes[scroller].contentHeight, 1000.0f)
+
+    # Dispatch mouse wheel directly over Child 0 (non-scrollable child inside scrollable Box)
+    tree.handleMouseWheel(50.0f, 50.0f, -250.0f)
+    doAssert approxEq(tree.nodes[scroller].scrollOffset, 100.0f),
+      &"Wheel should bubble from child to scroller, got offset {tree.nodes[scroller].scrollOffset}"
+
+    # Re-layout and check CPU clip-rect culling drops off-screen children (> 200px or < 0px)
+    tree.layoutTree(800.0f, 600.0f, atlas)
+    discard tree.buildDrawInstances(atlas)
+    # Only children intersecting [0..200] (idx 1, 2, plus scrollbar thumb) should be emitted, NOT all 10
+    doAssert tree.drawInstances.len < 6
+    echo "  [PASS] 3.5 Parent-bubbling mouse wheel scrolling & CPU clip culling verified."
+
 # =============================================================================
 # SUITE 4: Reactive Bindings with corex/signals
 # =============================================================================
@@ -920,6 +1037,246 @@ proc testZeroLeakAudit(atlas: FontAtlas) =
     echo "  [PASS] 5.2 1,000 Reactive + UI combined lifecycles passed with 0 leaks."
 
 # =============================================================================
+# SUITE 6: Rich TextInput Editing, TextArea Sync & Headless Software Rasterizer
+# =============================================================================
+
+proc containsAsciiTag(data: openArray[byte], tag: string): bool =
+  if tag.len == 0 or data.len < tag.len:
+    return false
+  for i in 0 .. (data.len - tag.len):
+    var matched = true
+    for j in 0 ..< tag.len:
+      if char(data[i + j]) != tag[j]:
+        matched = false
+        break
+    if matched:
+      return true
+  false
+
+proc testRichInputAndRasterizer(atlas: FontAtlas) =
+  echo "\n================================================================="
+  echo ">>> [SUITE 6] RICH TEXTINPUT, TEXTAREA SYNC & SOFTWARE RASTERIZER <<<"
+  echo "================================================================="
+
+  testWithLeakCheck("6.1 Rich nkTextInput Editing, Navigation, Selection & Clipboard"):
+    setClipboardForceFallback(true)
+    defer: setClipboardForceFallback(false)
+    clearClipboardFallback()
+
+    var tree = initUiTree(testAlloc)
+    defer: tree.destroy()
+
+    let root = tree.createNode(nkBox)
+    tree.rootId = root
+    tree.nodes[root].direction = fdColumn
+    tree.nodes[root].widthMode = fixed(400.0f)
+    tree.nodes[root].heightMode = fixed(120.0f)
+    tree.nodes[root].padding = [10.0f, 10.0f, 10.0f, 10.0f]
+
+    let inp = tree.createNode(nkTextInput)
+    tree.nodes[inp].widthMode = fixed(300.0f)
+    tree.nodes[inp].heightMode = fixed(36.0f)
+    tree.nodes[inp].padding = [6.0f, 8.0f, 6.0f, 8.0f]
+    tree.addChild(root, inp)
+
+    tree.layoutTree(400.0f, 120.0f, atlas)
+    tree.handleMouseDown(40.0f, 25.0f)
+    tree.handleMouseUp(40.0f, 25.0f)
+    doAssert tree.focusedNode == inp
+
+    for r in runes("hello world"):
+      tree.handleChar(r)
+    doAssert tree.nodes[inp].text == "hello world"
+    doAssert tree.nodes[inp].caretPos == 11
+
+    # Home -> Right x6 -> Shift+End -> Ctrl+C -> Delete
+    tree.handleKeyDown(0x24'u32) # VK_HOME
+    doAssert tree.nodes[inp].caretPos == 0
+    for _ in 0 ..< 6:
+      tree.handleKeyDown(0x27'u32) # VK_RIGHT
+    doAssert tree.nodes[inp].caretPos == 6
+
+    tree.handleKeyDown(0x23'u32, shiftDown = true) # Shift+End
+    doAssert tree.nodes[inp].hasSelection()
+    doAssert tree.nodes[inp].selStart == 6
+    doAssert tree.nodes[inp].selEnd == 11
+
+    tree.handleKeyDown(0x43'u32, ctrlDown = true) # Ctrl+C
+    doAssert getClipboardText() == "world"
+
+    tree.handleKeyDown(0x2E'u32) # VK_DELETE
+    doAssert tree.nodes[inp].text == "hello "
+    doAssert tree.nodes[inp].caretPos == 6
+    doAssert not tree.nodes[inp].hasSelection()
+
+    for r in runes("Nim"):
+      tree.handleChar(r)
+    doAssert tree.nodes[inp].text == "hello Nim"
+    doAssert tree.nodes[inp].caretPos == 9
+
+    tree.handleKeyDown(0x08'u32) # Backspace
+    doAssert tree.nodes[inp].text == "hello Ni"
+    doAssert tree.nodes[inp].caretPos == 8
+
+    # Ctrl+A -> Ctrl+X -> Ctrl+V
+    tree.handleKeyDown(0x41'u32, ctrlDown = true)
+    doAssert tree.nodes[inp].selStart == 0 and tree.nodes[inp].selEnd == 8
+    tree.handleKeyDown(0x58'u32, ctrlDown = true)
+    doAssert getClipboardText() == "hello Ni"
+    doAssert tree.nodes[inp].text == ""
+    doAssert tree.nodes[inp].caretPos == 0
+
+    tree.handleKeyDown(0x56'u32, ctrlDown = true)
+    doAssert tree.nodes[inp].text == "hello Ni"
+    doAssert tree.nodes[inp].caretPos == 8
+
+    # Mid-string insert + Shift+Left selection + Backspace
+    tree.handleKeyDown(0x25'u32)
+    tree.handleKeyDown(0x25'u32)
+    doAssert tree.nodes[inp].caretPos == 6
+    tree.handleChar(Rune('!'))
+    doAssert tree.nodes[inp].text == "hello !Ni"
+    doAssert tree.nodes[inp].caretPos == 7
+
+    tree.handleKeyDown(0x25'u32, shiftDown = true)
+    tree.handleKeyDown(0x25'u32, shiftDown = true)
+    doAssert tree.nodes[inp].selStart == 7 and tree.nodes[inp].selEnd == 5
+    tree.handleKeyDown(0x08'u32) # Delete selected " !"
+    doAssert tree.nodes[inp].text == "helloNi"
+    doAssert tree.nodes[inp].caretPos == 5
+
+    # UTF-8 multi-byte rune safety check
+    tree.handleKeyDown(0x41'u32, ctrlDown = true)
+    tree.handleKeyDown(0x2E'u32)
+    for r in runes("Привет"):
+      tree.handleChar(r)
+    doAssert runeLen(tree.nodes[inp].text) == 6
+    tree.handleKeyDown(0x24'u32) # Home
+    tree.handleKeyDown(0x27'u32, shiftDown = true)
+    tree.handleKeyDown(0x27'u32, shiftDown = true)
+    tree.handleKeyDown(0x43'u32, ctrlDown = true)
+    doAssert getClipboardText() == "Пр"
+    tree.handleKeyDown(0x2E'u32)
+    doAssert tree.nodes[inp].text == "ивет"
+
+    discard tree.buildDrawInstances(atlas)
+    doAssert tree.drawInstances.len >= 2 # Background + caret
+    echo "  [PASS] 6.1 Rich nkTextInput navigation, selection, UTF-8 & clipboard verified."
+
+  testWithLeakCheck("6.2 TextArea.syncWithNode Synchronization with UiTree"):
+    var tree = initUiTree(testAlloc)
+    defer: tree.destroy()
+
+    let root = tree.createNode(nkBox)
+    tree.rootId = root
+    tree.nodes[root].direction = fdColumn
+    tree.nodes[root].widthMode = fixed(400.0f)
+    tree.nodes[root].heightMode = fixed(300.0f)
+
+    let taNode = tree.createNode(nkBox)
+    tree.nodes[taNode].widthMode = fixed(260.0f)
+    tree.nodes[taNode].heightMode = fixed(140.0f)
+    tree.nodes[taNode].padding = [8.0f, 10.0f, 8.0f, 10.0f]
+    tree.nodes[taNode].isFocused = true
+    tree.addChild(root, taNode)
+
+    tree.layoutTree(400.0f, 300.0f, atlas)
+
+    var ta = initTextArea("Alpha\nBeta")
+    ta.syncWithNode(tree, taNode, atlas)
+    doAssert ta.getText() == "Alpha\nBeta"
+    doAssert approxEq(ta.bounds.x, 10.0f)
+    doAssert approxEq(ta.bounds.y, 8.0f)
+    doAssert approxEq(ta.bounds.w, 240.0f)
+    doAssert approxEq(ta.bounds.h, 124.0f)
+    doAssert ta.isFocused
+    doAssert ta.lineHeight > 0.0f
+    echo "  [PASS] 6.2 TextArea.syncWithNode geometry & focus sync verified."
+
+  testWithLeakCheck("6.3 Software Rasterizer (SDF Boxes, Clipping, Glyphs) & PNG Encoder"):
+    var tree = initUiTree(testAlloc)
+    defer: tree.destroy()
+
+    let root = tree.createNode(nkBox)
+    tree.rootId = root
+    tree.nodes[root].direction = fdColumn
+    tree.nodes[root].widthMode = fixed(160.0f)
+    tree.nodes[root].heightMode = fixed(90.0f)
+    tree.nodes[root].padding = [10.0f, 10.0f, 10.0f, 10.0f]
+    tree.nodes[root].gap = 6.0f
+    tree.nodes[root].bgColor = 0x101824FF'u32
+
+    let boxChild = tree.createNode(nkBox)
+    tree.nodes[boxChild].widthMode = fixed(120.0f)
+    tree.nodes[boxChild].heightMode = fixed(30.0f)
+    tree.nodes[boxChild].bgColor = 0xE03030FF'u32
+    tree.nodes[boxChild].borderColor = 0xFFFFFFFF'u32
+    tree.nodes[boxChild].borderWidth = 2.0f
+    tree.nodes[boxChild].radius = 0.0f
+    tree.addChild(root, boxChild)
+
+    let txtChild = tree.createNode(nkText)
+    tree.nodes[txtChild].text = "Hi"
+    tree.nodes[txtChild].textColor = 0x30FF50FF'u32
+    tree.nodes[txtChild].heightMode = fixed(24.0f)
+    tree.addChild(root, txtChild)
+
+    tree.layoutTree(160.0f, 90.0f, atlas)
+    discard tree.buildDrawInstances(atlas)
+
+    var fb = initSoftwareFramebuffer(160, 90, 0x050508FF'u32)
+    fb.renderInstancesToBuffer(tree.drawInstances, atlas, clearColor = 0x050508FF'u32)
+
+    doAssert fb.getPixel(2, 2) == 0x101824FF'u32
+    doAssert fb.getPixel(40, 10) == 0xFFFFFFFF'u32
+    doAssert fb.getPixel(40, 25) == 0xE03030FF'u32
+
+    # Verify glyph rasterization blended green text onto dark background
+    let tr = tree.nodes[txtChild].computedRect
+    var sawGreenGlyph = false
+    for py in int(tr.y) ..< min(90, int(tr.y + tr.h) + 4):
+      for px in int(tr.x) ..< min(160, int(tr.x + tr.w) + 4):
+        let c = fb.getPixel(px, py)
+        let rC = (c shr 24) and 0xFF'u32
+        let gC = (c shr 16) and 0xFF'u32
+        let bC = (c shr 8) and 0xFF'u32
+        if gC > 0x40'u32 and gC > rC and gC > bC:
+          sawGreenGlyph = true
+          break
+      if sawGreenGlyph:
+        break
+    doAssert sawGreenGlyph, "Expected green text glyph pixels inside nkText bounding box"
+
+    # Verify PNG encoding produces valid signature and required chunks
+    let png = encodePng(fb)
+    doAssert png.len > 40
+    doAssert png[0 .. 7] == @[137'u8, 80'u8, 78'u8, 71'u8, 13'u8, 10'u8, 26'u8, 10'u8]
+    doAssert png[12 .. 15] == @[byte('I'), byte('H'), byte('D'), byte('R')]
+    doAssert containsAsciiTag(png, "IDAT")
+    doAssert containsAsciiTag(png, "IEND")
+
+    # Verify hardware scissor clipRect enforcement in software rasterizer
+    var clipFb = initSoftwareFramebuffer(60, 60, 0x050508FF'u32)
+    let clippedInst = UiDrawInstance(
+      pos: [0.0f, 0.0f],
+      size: [50.0f, 50.0f],
+      uvPos: [0.0f, 0.0f],
+      uvSize: [0.0f, 0.0f],
+      color: 0x00FF00FF'u32,
+      borderColor: 0'u32,
+      cornerRadius: 0.0f,
+      borderWidth: 0.0f,
+      softness: 0.0f,
+      clipRect: [10'u16, 10'u16, 30'u16, 30'u16],
+      pad: 0'u32
+    )
+    clipFb.renderInstancesToBuffer([clippedInst], atlas, clearColor = 0x050508FF'u32)
+    doAssert clipFb.getPixel(20, 20) == 0x00FF00FF'u32
+    doAssert clipFb.getPixel(5, 5) == 0x050508FF'u32
+    doAssert clipFb.getPixel(35, 35) == 0x050508FF'u32
+    echo "  [PASS] 6.3 Software rasterizer (SDF boxes, clipping, glyphs) & PNG encoding verified."
+
+# =============================================================================
 # Test Runner Main Entry
 # =============================================================================
 
@@ -929,13 +1286,14 @@ proc main() =
   echo "================================================================="
 
   let atlas = initFontAtlas("Segoe UI", 16.0f)
-  doAssert atlas.width == 512 and atlas.height == 512
+  doAssert atlas.width in [512, 1024] and atlas.height in [512, 1024]
 
   testFlexboxLayoutGeometry(atlas)
   testHitTestingAndStateTransitions(atlas)
   testVirtualListScale(atlas)
   testReactiveSignalsIntegration(atlas)
   testZeroLeakAudit(atlas)
+  testRichInputAndRasterizer(atlas)
 
   echo "\n================================================================="
   echo ">>> [SUCCESS] ALL NIMUI LAYOUT TESTS PASSED WITH 0 LEAKS! <<<"

@@ -1,5 +1,9 @@
 # Nim compiler caches and binary artifacts
 nimcache/
+htmldocs/
+bin/
+build/
+dist/
 *.exe
 *.dll
 *.so
@@ -11,12 +15,15 @@ nimcache/
 *.pdb
 *.idb
 
-# Temporary and log files
+# Temporary, profiler and log files
 *.tmp
 *.log
 *.swp
 *~
 temp_*/
+nimui_profile.txt
+**/nimui_profile.txt
+*_profile.txt
 
 # IDE and editor configurations
 .vscode/
@@ -35,5 +42,6 @@ Desktop.ini
 # Tool binaries
 tools/glslang/
 
-# Generated image outputs
+# Generated screenshots and image outputs
 *.png
+**/screenshots/

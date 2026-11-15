@@ -23,14 +23,25 @@ float sdRoundedBox(vec2 p, vec2 b, float r) {
 void main() {
     vec2 screenPixel = gl_FragCoord.xy;
     if (inClipRect.z > inClipRect.x && inClipRect.w > inClipRect.y) {
-        if (screenPixel.x < inClipRect.x || screenPixel.x > inClipRect.z ||
-            screenPixel.y < inClipRect.y || screenPixel.y > inClipRect.w) {
+        vec2 clipMin = inClipRect.xy;
+        vec2 clipMax = inClipRect.zw;
+        if (inIsText > 0.5) {
+            clipMin -= vec2(2.0);
+            clipMax += vec2(2.0);
+        }
+        if (screenPixel.x < clipMin.x || screenPixel.x > clipMax.x ||
+            screenPixel.y < clipMin.y || screenPixel.y > clipMax.y) {
             discard;
         }
     }
 
     if (inIsText > 0.5) {
-        float alpha = texture(uFontTexture, inUV).r;
+        float rawAlpha = texture(uFontTexture, inUV).r;
+        if (rawAlpha < 0.005) {
+            discard;
+        }
+        // Linear coverage rendering + perceptual gamma compensation for sRGB swapchain blending
+        float alpha = pow(clamp(rawAlpha, 0.0, 1.0), 0.78);
         if (alpha < 0.005) {
             discard;
         }
@@ -38,9 +49,10 @@ void main() {
         return;
     }
 
-    float r = min(inRadius, min(inHalfSize.x, inHalfSize.y));
-    float d = sdRoundedBox(inLocalPos, inHalfSize, r);
     float aa = inSoftness;
+    vec2 halfSize = max(vec2(0.0), inHalfSize - vec2(aa * 0.5));
+    float r = min(inRadius, min(halfSize.x, halfSize.y));
+    float d = sdRoundedBox(inLocalPos, halfSize, r);
 
     float fillAlpha = clamp(0.5 - d / aa, 0.0, 1.0);
     if (fillAlpha <= 0.0) {

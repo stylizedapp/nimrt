@@ -7,13 +7,16 @@
 ## - Zero allocations on the hot render path (ArenaAllocator with reset per frame).
 ## - Z-order hit-testing, mouse/keyboard focus, and VirtualList virtualization.
 
-import std/unicode
+import std/math
+import corex/unicode
 import corex/slab
 import corex/smallvec
 import corex/allocators
 import corex/result
+import ./clipboard
 import ./gpu/font_atlas
 import ./gpu/vulkan_backend
+export unicode
 
 type
   FlexDirection* = enum
@@ -52,6 +55,7 @@ type
 
   UiNode* = object
     kind*: NodeKind
+    parent*: SlabId
     children*: SmallVec[SlabId, 8]
     direction*: FlexDirection
     padding*: array[4, float32] # [top, right, bottom, left]
@@ -90,6 +94,10 @@ type
     isScrollable*: bool
     scrollOffset*: float32
     contentHeight*: float32
+    caretPos*: int
+    selStart*: int
+    selEnd*: int
+    caretInitialized*: bool
 
     # Callbacks
     onClick*: proc() {.closure, gcsafe, raises: [].}
@@ -166,6 +174,7 @@ proc destroy*(tree: var UiTree) {.raises: [].} =
 proc createNode*(tree: var UiTree, kind: NodeKind): SlabId {.raises: [].} =
   var node = UiNode(
     kind: kind,
+    parent: SlabId(-1'i32),
     children: initSmallVec[SlabId, 8](tree.allocator),
     direction: fdColumn,
     padding: [0.0f, 0.0f, 0.0f, 0.0f],
@@ -196,6 +205,10 @@ proc createNode*(tree: var UiTree, kind: NodeKind): SlabId {.raises: [].} =
     isScrollable: false,
     scrollOffset: 0.0f,
     contentHeight: 0.0f,
+    caretPos: 0,
+    selStart: 0,
+    selEnd: 0,
+    caretInitialized: false,
     onClick: nil,
     onInput: nil,
     onSelect: nil,
@@ -217,6 +230,7 @@ proc createNode*(tree: var UiTree, kind: NodeKind): SlabId {.raises: [].} =
 
 proc addChild*(tree: var UiTree, parentId, childId: SlabId) {.raises: [].} =
   if tree.nodes.contains(parentId) and tree.nodes.contains(childId):
+    tree.nodes[childId].parent = parentId
     discard tree.nodes[parentId].children.add(childId)
     tree.isDirty = true
     tree.isLayoutDirty = true
@@ -224,6 +238,8 @@ proc addChild*(tree: var UiTree, parentId, childId: SlabId) {.raises: [].} =
 # =============================================================================
 # Two-Pass Flexbox Layout Engine (Zero-Allocation on Hot Path)
 # =============================================================================
+
+{.push stacktrace: off, linetrace: off.}
 
 proc measureNode*(tree: var UiTree, id: SlabId, atlas: FontAtlas) {.raises: [].} =
   if not tree.nodes.contains(id):
@@ -326,7 +342,7 @@ proc layoutNode*(
 
   # 2. Intersect clip rect
   var clip = parentClip
-  if nodePtr.isScrollable or nodePtr.kind == nkVirtualList:
+  if nodePtr.isScrollable or nodePtr.kind == nkVirtualList or nodePtr.kind == nkTextInput:
     let minX = max(parentClip[0], uint16(max(0.0f, x)))
     let minY = max(parentClip[1], uint16(max(0.0f, y)))
     let maxX = min(parentClip[2], uint16(max(0.0f, x + actualW)))
@@ -369,7 +385,24 @@ proc layoutNode*(
   else:
     max(0.0f, innerH - fixedSpace - totalGaps)
 
-  var curMain = if nodePtr.direction == fdRow: innerX else: innerY - nodePtr.scrollOffset
+  var startOffset = 0.0f
+  var effectiveGap = nodePtr.gap
+  if totalFlexWeight == 0.0f and remainingSpace > 0.0f:
+    case nodePtr.justifyContent
+    of jcStart:
+      startOffset = 0.0f
+    of jcCenter:
+      startOffset = remainingSpace * 0.5f
+    of jcEnd:
+      startOffset = remainingSpace
+    of jcSpaceBetween:
+      if childCount > 1:
+        effectiveGap = nodePtr.gap + remainingSpace / float32(childCount - 1)
+
+  var curMain = if nodePtr.direction == fdRow:
+    innerX + startOffset
+  else:
+    innerY + startOffset - nodePtr.scrollOffset
 
   for i in 0 ..< childCount:
     let childId = nodePtr.children[i]
@@ -395,7 +428,7 @@ proc layoutNode*(
           childY = innerY + (innerH - childH)
 
       layoutNode(tree, childId, curMain, childY, childW, childH, clip)
-      curMain += childW + nodePtr.gap
+      curMain += childW + effectiveGap
     else:
       if childNode.heightMode.kind == smFlexGrow and totalFlexWeight > 0.0f:
         childH = (childNode.heightMode.val / totalFlexWeight) * remainingSpace
@@ -413,7 +446,7 @@ proc layoutNode*(
           childX = innerX + (innerW - childW)
 
       layoutNode(tree, childId, childX, curMain, childW, childH, clip)
-      curMain += childH + nodePtr.gap
+      curMain += childH + effectiveGap
 
 proc layoutTree*(tree: var UiTree, screenWidth, screenHeight: float32, atlas: FontAtlas) {.raises: [].} =
   if tree.rootId == SlabId(-1'i32) or not tree.nodes.contains(tree.rootId):
@@ -433,7 +466,73 @@ proc layoutTree*(tree: var UiTree, screenWidth, screenHeight: float32, atlas: Fo
 # Drawing Instance Generation (Zero-Alloc Hot Path)
 # =============================================================================
 
-proc emitTextRun(
+proc isZeroWidthOrIgnored*(r: Rune): bool {.inline, raises: [].} =
+  isIgnoredCodepoint(uint32(r))
+
+proc hasSelection*(node: UiNode): bool {.inline, raises: [].} =
+  node.selStart != node.selEnd
+
+proc clampTextInputState*(node: var UiNode) {.inline, raises: [].} =
+  let rLen = runeLen(node.text)
+  if not node.caretInitialized:
+    node.caretPos = rLen
+    node.selStart = rLen
+    node.selEnd = rLen
+    node.caretInitialized = true
+  else:
+    node.caretPos = clamp(node.caretPos, 0, rLen)
+    node.selStart = clamp(node.selStart, 0, rLen)
+    node.selEnd = clamp(node.selEnd, 0, rLen)
+
+proc deleteTextInputSelection(node: var UiNode) {.raises: [].} =
+  let lo = min(node.selStart, node.selEnd)
+  let hi = max(node.selStart, node.selEnd)
+  if lo < hi:
+    let bLo = runeByteOffset(node.text, lo)
+    let bHi = runeByteOffset(node.text, hi)
+    let delBytes = bHi - bLo
+    let rem = node.text.len - bHi
+    if rem > 0:
+      moveMem(addr node.text[bLo], addr node.text[bHi], rem)
+    node.text.setLen(node.text.len - delBytes)
+    node.caretPos = lo
+    node.selStart = lo
+    node.selEnd = lo
+
+proc insertUtf8At(s: var string, bytePos: int, ins: string) {.inline, raises: [].} =
+  if ins.len == 0:
+    return
+  let bPos = clamp(bytePos, 0, s.len)
+  let oldLen = s.len
+  s.setLen(oldLen + ins.len)
+  let tail = oldLen - bPos
+  if tail > 0:
+    moveMem(addr s[bPos + ins.len], addr s[bPos], tail)
+  copyMem(addr s[bPos], unsafeAddr ins[0], ins.len)
+
+proc measureRunePrefix*(atlas: FontAtlas, text: string, runeCount: int, fontSize: float32): float32 {.raises: [].} =
+  if runeCount <= 0 or text.len == 0 or atlas.baseSize <= 0.0f:
+    return 0.0f
+  let scale = fontSize / atlas.baseSize
+  var curW = 0.0f
+  var hasPrev = false
+  var prevRune = Rune(0)
+  var idx = 0
+  for r in runes(text):
+    if idx >= runeCount:
+      break
+    inc(idx)
+    if isZeroWidthOrIgnored(r):
+      continue
+    if hasPrev:
+      curW += atlas.getKerning(prevRune, r) * scale
+    let g = atlas.getGlyph(r)
+    curW += g.advance * scale
+    prevRune = r
+    hasPrev = true
+  curW
+
+proc emitTextRun*(
   instances: var seq[UiDrawInstance],
   text: string,
   startX, startY: float32,
@@ -444,38 +543,78 @@ proc emitTextRun(
 ) {.raises: [].} =
   if text.len == 0 or atlas.baseSize <= 0.0f:
     return
+  if clipRect[0] >= clipRect[2] or clipRect[1] >= clipRect[3]:
+    return
 
   let scale = fontSize / atlas.baseSize
   var curX = startX
-  let baselineY = startY + atlas.ascender * scale
+  # Snap baseline to integer pixel boundary for razor-sharp horizontal stems
+  var baselineY = floor(startY + atlas.ascender * scale + 0.5f)
+  var hasPrev = false
+  var prevRune = Rune(0)
+
+  # Provide a 2px anti-aliasing breathing apron so edge pixels are never clipped
+  var textClip = clipRect
+  if textClip[0] >= 2'u16: textClip[0] -= 2'u16
+  else: textClip[0] = 0'u16
+  if textClip[1] >= 2'u16: textClip[1] -= 2'u16
+  else: textClip[1] = 0'u16
+  if textClip[2] <= 0xFFFD'u16: textClip[2] += 2'u16
+  if textClip[3] <= 0xFFFD'u16: textClip[3] += 2'u16
 
   for r in runes(text):
     if r == Rune(10): # Newline
       curX = startX
+      baselineY += floor(atlas.lineHeight * scale + 0.5f)
+      hasPrev = false
       continue
 
-    let g = atlas.getGlyph(r)
-    if g.width > 0.0f and g.height > 0.0f:
-      let gx = curX + g.bearingX * scale
-      let gy = baselineY - g.bearingY * scale
-      let gw = g.width * scale
-      let gh = g.height * scale
+    if isZeroWidthOrIgnored(r):
+      continue
 
-      var inst: UiDrawInstance
-      inst.pos = [gx, gy]
-      inst.size = [gw, gh]
-      inst.uvPos = g.uvMin
-      inst.uvSize = [g.uvMax[0] - g.uvMin[0], g.uvMax[1] - g.uvMin[1]]
-      inst.color = color
-      inst.borderColor = 0
-      inst.cornerRadius = 0.0f
-      inst.borderWidth = 0.0f
-      inst.softness = 1.0f
-      inst.clipRect = clipRect
-      inst.pad = 0'u32
-      instances.add(inst)
+    if hasPrev:
+      curX += atlas.getKerning(prevRune, r) * scale
+
+    let g = atlas.getGlyph(r)
+    let cp = uint32(r)
+    # Never emit quads for space or empty glyphs (prevents solid SDF box specks)
+    if g.width > 0.0f and g.height > 0.0f and cp != 32'u32 and (g.uvMax[0] > g.uvMin[0]):
+      # Subpixel pixel-snapped quad placement: guarantees every raster pixel is fully covered
+      let gx = floor(curX + g.bearingX * scale + 0.5f)
+      let gy = floor(baselineY - g.bearingY * scale + 0.5f)
+      let gw = max(1.0f, floor(g.width * scale + 0.5f))
+      let gh = max(1.0f, floor(g.height * scale + 0.5f))
+
+      if gx + gw >= float32(textClip[0]) and gx <= float32(textClip[2]) and
+         gy + gh >= float32(textClip[1]) and gy <= float32(textClip[3]):
+        var inst: UiDrawInstance
+        inst.pos = [gx, gy]
+        inst.size = [gw, gh]
+        inst.uvPos = g.uvMin
+        inst.uvSize = [g.uvMax[0] - g.uvMin[0], g.uvMax[1] - g.uvMin[1]]
+        inst.color = color
+        inst.borderColor = 0
+        inst.cornerRadius = 0.0f
+        inst.borderWidth = 0.0f
+        inst.softness = 1.0f
+        inst.clipRect = textClip
+        inst.pad = 0'u32
+        instances.add(inst)
 
     curX += g.advance * scale
+    prevRune = r
+    hasPrev = true
+
+template emitTextInstances*(
+  instances: var seq[UiDrawInstance],
+  text: string,
+  startX, startY: float32,
+  fontSize: float32,
+  color: uint32,
+  clipRect: array[4, uint16],
+  atlas: FontAtlas
+) =
+  emitTextRun(instances, text, startX, startY, fontSize, color, clipRect, atlas)
 
 proc emitNodeInstances(
   tree: UiTree,
@@ -487,6 +626,9 @@ proc emitNodeInstances(
     return
 
   let node = addr tree.nodes[id]
+  if node.clipRect[0] >= node.clipRect[2] or node.clipRect[1] >= node.clipRect[3]:
+    return
+
   let (nx, ny, nw, nh) = node.computedRect
 
   # 1. Background & Border SDF primitive
@@ -502,19 +644,21 @@ proc emitNodeInstances(
       bc = node.borderHoverColor
 
   if bg != 0 or bc != 0:
-    var inst: UiDrawInstance
-    inst.pos = [nx, ny]
-    inst.size = [nw, nh]
-    inst.uvPos = [0.0f, 0.0f]
-    inst.uvSize = [0.0f, 0.0f] # Solid SDF
-    inst.color = bg
-    inst.borderColor = bc
-    inst.cornerRadius = node.radius
-    inst.borderWidth = node.borderWidth
-    inst.softness = max(1.0f, node.softness)
-    inst.clipRect = node.clipRect
-    inst.pad = 0'u32
-    instances.add(inst)
+    if nx + nw >= float32(node.clipRect[0]) and nx <= float32(node.clipRect[2]) and
+       ny + nh >= float32(node.clipRect[1]) and ny <= float32(node.clipRect[3]):
+      var inst: UiDrawInstance
+      inst.pos = [nx, ny]
+      inst.size = [nw, nh]
+      inst.uvPos = [0.0f, 0.0f]
+      inst.uvSize = [0.0f, 0.0f] # Solid SDF
+      inst.color = bg
+      inst.borderColor = bc
+      inst.cornerRadius = node.radius
+      inst.borderWidth = node.borderWidth
+      inst.softness = max(1.0f, node.softness)
+      inst.clipRect = node.clipRect
+      inst.pad = 0'u32
+      instances.add(inst)
 
   # 2. Text rendering
   case node.kind
@@ -531,16 +675,43 @@ proc emitNodeInstances(
   of nkTextInput:
     let displayStr = if node.text.len > 0: node.text else: node.placeholder
     let col = if node.text.len > 0: node.textColor else: (node.textColor and 0x00FFFFFF'u32) or 0x66000000'u32
-    let (tw, th) = atlas.measureText(displayStr, node.fontSize)
+    let (_, th) = atlas.measureText(displayStr, node.fontSize)
     let tx = nx + node.padding[3] + 8.0f
     let ty = ny + (nh - th) * 0.5f
-    emitTextRun(instances, displayStr, tx, ty, node.fontSize, col, node.clipRect, atlas)
+    let availTextW = max(8.0f, nw - node.padding[3] - node.padding[1] - 16.0f)
+    let totalRunes = runeLen(node.text)
+    let curPos = if node.caretInitialized: clamp(node.caretPos, 0, totalRunes) else: totalRunes
+    let cursorW = if node.text.len > 0: measureRunePrefix(atlas, node.text, curPos, node.fontSize) else: 0.0f
+    let textScrollX = if node.text.len > 0 and cursorW > availTextW: cursorW - availTextW else: 0.0f
+
+    # Focused selection highlight behind text
+    if node.isFocused and hasSelection(node[]) and node.text.len > 0:
+      let sLo = clamp(min(node.selStart, node.selEnd), 0, totalRunes)
+      let sHi = clamp(max(node.selStart, node.selEnd), 0, totalRunes)
+      if sLo < sHi:
+        let x1 = measureRunePrefix(atlas, node.text, sLo, node.fontSize)
+        let x2 = measureRunePrefix(atlas, node.text, sHi, node.fontSize)
+        if x2 > x1:
+          var selInst: UiDrawInstance
+          selInst.pos = [tx - textScrollX + x1, ty]
+          selInst.size = [x2 - x1, th]
+          selInst.uvPos = [0.0f, 0.0f]
+          selInst.uvSize = [0.0f, 0.0f]
+          selInst.color = 0x3B82F655'u32
+          selInst.borderColor = 0
+          selInst.cornerRadius = 2.0f
+          selInst.borderWidth = 0.0f
+          selInst.softness = 1.0f
+          selInst.clipRect = node.clipRect
+          selInst.pad = 0'u32
+          instances.add(selInst)
+
+    emitTextRun(instances, displayStr, tx - textScrollX, ty, node.fontSize, col, node.clipRect, atlas)
 
     # Blinking / focused caret
     if node.isFocused and node.text.len >= 0:
-      let (cursorW, _) = atlas.measureText(node.text, node.fontSize)
       var caretInst: UiDrawInstance
-      caretInst.pos = [tx + cursorW + 1.0f, ty]
+      caretInst.pos = [tx + cursorW - textScrollX + 1.0f, ty]
       caretInst.size = [2.0f, th]
       caretInst.uvPos = [0.0f, 0.0f]
       caretInst.uvSize = [0.0f, 0.0f]
@@ -593,7 +764,8 @@ proc emitNodeInstances(
         "Item #" & $idx
 
       let itemTextCol = if isSelected: 0xFFFFFFFF'u32 else: 0xCCCCCCFF'u32
-      emitTextRun(instances, itemText, nx + 12.0f, itemY + (itemH - 18.0f) * 0.5f,
+      let itemTextH = if atlas.baseSize > 0.0f: atlas.lineHeight * (node.fontSize / atlas.baseSize) else: 18.0f
+      emitTextRun(instances, itemText, nx + 12.0f, itemY + (itemH - itemTextH) * 0.5f,
                   node.fontSize, itemTextCol, node.clipRect, atlas)
 
     # Render scrollbar track and thumb if content overflows
@@ -618,7 +790,26 @@ proc emitNodeInstances(
       instances.add(thumbInst)
 
   of nkBox:
-    discard
+    if node.isScrollable and node.contentHeight > nh and nh > 0.0f:
+      let maxScroll = max(1.0f, node.contentHeight - nh)
+      let trackW = 6.0f
+      let trackX = nx + nw - trackW - 2.0f
+      let thumbH = max(20.0f, (nh / node.contentHeight) * nh)
+      let thumbY = ny + clamp(node.scrollOffset / maxScroll, 0.0f, 1.0f) * max(0.0f, nh - thumbH)
+
+      var thumbInst: UiDrawInstance
+      thumbInst.pos = [trackX, thumbY]
+      thumbInst.size = [trackW, thumbH]
+      thumbInst.uvPos = [0.0f, 0.0f]
+      thumbInst.uvSize = [0.0f, 0.0f]
+      thumbInst.color = 0x66667088'u32
+      thumbInst.borderColor = 0
+      thumbInst.cornerRadius = 3.0f
+      thumbInst.borderWidth = 0.0f
+      thumbInst.softness = 1.0f
+      thumbInst.clipRect = node.clipRect
+      thumbInst.pad = 0'u32
+      instances.add(thumbInst)
 
   # 3. Recursively emit children
   for i in 0 ..< node.children.len:
@@ -634,6 +825,8 @@ proc buildDrawInstances*(tree: var UiTree, atlas: FontAtlas): ptr UiDrawInstance
     addr tree.drawInstances[0]
   else:
     nil
+
+{.pop.}
 
 # =============================================================================
 # Input Handling & Hit-Testing
@@ -680,6 +873,12 @@ proc handleMouseDown*(tree: var UiTree, px, py: float32) {.raises: [].} =
     tree.focusedNode = hit
     if hit != SlabId(-1'i32) and tree.nodes.contains(hit):
       tree.nodes[hit].isFocused = true
+      if tree.nodes[hit].kind == nkTextInput:
+        let rLen = runeLen(tree.nodes[hit].text)
+        tree.nodes[hit].caretPos = rLen
+        tree.nodes[hit].selStart = rLen
+        tree.nodes[hit].selEnd = rLen
+        tree.nodes[hit].caretInitialized = true
     tree.isDirty = true
 
   tree.pressedNode = hit
@@ -705,7 +904,7 @@ proc handleMouseUp*(tree: var UiTree, px, py: float32) {.raises: [].} =
     tree.isDirty = true
 
 proc handleMouseWheel*(tree: var UiTree, px, py, delta: float32) {.raises: [].} =
-  # Find scrollable container under cursor
+  # Find scrollable container under cursor, bubbling up through parents
   var curr = hitTestNode(tree, tree.rootId, px, py)
   while curr != SlabId(-1'i32) and tree.nodes.contains(curr):
     let node = addr tree.nodes[curr]
@@ -715,33 +914,175 @@ proc handleMouseWheel*(tree: var UiTree, px, py, delta: float32) {.raises: [].} 
       tree.isDirty = true
       tree.isLayoutDirty = true
       return
-    # Check parent if needed, or default root
-    break
+    curr = node.parent
 
 proc handleChar*(tree: var UiTree, r: Rune) {.raises: [].} =
   if tree.focusedNode != SlabId(-1'i32) and tree.nodes.contains(tree.focusedNode):
     let node = addr tree.nodes[tree.focusedNode]
     if node.kind == nkTextInput:
-      let code = int32(r)
-      if code >= 32: # Printable char
-        node.text.add(toUTF8(r))
+      let code = uint32(r)
+      if code >= 32'u32 and code != 127'u32: # Printable char
+        clampTextInputState(node[])
+        if hasSelection(node[]):
+          deleteTextInputSelection(node[])
+        let utf8 = toUTF8(r)
+        let bPos = runeByteOffset(node.text, node.caretPos)
+        insertUtf8At(node.text, bPos, utf8)
+        inc(node.caretPos)
+        node.selStart = node.caretPos
+        node.selEnd = node.caretPos
         if not node.onInput.isNil:
           node.onInput(node.text)
         tree.isDirty = true
         tree.isLayoutDirty = true
 
-proc handleKeyDown*(tree: var UiTree, keyCode: uint32) {.raises: [].} =
+proc handleKeyDown*(tree: var UiTree, keyCode: uint32, ctrlDown: bool = false, shiftDown: bool = false) {.raises: [].} =
   if tree.focusedNode != SlabId(-1'i32) and tree.nodes.contains(tree.focusedNode):
     let node = addr tree.nodes[tree.focusedNode]
     if node.kind == nkTextInput:
-      if keyCode == 0x08'u32: # VK_BACK
-        if node.text.len > 0:
-          var lastRune: Rune
-          var pos = node.text.len - 1
-          while pos > 0 and (ord(node.text[pos]) and 0xC0) == 0x80:
-            dec(pos)
-          node.text.setLen(pos)
+      clampTextInputState(node[])
+      let totalRunes = runeLen(node.text)
+
+      if ctrlDown:
+        case keyCode
+        of 0x41'u32: # Ctrl+A: Select All
+          node.selStart = 0
+          node.selEnd = totalRunes
+          node.caretPos = totalRunes
+          tree.isDirty = true
+        of 0x43'u32: # Ctrl+C: Copy
+          if hasSelection(node[]):
+            let lo = min(node.selStart, node.selEnd)
+            let hi = max(node.selStart, node.selEnd)
+            let bLo = runeByteOffset(node.text, lo)
+            let bHi = runeByteOffset(node.text, hi)
+            if bHi > bLo:
+              discard setClipboardText(node.text[bLo ..< bHi])
+        of 0x58'u32: # Ctrl+X: Cut
+          if hasSelection(node[]):
+            let lo = min(node.selStart, node.selEnd)
+            let hi = max(node.selStart, node.selEnd)
+            let bLo = runeByteOffset(node.text, lo)
+            let bHi = runeByteOffset(node.text, hi)
+            if bHi > bLo:
+              discard setClipboardText(node.text[bLo ..< bHi])
+            deleteTextInputSelection(node[])
+            if not node.onInput.isNil:
+              node.onInput(node.text)
+            tree.isDirty = true
+            tree.isLayoutDirty = true
+        of 0x56'u32: # Ctrl+V: Paste single-line text
+          let rawClip = getClipboardText()
+          if rawClip.len > 0:
+            var cleanClip = newStringOfCap(rawClip.len)
+            for ch in rawClip:
+              if ch != '\r' and ch != '\n':
+                cleanClip.add(ch)
+            if hasSelection(node[]):
+              deleteTextInputSelection(node[])
+            if cleanClip.len > 0:
+              let bPos = runeByteOffset(node.text, node.caretPos)
+              insertUtf8At(node.text, bPos, cleanClip)
+              node.caretPos += runeLen(cleanClip)
+              node.selStart = node.caretPos
+              node.selEnd = node.caretPos
+              if not node.onInput.isNil:
+                node.onInput(node.text)
+              tree.isDirty = true
+              tree.isLayoutDirty = true
+        else:
+          discard
+        return
+
+      case keyCode
+      of 0x25'u32: # VK_LEFT
+        if not shiftDown and hasSelection(node[]):
+          let lo = min(node.selStart, node.selEnd)
+          node.caretPos = lo
+          node.selStart = lo
+          node.selEnd = lo
+        else:
+          if node.caretPos > 0:
+            dec(node.caretPos)
+          if shiftDown:
+            node.selEnd = node.caretPos
+          else:
+            node.selStart = node.caretPos
+            node.selEnd = node.caretPos
+        tree.isDirty = true
+      of 0x27'u32: # VK_RIGHT
+        if not shiftDown and hasSelection(node[]):
+          let hi = max(node.selStart, node.selEnd)
+          node.caretPos = hi
+          node.selStart = hi
+          node.selEnd = hi
+        else:
+          if node.caretPos < totalRunes:
+            inc(node.caretPos)
+          if shiftDown:
+            node.selEnd = node.caretPos
+          else:
+            node.selStart = node.caretPos
+            node.selEnd = node.caretPos
+        tree.isDirty = true
+      of 0x24'u32: # VK_HOME
+        node.caretPos = 0
+        if shiftDown:
+          node.selEnd = 0
+        else:
+          node.selStart = 0
+          node.selEnd = 0
+        tree.isDirty = true
+      of 0x23'u32: # VK_END
+        node.caretPos = totalRunes
+        if shiftDown:
+          node.selEnd = totalRunes
+        else:
+          node.selStart = totalRunes
+          node.selEnd = totalRunes
+        tree.isDirty = true
+      of 0x08'u32: # VK_BACK
+        if hasSelection(node[]):
+          deleteTextInputSelection(node[])
           if not node.onInput.isNil:
             node.onInput(node.text)
           tree.isDirty = true
           tree.isLayoutDirty = true
+        elif node.caretPos > 0:
+          let bLo = runeByteOffset(node.text, node.caretPos - 1)
+          let bHi = runeByteOffset(node.text, node.caretPos)
+          let delBytes = bHi - bLo
+          let rem = node.text.len - bHi
+          if rem > 0:
+            moveMem(addr node.text[bLo], addr node.text[bHi], rem)
+          node.text.setLen(node.text.len - delBytes)
+          dec(node.caretPos)
+          node.selStart = node.caretPos
+          node.selEnd = node.caretPos
+          if not node.onInput.isNil:
+            node.onInput(node.text)
+          tree.isDirty = true
+          tree.isLayoutDirty = true
+      of 0x2E'u32: # VK_DELETE
+        if hasSelection(node[]):
+          deleteTextInputSelection(node[])
+          if not node.onInput.isNil:
+            node.onInput(node.text)
+          tree.isDirty = true
+          tree.isLayoutDirty = true
+        elif node.caretPos < totalRunes:
+          let bLo = runeByteOffset(node.text, node.caretPos)
+          let bHi = runeByteOffset(node.text, node.caretPos + 1)
+          let delBytes = bHi - bLo
+          let rem = node.text.len - bHi
+          if rem > 0:
+            moveMem(addr node.text[bLo], addr node.text[bHi], rem)
+          node.text.setLen(node.text.len - delBytes)
+          node.selStart = node.caretPos
+          node.selEnd = node.caretPos
+          if not node.onInput.isNil:
+            node.onInput(node.text)
+          tree.isDirty = true
+          tree.isLayoutDirty = true
+      else:
+        discard

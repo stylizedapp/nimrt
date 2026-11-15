@@ -422,7 +422,7 @@ proc testBufferedReaderTorture() =
   const TotalDirect = 250_000
   var directData = newSeq[byte](TotalDirect)
   for i in 0 ..< TotalDirect: directData[i] = byte((i * 41 + 7) and 0xFF)
-  writeFile(pDirectRead, cast[string](directData))
+  writeFile(pDirectRead, directData)
 
   # Test 3.6.1: Fresh reader direct read >= 64KB
   block:
@@ -528,9 +528,9 @@ proc testZeroLeaks() =
       block:
         var fhRes = openFile(testPath, fmWrite)
         doAssert fhRes.isOk
-        var bwRes = initBufferedWriter(move(fhRes.get), 65536, testAlloc)
+        var bwRes = initBufferedWriter(fhRes.get, 65536, testAlloc)
         doAssert bwRes.isOk
-        var bw = move(bwRes.get)
+        var bw = bwRes.get
         
         var chunk = newSeq[byte](1000)
         for i in 0 ..< 1000: chunk[i] = byte(i mod 256)
@@ -541,9 +541,9 @@ proc testZeroLeaks() =
       block:
         var fhRes = openFile(testPath, fmRead)
         doAssert fhRes.isOk
-        var brRes = initBufferedReader(move(fhRes.get), 65536, testAlloc)
+        var brRes = initBufferedReader(fhRes.get, 65536, testAlloc)
         doAssert brRes.isOk
-        var br = move(brRes.get)
+        var br = brRes.get
         
         var readChunk = newSeq[byte](1000)
         let n = br.readBytes(readChunk)
