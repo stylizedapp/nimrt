@@ -43,6 +43,7 @@ when defined(windows):
     ERROR_ACCESS_DENIED = 5'u32
     INVALID_HANDLE_VALUE = cast[pointer](-1)
 
+  # Safe: standard Win32 kernel32.dll volume/MFT DeviceIoControl FFI bindings.
   proc createFileW(
     lpFileName: WideCString,
     dwDesiredAccess: uint32,
@@ -51,9 +52,9 @@ when defined(windows):
     dwCreationDisposition: uint32,
     dwFlagsAndAttributes: uint32,
     hTemplateFile: pointer
-  ): pointer {.stdcall, dynlib: "kernel32", importc: "CreateFileW", sideEffect.}
+  ): pointer {.trustedUnsafe, stdcall, dynlib: "kernel32", importc: "CreateFileW", sideEffect.}
 
-  proc closeHandle(hObject: pointer): int32 {.stdcall, dynlib: "kernel32", importc: "CloseHandle", sideEffect.}
+  proc closeHandle(hObject: pointer): int32 {.trustedUnsafe, stdcall, dynlib: "kernel32", importc: "CloseHandle", sideEffect.}
 
   proc deviceIoControl(
     hDevice: pointer,
@@ -64,9 +65,9 @@ when defined(windows):
     nOutBufferSize: uint32,
     lpBytesReturned: ptr uint32,
     lpOverlapped: pointer
-  ): int32 {.stdcall, dynlib: "kernel32", importc: "DeviceIoControl", sideEffect.}
+  ): int32 {.trustedUnsafe, stdcall, dynlib: "kernel32", importc: "DeviceIoControl", sideEffect.}
 
-  proc getLastError(): uint32 {.stdcall, dynlib: "kernel32", importc: "GetLastError", sideEffect.}
+  proc getLastError(): uint32 {.trustedUnsafe, stdcall, dynlib: "kernel32", importc: "GetLastError", sideEffect.}
 
 # =============================================================================
 # 2. Path, Device & Volume Metadata Helpers
@@ -127,7 +128,8 @@ proc resolveVolumeMetadata*(rootPath: string): VolumeMetadata {.raises: [].} =
 # 3. Primary Path: Direct MFT / USN Journal Stream Reader (scanMftDirect)
 # =============================================================================
 
-proc scanMftDirect*(drivePath: string, tree: var Tree, options: ScanOptions): Result[ScanStats, string] {.raises: [].} =
+# Safe: Win32 volume handle is checked against INVALID_HANDLE_VALUE and closed in finally; outBuf is 64 KB.
+proc scanMftDirect*(drivePath: string, tree: var Tree, options: ScanOptions): Result[ScanStats, string] {.trustedUnsafe, raises: [].} =
   ## Streams raw USN records directly from NTFS Master File Table via FSCTL_ENUM_USN_DATA.
   ## Requires elevated administrator privileges.
   when defined(windows):

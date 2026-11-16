@@ -98,7 +98,7 @@ type
 proc updateSdfPreviewNode(app: GalleryApp) {.raises: [].} =
   let pal = Palettes[clamp(app.paletteIdx, 0, Palettes.high)]
   if app.tree.nodes.contains(app.previewBoxId):
-    let p = addr app.tree.nodes[app.previewBoxId]
+    template p: untyped = app.tree.nodes[app.previewBoxId]
     p.bgColor = pal.bg
     p.borderColor = pal.border
     p.radius = app.cornerRadius
@@ -172,10 +172,12 @@ proc buildGalleryUi(app: GalleryApp) {.raises: [].} =
     borderWidth = 1.0f
   )
   let presetBadgeText = Text(app.tree, presetBadge, app.headerBadgeSig.get(), size = 12.0f, color = 0xC7D2FEFF'u32)
-  bindText(addr app.tree, addr app.rt, presetBadgeText, proc(): string {.closure, gcsafe, raises: [].} =
-    {.cast(gcsafe).}:
-      app.headerBadgeSig.get()
-  )
+  # Safe: app.tree and app.rt outlive the reactive effect closure.
+  block trustedUnsafe:
+    bindText(addr app.tree, addr app.rt, presetBadgeText, proc(): string {.closure, gcsafe, raises: [].} =
+      {.cast(gcsafe).}:
+        app.headerBadgeSig.get()
+    )
 
   # --- Main Two-Column Body ---
   let bodyRow = HStack(app.tree, root, gap = 12.0f, width = flexGrow(), height = flexGrow())
@@ -197,10 +199,12 @@ proc buildGalleryUi(app: GalleryApp) {.raises: [].} =
   discard Text(app.tree, leftCol, "1. Interactive SDF Geometry & Surface Palette Lab", size = 15.0f, color = ColTextPrim)
 
   let readoutLbl = Text(app.tree, leftCol, app.sdfReadoutSig.get(), size = 12.0f, color = 0x60A5FAFF'u32)
-  bindText(addr app.tree, addr app.rt, readoutLbl, proc(): string {.closure, gcsafe, raises: [].} =
-    {.cast(gcsafe).}:
-      app.sdfReadoutSig.get()
-  )
+  # Safe: app.tree and app.rt outlive the reactive effect closure.
+  block trustedUnsafe:
+    bindText(addr app.tree, addr app.rt, readoutLbl, proc(): string {.closure, gcsafe, raises: [].} =
+      {.cast(gcsafe).}:
+        app.sdfReadoutSig.get()
+    )
 
   discard Text(app.tree, leftCol, "Surface Palette (RadioGroup):", size = 12.0f, color = ColTextSec)
   let paletteNames = [Palettes[0].name, Palettes[1].name, Palettes[2].name, Palettes[3].name]
@@ -346,14 +350,16 @@ proc buildGalleryUi(app: GalleryApp) {.raises: [].} =
     bg = 0x0B0B0FFF'u32,
     borderColor = 0x334155FF'u32
   )
-  bindInput(addr app.tree, addr app.rt, app.utf8InputId, app.utf8Sig)
+  # Safe: app.tree and app.rt outlive the reactive effect closures.
+  block trustedUnsafe:
+    bindInput(addr app.tree, addr app.rt, app.utf8InputId, app.utf8Sig)
 
-  let statsTextId = Text(app.tree, unicodeCard, "", size = 12.0f, color = 0x34D399FF'u32)
-  bindText(addr app.tree, addr app.rt, statsTextId, proc(): string {.closure, gcsafe, raises: [].} =
-    {.cast(gcsafe).}:
-      let t = app.utf8Sig.get()
-      &"Rune Count: {runeLen(t)} runes | UTF-8 Byte Len: {t.len} bytes"
-  )
+    let statsTextId = Text(app.tree, unicodeCard, "", size = 12.0f, color = 0x34D399FF'u32)
+    bindText(addr app.tree, addr app.rt, statsTextId, proc(): string {.closure, gcsafe, raises: [].} =
+      {.cast(gcsafe).}:
+        let t = app.utf8Sig.get()
+        &"Rune Count: {runeLen(t)} runes | UTF-8 Byte Len: {t.len} bytes"
+    )
 
   # Second TextInput with visible active selection range & caret
   app.selInputId = TextInput(
@@ -366,7 +372,7 @@ proc buildGalleryUi(app: GalleryApp) {.raises: [].} =
     bg = 0x0B0B0FFF'u32,
     borderColor = 0x6366F1FF'u32
   )
-  let sNode = addr app.tree.nodes[app.selInputId]
+  template sNode: untyped = app.tree.nodes[app.selInputId]
   sNode.isFocused = true
   sNode.caretPos = 14
   sNode.selStart = 9
@@ -404,10 +410,12 @@ proc buildGalleryUi(app: GalleryApp) {.raises: [].} =
   discard Checkbox(app.tree, ctlCard, app.cbLocked)
 
   let flagsLbl = Text(app.tree, ctlCard, app.flagsSig.get(), size = 12.0f, color = ColTextSec)
-  bindText(addr app.tree, addr app.rt, flagsLbl, proc(): string {.closure, gcsafe, raises: [].} =
-    {.cast(gcsafe).}:
-      app.flagsSig.get()
-  )
+  # Safe: app.tree and app.rt outlive the reactive effect closure.
+  block trustedUnsafe:
+    bindText(addr app.tree, addr app.rt, flagsLbl, proc(): string {.closure, gcsafe, raises: [].} =
+      {.cast(gcsafe).}:
+        app.flagsSig.get()
+    )
 
   let btnRow = HStack(app.tree, ctlCard, gap = 8.0f, alignItems = aiCenter)
   app.actionBtnId = Button(
@@ -419,7 +427,9 @@ proc buildGalleryUi(app: GalleryApp) {.raises: [].} =
     onClick = proc() {.closure, gcsafe, raises: [].} =
       {.cast(gcsafe).}:
         app.softness = if app.softness < 2.0f: 2.8f else: 1.0f
-        app.sliderSoftness.setValue(app.softness, addr app.tree)
+        # Safe: app.tree is owned by app and outlives the synchronous setValue call.
+        block trustedUnsafe:
+          app.sliderSoftness.setValue(app.softness, addr app.tree)
         app.updateSdfPreviewNode()
   )
   app.actionTooltip = Tooltip(app.tree, app.actionBtnId, "Applies soft SDF edge gradient (1.0 <-> 2.8 px)", tpAbove)
@@ -550,38 +560,40 @@ proc runHeadlessVerification(screenshotPath, dropdownScreenshotPath: string) =
     let app = newGalleryApp(testAlloc, atlas)
     defer: app.destroyGalleryApp()
 
-    # Verify disabled checkbox invariant
-    app.cbLocked.toggle(addr app.tree)
-    doAssert not app.cbLocked.checked, "Disabled checkbox must not toggle"
+    # Safe: app.tree is owned by app and valid for synchronous control updates.
+    block trustedUnsafe:
+      # Verify disabled checkbox invariant
+      app.cbLocked.toggle(addr app.tree)
+      doAssert not app.cbLocked.checked, "Disabled checkbox must not toggle"
 
-    # Verify UTF-8 Cyrillic rune length vs byte length
-    doAssert runeLen(app.utf8Sig.get()) < app.utf8Sig.get().len
+      # Verify UTF-8 Cyrillic rune length vs byte length
+      doAssert runeLen(app.utf8Sig.get()) < app.utf8Sig.get().len
 
-    # Verify SDF state transition via Slider & RadioGroup
-    app.sliderRadius.setValue(24.0f, addr app.tree)
-    doAssert app.tree.nodes[app.previewBoxId].radius == 24.0f
-    app.paletteGroup.select(1, addr app.tree) # Emerald Matrix
-    doAssert app.paletteIdx == 1
-    doAssert app.tree.nodes[app.previewBoxId].bgColor == Palettes[1].bg
+      # Verify SDF state transition via Slider & RadioGroup
+      app.sliderRadius.setValue(24.0f, addr app.tree)
+      doAssert app.tree.nodes[app.previewBoxId].radius == 24.0f
+      app.paletteGroup.select(1, addr app.tree) # Emerald Matrix
+      doAssert app.paletteIdx == 1
+      doAssert app.tree.nodes[app.previewBoxId].bgColor == Palettes[1].bg
 
-    # Reset back to showcase default (Indigo, 18px) for main gallery screenshot
-    app.paletteGroup.select(0, addr app.tree)
-    app.sliderRadius.setValue(18.0f, addr app.tree)
-    app.renderGalleryInstances(float32(GalleryWidth), float32(GalleryHeight))
+      # Reset back to showcase default (Indigo, 18px) for main gallery screenshot
+      app.paletteGroup.select(0, addr app.tree)
+      app.sliderRadius.setValue(18.0f, addr app.tree)
+      app.renderGalleryInstances(float32(GalleryWidth), float32(GalleryHeight))
 
-    if screenshotPath.len > 0:
-      var fb = initSoftwareFramebuffer(GalleryWidth, GalleryHeight, ColBgPage)
-      fb.renderInstancesToBuffer(app.tree.drawInstances, atlas, clearColor = ColBgPage)
-      doAssert fb.savePng(screenshotPath)
-      echo "  [OK] Exported gallery screenshot: ", screenshotPath
+      if screenshotPath.len > 0:
+        var fb = initSoftwareFramebuffer(GalleryWidth, GalleryHeight, ColBgPage)
+        fb.renderInstancesToBuffer(app.tree.drawInstances, atlas, clearColor = ColBgPage)
+        doAssert fb.savePng(screenshotPath)
+        echo "  [OK] Exported gallery screenshot: ", screenshotPath
 
-    if dropdownScreenshotPath.len > 0:
-      # Open Dropdown + simulate hover on Action Button to verify top-level overlays
-      app.presetDropdown.open(addr app.tree)
-      app.presetDropdown.hoveredIndex = 2
-      app.tree.nodes[app.actionBtnId].isHovered = true
-      app.paletteGroup.select(1, addr app.tree) # Emerald Matrix in second shot to showcase variety!
-      app.sliderRadius.setValue(28.0f, addr app.tree)
+      if dropdownScreenshotPath.len > 0:
+        # Open Dropdown + simulate hover on Action Button to verify top-level overlays
+        app.presetDropdown.open(addr app.tree)
+        app.presetDropdown.hoveredIndex = 2
+        app.tree.nodes[app.actionBtnId].isHovered = true
+        app.paletteGroup.select(1, addr app.tree) # Emerald Matrix in second shot to showcase variety!
+        app.sliderRadius.setValue(28.0f, addr app.tree)
       app.renderGalleryInstances(float32(GalleryWidth), float32(GalleryHeight))
 
       var fb2 = initSoftwareFramebuffer(GalleryWidth, GalleryHeight, ColBgPage)
@@ -669,7 +681,9 @@ proc runInteractiveWindow() =
       let imgIdx = frameRes.get()
       app.renderGalleryInstances(float32(win.width), float32(win.height))
       if app.tree.drawInstances.len > 0:
-        backend.renderInstances(imgIdx, addr app.tree.drawInstances[0], app.tree.drawInstances.len, ColBgPage)
+        # Safe: drawInstances.len > 0 is checked; pointer valid for synchronous Vulkan upload.
+        block trustedUnsafe:
+          backend.renderInstances(imgIdx, addr app.tree.drawInstances[0], app.tree.drawInstances.len, ColBgPage)
     else:
       app.tree.isDirty = true
 

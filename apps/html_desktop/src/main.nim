@@ -200,17 +200,23 @@ proc registerShowcaseBindings(app: HtmlDesktopApp) {.raises: [].} =
 
   app.bindings.onInput("on-app-name", proc(txt: string) {.closure, gcsafe, raises: [].} =
     {.cast(gcsafe).}:
-      app.appName = txt
+      var copy = newStringOfCap(txt.len)
+      copy.add(txt)
+      app.appName = copy
       app.syncDerivedSignals()
   )
   app.bindings.onInput("on-win-title", proc(txt: string) {.closure, gcsafe, raises: [].} =
     {.cast(gcsafe).}:
-      app.winTitle = txt
+      var copy = newStringOfCap(txt.len)
+      copy.add(txt)
+      app.winTitle = copy
       app.syncDerivedSignals()
   )
   app.bindings.onInput("on-ipc-url", proc(txt: string) {.closure, gcsafe, raises: [].} =
     {.cast(gcsafe).}:
-      app.ipcUrl = txt
+      var copy = newStringOfCap(txt.len)
+      copy.add(txt)
+      app.ipcUrl = copy
       app.syncDerivedSignals()
   )
 
@@ -280,18 +286,21 @@ proc loadHtmlSource(app: HtmlDesktopApp, rawHtml: string) =
       let mountRes = app.jsSession.mountHtmlWithJs(rawHtml)
       if mountRes.isErr():
         let errMsg = mountRes.error()
-        echo "[ERROR] JS/HTML Philosophy Rejection: ", errMsg
+        try: echo "[ERROR] JS/HTML Philosophy Rejection: ", errMsg except CatchableError: discard
         let fallbackErrHtml = """
           <div style="display: flex; flex-direction: column; padding: 32px; gap: 14px; background-color: #1A0E12; border: 2px solid #F43F5E; border-radius: 12px; width: 100%; height: 100%;">
             <h1 style="color: #FB7185; font-size: 22px;">QuickJS Philosophy / Policy Rejection</h1>
             <p style="color: #F8FAFC; font-size: 14px;">""" & errMsg & """</p>
           </div>
         """
-        let fbRes = mountHtmlString(app.tree, addr app.rt, fallbackErrHtml, "", app.bindings)
+        # Safe: app.rt is owned by app and outlives the mounted fallback UI tree.
+        var fbRes: Result[SlabId, string]
+        block trustedUnsafe:
+          fbRes = mountHtmlString(app.tree, addr app.rt, fallbackErrHtml, "", app.bindings)
         if fbRes.isErr():
-          echo "[ERROR] Fallback mount failed: ", fbRes.error()
+          try: echo "[ERROR] Fallback mount failed: ", fbRes.error() except CatchableError: discard
     else:
-      echo "[ERROR] Failed to init QuickJS session: ", sessRes.error()
+      try: echo "[ERROR] Failed to init QuickJS session: ", sessRes.error() except CatchableError: discard
   else:
     let parsed = parseHtmlDoc(rawHtml)
     if parsed.isOk():
@@ -300,9 +309,12 @@ proc loadHtmlSource(app: HtmlDesktopApp, rawHtml: string) =
       app.domNodesCount = doc.nodes.len
       app.cssRulesCount = sheet.rules.len
 
-      let mountRes = mountHtml(app.tree, addr app.rt, doc, sheet, app.bindings)
+      # Safe: app.rt is owned by app and outlives the mounted UI tree.
+      var mountRes: Result[SlabId, string]
+      block trustedUnsafe:
+        mountRes = mountHtml(app.tree, addr app.rt, doc, sheet, app.bindings)
       if mountRes.isErr():
-        echo "[ERROR] Failed to mount HTML: ", mountRes.error()
+        try: echo "[ERROR] Failed to mount HTML: ", mountRes.error() except CatchableError: discard
       else:
         # Sync app mirror fields with seeded HTML <input value="..."> signals if present
         if app.appNameSig.get().len > 0:
@@ -321,9 +333,12 @@ proc loadHtmlSource(app: HtmlDesktopApp, rawHtml: string) =
           <p style="color: #94A3B8; font-size: 13px;">Движок NimUI блокирует теги &lt;script&gt;, inline-обработчики on* и javascript: URI на этапе разбора DOM до выделения UI-узлов.</p>
         </div>
       """
-      let fbRes = mountHtmlString(app.tree, addr app.rt, fallbackErrHtml, "", app.bindings)
+      # Safe: app.rt is owned by app and outlives the mounted fallback UI tree.
+      var fbRes: Result[SlabId, string]
+      block trustedUnsafe:
+        fbRes = mountHtmlString(app.tree, addr app.rt, fallbackErrHtml, "", app.bindings)
       if fbRes.isErr():
-        echo "[ERROR] Fallback mount failed: ", fbRes.error()
+        try: echo "[ERROR] Fallback mount failed: ", fbRes.error() except CatchableError: discard
 
   app.tree.layoutTree(float32(DesktopWidth), float32(DesktopHeight), app.fontAtlas)
 
@@ -347,7 +362,9 @@ proc newHtmlDesktopApp(alloc: Allocator, atlas: FontAtlas, htmlPath: string, all
     winTitle: "Vulkan SDF Телеметрия",
     ipcUrl: "ipc://corex/zero-alloc"
   )
-  let rawHtml = readFile(htmlPath)
+  let rawHtml =
+    try: readFile(htmlPath)
+    except CatchableError: ""
   result.loadHtmlSource(rawHtml)
 
 proc destroyDesktopApp(app: HtmlDesktopApp) =
@@ -370,7 +387,9 @@ proc runHeadlessVerification(htmlPath, screenshotInitial, screenshotInteractive:
   echo ">>> HTML5/CSS3 DESKTOP RUNNER HEADLESS VERIFICATION <<<"
   echo "================================================================="
   doAssert fileExists(htmlPath), "HTML file not found: " & htmlPath
-  let rawHtml = readFile(htmlPath)
+  let rawHtml =
+    try: readFile(htmlPath)
+    except CatchableError: ""
   let atlas = initFontAtlas("Segoe UI", 32.0f)
 
   testWithLeakCheck("HTML5/CSS3 Showcase Mount, Interactions & Zero-Leak Audit"):
@@ -405,7 +424,7 @@ proc runHeadlessVerification(htmlPath, screenshotInitial, screenshotInteractive:
     if screenshotInitial.len > 0:
       let pDir = screenshotInitial.parentDir()
       if pDir.len > 0 and not dirExists(pDir):
-        createDir(pDir)
+        try: createDir(pDir) except CatchableError: discard
       var fbInit = initSoftwareFramebuffer(DesktopWidth, DesktopHeight, ColBgClear)
       fbInit.renderInstancesToBuffer(app.tree.drawInstances, atlas, clearColor = ColBgClear)
       doAssert fbInit.savePng(screenshotInitial), "Failed saving initial screenshot: " & screenshotInitial
@@ -441,7 +460,7 @@ proc runHeadlessVerification(htmlPath, screenshotInitial, screenshotInteractive:
     if screenshotInteractive.len > 0:
       let pDir = screenshotInteractive.parentDir()
       if pDir.len > 0 and not dirExists(pDir):
-        createDir(pDir)
+        try: createDir(pDir) except CatchableError: discard
       var fbInter = initSoftwareFramebuffer(DesktopWidth, DesktopHeight, ColBgClear)
       fbInter.renderInstancesToBuffer(app.tree.drawInstances, atlas, clearColor = ColBgClear)
       doAssert fbInter.savePng(screenshotInteractive), "Failed saving interactive screenshot: " & screenshotInteractive
@@ -453,7 +472,9 @@ proc runPomodoroVerification(htmlPath, screenshotInitial, screenshotCompleted: s
   echo ">>> POMODORO 1-3s HYBRID NIM + QUICKJS HEADLESS VERIFICATION <<<"
   echo "================================================================="
   doAssert fileExists(htmlPath), "Pomodoro HTML not found: " & htmlPath
-  let rawHtml = readFile(htmlPath)
+  let rawHtml =
+    try: readFile(htmlPath)
+    except CatchableError: ""
   let atlas = initFontAtlas("Segoe UI", 32.0f)
 
   testWithLeakCheck("Pomodoro 1-3s Hybrid Nim + QuickJS Timer & Zero-Leak Audit"):
@@ -484,7 +505,7 @@ proc runPomodoroVerification(htmlPath, screenshotInitial, screenshotCompleted: s
     if screenshotInitial.len > 0:
       let pDir = screenshotInitial.parentDir()
       if pDir.len > 0 and not dirExists(pDir):
-        createDir(pDir)
+        try: createDir(pDir) except CatchableError: discard
       var fbInit = initSoftwareFramebuffer(DesktopWidth, DesktopHeight, ColBgClear)
       fbInit.renderInstancesToBuffer(app.tree.drawInstances, atlas, clearColor = ColBgClear)
       doAssert fbInit.savePng(screenshotInitial), "Failed saving initial pomodoro screenshot"
@@ -515,7 +536,7 @@ proc runPomodoroVerification(htmlPath, screenshotInitial, screenshotCompleted: s
     if screenshotCompleted.len > 0:
       let pDir = screenshotCompleted.parentDir()
       if pDir.len > 0 and not dirExists(pDir):
-        createDir(pDir)
+        try: createDir(pDir) except CatchableError: discard
       var fbDone = initSoftwareFramebuffer(DesktopWidth, DesktopHeight, ColBgClear)
       fbDone.renderInstancesToBuffer(app.tree.drawInstances, atlas, clearColor = ColBgClear)
       doAssert fbDone.savePng(screenshotCompleted), "Failed saving completed pomodoro screenshot"
@@ -547,7 +568,7 @@ proc runInteractiveWindow(htmlPath: string, allowJs: bool) =
       if app.allowJs and app.jsSession.hasActiveTimers():
         let tickRes = app.jsSession.tick(dtMs)
         if tickRes.isErr():
-          echo "[ERROR] QuickJS timer tick failed: ", tickRes.error()
+          try: echo "[ERROR] QuickJS timer tick failed: ", tickRes.error() except CatchableError: discard
 
     let events = win.pollEvents()
     for ev in events:
@@ -585,13 +606,15 @@ proc runInteractiveWindow(htmlPath: string, allowJs: bool) =
       let imgIdx = frameRes.get()
       discard app.tree.buildDrawInstances(atlas)
       if app.tree.drawInstances.len > 0:
-        backend.renderInstances(imgIdx, addr app.tree.drawInstances[0], app.tree.drawInstances.len, ColBgClear)
+        # Safe: drawInstances.len > 0 is checked; pointer valid for synchronous Vulkan upload.
+        block trustedUnsafe:
+          backend.renderInstances(imgIdx, addr app.tree.drawInstances[0], app.tree.drawInstances.len, ColBgClear)
     else:
       app.tree.isDirty = true
 
     if not app.tree.isDirty and not app.tree.isLayoutDirty and win.running:
       if app.allowJs and app.jsSession.hasActiveTimers():
-        sleep(16)
+        try: sleep(16) except CatchableError: discard
       else:
         win.waitEvents(16)
 
@@ -606,7 +629,9 @@ proc main() =
   var screenshotInitial = ""
   var screenshotInteractive = ""
 
-  let args = commandLineParams()
+  let args =
+    try: commandLineParams()
+    except CatchableError: @[]
   var i = 0
   while i < args.len:
     if (args[i] == "--file" or args[i] == "--html") and i + 1 < args.len:

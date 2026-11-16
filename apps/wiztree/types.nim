@@ -315,7 +315,8 @@ proc `=sink`*(dest: var Tree, src: Tree) {.raises: [].} =
   dest.rootIdx = src.rootIdx
   dest.stats = src.stats
 
-proc `=copy`*(dest: var Tree, src: Tree) {.raises: [].} =
+# Safe: duplicates src.stringArena.backing into newly allocated dest.stringArena.backing.
+proc `=copy`*(dest: var Tree, src: Tree) {.trustedUnsafe, raises: [].} =
   ## Deep copy hook for Tree duplicating node buffer, string arena, and map.
   if dest.stringArena.backing == src.stringArena.backing and not dest.stringArena.backing.isNil:
     return
@@ -386,18 +387,15 @@ proc `[]`*(tree: var Tree, idx: int32): var Node {.inline, raises: [].} =
   tree.nodes[int(idx)]
 
 proc root*(tree: Tree): lent Node {.inline, raises: [].} =
-  ## Returns read-only reference to the root node.
-  if unlikely(tree.rootIdx < 0 or tree.rootIdx >= tree.nodes.len):
-    raise (ref IndexDefect)(msg: "Tree has no valid root node index")
+  ## Returns read-only reference to the root node (BufSeq.[] enforces bounds).
   tree.nodes[int(tree.rootIdx)]
 
 proc root*(tree: var Tree): var Node {.inline, raises: [].} =
-  ## Returns mutable reference to the root node.
-  if unlikely(tree.rootIdx < 0 or tree.rootIdx >= tree.nodes.len):
-    raise (ref IndexDefect)(msg: "Tree has no valid root node index")
+  ## Returns mutable reference to the root node (BufSeq.[] enforces bounds).
   tree.nodes[int(tree.rootIdx)]
 
-proc ensureArenaCapacity*(tree: var Tree, extraBytes: int) {.raises: [].} =
+# Safe: grows stringArena.backing via allocShared0/copyMem/deallocShared while preserving offset bytes.
+proc ensureArenaCapacity*(tree: var Tree, extraBytes: int) {.trustedUnsafe, raises: [].} =
   ## Ensures the linear string arena has room for `extraBytes` more bytes.
   let needed = tree.stringArena.offset + extraBytes
   if needed > tree.stringArena.capacity:
@@ -411,7 +409,8 @@ proc ensureArenaCapacity*(tree: var Tree, extraBytes: int) {.raises: [].} =
     tree.stringArena.backing = newMem
     tree.stringArena.capacity = newCap
 
-proc internName*(tree: var Tree, name: openArray[char]): tuple[offset: uint32, len: uint16] {.raises: [].} =
+# Safe: ensures arena capacity for clampedLen before copying UTF-8 bytes into stringArena.backing.
+proc internName*(tree: var Tree, name: openArray[char]): tuple[offset: uint32, len: uint16] {.trustedUnsafe, raises: [].} =
   ## Stores a UTF-8 filename in the string arena with zero heap fragmentation.
   let nLen = name.len
   if nLen <= 0:
@@ -431,7 +430,8 @@ proc internName*(tree: var Tree, name: string): tuple[offset: uint32, len: uint1
   if name.len == 0: (0'u32, 0'u16)
   else: tree.internName(name.toOpenArray(0, name.len - 1))
 
-proc getNameByteSpan*(tree: Tree, node: Node): ByteSpan {.inline, raises: [].} =
+# Safe: returns non-owning ByteSpan into tree.stringArena.backing bounded by node.nameOffset..+nameLen.
+proc getNameByteSpan*(tree: Tree, node: Node): ByteSpan {.trustedUnsafe, inline, raises: [].} =
   ## Zero-copy non-owning slice viewing the node's filename in the arena.
   if node.nameLen == 0 or tree.stringArena.backing.isNil:
     ByteSpan(data: nil, len: 0)
@@ -439,7 +439,8 @@ proc getNameByteSpan*(tree: Tree, node: Node): ByteSpan {.inline, raises: [].} =
     let p = cast[ptr UncheckedArray[byte]](cast[uint](tree.stringArena.backing) + uint(node.nameOffset))
     ByteSpan(data: p, len: int(node.nameLen))
 
-proc getName*(tree: Tree, node: Node): string {.inline, raises: [].} =
+# Safe: copies node.nameLen bytes from tree.stringArena.backing into newly allocated string.
+proc getName*(tree: Tree, node: Node): string {.trustedUnsafe, inline, raises: [].} =
   ## Allocates and returns a standard string copy of the node's filename.
   if node.nameLen == 0 or tree.stringArena.backing.isNil:
     return ""

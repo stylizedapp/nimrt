@@ -324,7 +324,9 @@ proc rebuildScene*(app: StudioApp) {.raises: [].} =
       <div class="status-pill" data-text="global-status">Ready</div>
     </div>
   """
-  discard mountHtmlString(app.tree, addr app.rt, headerHtml, "", app.bindings, rootId)
+  # Safe: app.rt is owned by app and outlives the mounted UI tree.
+  block trustedUnsafe:
+    discard mountHtmlString(app.tree, addr app.rt, headerHtml, "", app.bindings, rootId)
 
   # Scene Body Host
   let bodyHost = Box(
@@ -539,7 +541,9 @@ proc rebuildScene*(app: StudioApp) {.raises: [].} =
         </div>
       </div>
     """
-    discard mountHtmlString(app.tree, addr app.rt, dashHtml, "", app.bindings, bodyHost)
+    # Safe: app.rt is owned by app and outlives the mounted UI tree.
+    block trustedUnsafe:
+      discard mountHtmlString(app.tree, addr app.rt, dashHtml, "", app.bindings, bodyHost)
 
   of 1:
     # =========================================================================
@@ -552,17 +556,23 @@ proc rebuildScene*(app: StudioApp) {.raises: [].} =
 
     app.bindings.onInput("sync-name", proc(t: string) {.closure, gcsafe, raises: [].} =
       {.cast(gcsafe).}:
-        app.userName = t
+        var copy = newStringOfCap(t.len)
+        copy.add(t)
+        app.userName = copy
         app.profileSummarySig.set(app.updateProfileSummaryText())
     )
     app.bindings.onInput("sync-role", proc(t: string) {.closure, gcsafe, raises: [].} =
       {.cast(gcsafe).}:
-        app.userRole = t
+        var copy = newStringOfCap(t.len)
+        copy.add(t)
+        app.userRole = copy
         app.profileSummarySig.set(app.updateProfileSummaryText())
     )
     app.bindings.onInput("sync-tags", proc(t: string) {.closure, gcsafe, raises: [].} =
       {.cast(gcsafe).}:
-        app.tagQuery = t
+        var copy = newStringOfCap(t.len)
+        copy.add(t)
+        app.tagQuery = copy
         app.profileSummarySig.set(app.updateProfileSummaryText())
     )
     app.bindings.onClick("apply-preset", proc() {.closure, gcsafe, raises: [].} =
@@ -638,7 +648,9 @@ proc rebuildScene*(app: StudioApp) {.raises: [].} =
         <button id="btn-preset" class="preset-btn" data-click="apply-preset">Load Verified Engineer Preset</button>
       </div>
     """
-    discard mountHtmlString(app.tree, addr app.rt, formHtml, "", app.bindings, leftCardHost)
+    # Safe: app.rt is owned by app and outlives the mounted UI tree.
+    block trustedUnsafe:
+      discard mountHtmlString(app.tree, addr app.rt, formHtml, "", app.bindings, leftCardHost)
 
     # Right half: Native NimUI Interactive Controls + Multiline TextArea
     let rightCard = VStack(
@@ -680,10 +692,12 @@ proc rebuildScene*(app: StudioApp) {.raises: [].} =
 
     let sliderLblSig = app.rt.createSignal(&"Worker Threads: {int(app.workerThreads)}  |  Memory Budget: {int(app.memBudgetMb)} MB")
     let sliderLblId = Text(app.tree, rightCard, sliderLblSig.get(), size = 12.0f, color = ColTextSec)
-    bindText(addr app.tree, addr app.rt, sliderLblId, proc(): string {.closure, gcsafe, raises: [].} =
-      {.cast(gcsafe).}:
-        sliderLblSig.get()
-    )
+    # Safe: app.tree and app.rt outlive the reactive effect closure.
+    block trustedUnsafe:
+      bindText(addr app.tree, addr app.rt, sliderLblId, proc(): string {.closure, gcsafe, raises: [].} =
+        {.cast(gcsafe).}:
+          sliderLblSig.get()
+      )
     discard Slider(app.tree, rightCard, minVal = 1.0f, maxVal = 64.0f, currentVal = app.workerThreads, step = 1.0f, width = flexGrow(), onValueChange = proc(v: float32) {.closure, gcsafe, raises: [].} =
       {.cast(gcsafe).}:
         app.workerThreads = v
@@ -771,7 +785,9 @@ proc rebuildScene*(app: StudioApp) {.raises: [].} =
         </div>
       </div>
     """
-    discard mountHtmlString(app.tree, addr app.rt, sbHtml, "", app.bindings, bodyHost)
+    # Safe: app.rt is owned by app and outlives the mounted UI tree.
+    block trustedUnsafe:
+      discard mountHtmlString(app.tree, addr app.rt, sbHtml, "", app.bindings, bodyHost)
 
     let previewPanel = VStack(
       app.tree, bodyHost,
@@ -787,7 +803,9 @@ proc rebuildScene*(app: StudioApp) {.raises: [].} =
     app.sandboxPreviewBox = previewPanel
     discard Text(app.tree, previewPanel, "Live Mounted DOM Preview (Only populated when Zero-JS validation succeeds):", size = 13.0f, color = ColTextSec)
     if app.sandboxAllowed and app.sandboxMountedHtml.len > 0:
-      discard mountHtmlString(app.tree, addr app.rt, app.sandboxMountedHtml, "", app.bindings, previewPanel)
+      # Safe: app.rt is owned by app and outlives the mounted UI tree.
+      block trustedUnsafe:
+        discard mountHtmlString(app.tree, addr app.rt, app.sandboxMountedHtml, "", app.bindings, previewPanel)
     else:
       discard Box(
         app.tree, previewPanel,
@@ -808,7 +826,9 @@ proc rebuildScene*(app: StudioApp) {.raises: [].} =
     app.bindings.bindTextSignal("grid-status", app.gridStatusSig)
     app.bindings.onInput("grid-filter-input", proc(t: string) {.closure, gcsafe, raises: [].} =
       {.cast(gcsafe).}:
-        app.gridQuery = t
+        var copy = newStringOfCap(t.len)
+        copy.add(t)
+        app.gridQuery = copy
         app.applyVirtualFilter()
     )
     app.bindings.onClick("mode-all", proc() {.closure, gcsafe, raises: [].} =
@@ -831,7 +851,7 @@ proc rebuildScene*(app: StudioApp) {.raises: [].} =
         let targetRow = min(500_000, max(0, app.virtualCount - 1))
         app.selectedRowIdx = targetRow
         if app.virtualListId != SlabId(-1) and app.tree.nodes.contains(app.virtualListId):
-          let vNode = addr app.tree.nodes[app.virtualListId]
+          template vNode: untyped = app.tree.nodes[app.virtualListId]
           vNode.selectedIndex = targetRow
           vNode.scrollOffset = float32(targetRow) * vNode.itemHeight
           app.tree.isDirty = true
@@ -881,7 +901,9 @@ proc rebuildScene*(app: StudioApp) {.raises: [].} =
         <span id="grid-status" class="g-stat" data-text="grid-status">Ready</span>
       </div>
     """
-    discard mountHtmlString(app.tree, addr app.rt, gridTopHtml, "", app.bindings, bodyHost)
+    # Safe: app.rt is owned by app and outlives the mounted UI tree.
+    block trustedUnsafe:
+      discard mountHtmlString(app.tree, addr app.rt, gridTopHtml, "", app.bindings, bodyHost)
 
     let vList = VirtualList(
       app.tree, bodyHost,
@@ -995,13 +1017,16 @@ proc triggerHtmlButtonById(app: StudioApp, id: string) =
     app.needsRebuild = false
     app.rebuildScene()
 
-proc runHeadlessVerification(exportDir: string) =
-  echo "================================================================="
-  echo ">>> HTML5/CSS3 STUDIO HEADLESS VERIFICATION & PNG EXPORT <<<"
-  echo "================================================================="
+proc runHeadlessVerification(exportDir: string) {.raises: [].} =
+  try:
+    echo "================================================================="
+    echo ">>> HTML5/CSS3 STUDIO HEADLESS VERIFICATION & PNG EXPORT <<<"
+    echo "================================================================="
+  except CatchableError:
+    discard
   let atlas = initFontAtlas("Segoe UI", 32.0f)
   if exportDir.len > 0 and not dirExists(exportDir):
-    createDir(exportDir)
+    try: createDir(exportDir) except CatchableError: discard
 
   testWithLeakCheck("Studio 4-Tab Interactive Scenes & Zero-Leak Audit"):
     let app = newStudioApp(testAlloc, atlas)
@@ -1065,14 +1090,17 @@ proc runHeadlessVerification(exportDir: string) =
       fb3.renderInstancesToBuffer(app.tree.drawInstances, atlas, clearColor = ColBgPage)
       doAssert fb3.savePng(exportDir / "studio_tab4_virtual_million.png")
 
-  echo "  [PASS] HTML5/CSS3 Studio headless interactions & 0-leak audit verified."
+  try:
+    echo "  [PASS] HTML5/CSS3 Studio headless interactions & 0-leak audit verified."
+  except CatchableError:
+    discard
 
-proc runInteractiveWindow() =
+proc runInteractiveWindow() {.raises: [].} =
   var win = initNativeWindow("NimUI HTML5/CSS3 Zero-JS Studio", StudioWidth, StudioHeight)
   let atlas = initFontAtlas("Segoe UI", 32.0f)
   var backendRes = initVulkanBackend(win.hwnd, uint32(win.width), uint32(win.height), atlas)
   if not backendRes.isOk:
-    echo "[FATAL] Vulkan init failed: ", backendRes.error
+    try: echo "[FATAL] Vulkan init failed: ", backendRes.error except CatchableError: discard
     return
   var backend = backendRes.get()
   let app = newStudioApp(heapAllocator(), atlas)
@@ -1153,7 +1181,9 @@ proc runInteractiveWindow() =
       let imgIdx = frameRes.get()
       app.renderFrameToInstances(float32(win.width), float32(win.height))
       if app.tree.drawInstances.len > 0:
-        backend.renderInstances(imgIdx, addr app.tree.drawInstances[0], app.tree.drawInstances.len, ColBgPage)
+        # Safe: drawInstances.len > 0 is checked; pointer valid for synchronous Vulkan upload.
+        block trustedUnsafe:
+          backend.renderInstances(imgIdx, addr app.tree.drawInstances[0], app.tree.drawInstances.len, ColBgPage)
     else:
       app.tree.isDirty = true
 
@@ -1163,10 +1193,12 @@ proc runInteractiveWindow() =
   app.destroyStudioApp()
   backend.destroy()
 
-proc main() =
+proc main() {.raises: [].} =
   var headless = false
   var exportDir = ""
-  let args = commandLineParams()
+  let args =
+    try: commandLineParams()
+    except CatchableError: @[]
   var i = 0
   while i < args.len:
     if args[i] == "--headless-test":
