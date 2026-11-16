@@ -58,12 +58,23 @@ proc main() =
   doAssert repText.contains("Status: PASSED"), "Unexpected ATF report:\n" & repText
   echo "  [PASS] 1.1 Valid memory-safe program compiled, passed ATF, and ran cleanly."
 
+  let safeGenSrc = FixturesDir / "safe_generic_valid.nim"
+  let (safeGenOut, safeGenCode) = runNimSafe(
+    "c -r -f --mem-safe --safe-mode --check-safe-atf " & safeGenSrc
+  )
+  doAssert safeGenCode == 0, "Safe generic program failed:\n" & safeGenOut
+  doAssert safeGenOut.contains("[ATF-SAFE] Verified"), "Missing ATF summary for generic:\n" & safeGenOut
+  doAssert safeGenOut.contains("SAFE_GENERIC_OK:42"), "Missing runtime output for generic:\n" & safeGenOut
+  echo "  [PASS] 1.2 Safe generic proc compiled, passed ATF, and ran cleanly."
+
   echo "\n[SUITE 2] --mem-safe AST & Borrow Safety Enforcement..."
   expectRejected("2.1 Unsafe cast", "unsafe_cast_ptr.nim", "--mem-safe", "MEM-SAFE-001")
   expectRejected("2.2 Raw alloc/dealloc", "unsafe_raw_alloc.nim", "--mem-safe", "MEM-SAFE-003")
   expectRejected("2.3 Mutable global var", "unsafe_global_var.nim", "--mem-safe", "MEM-SAFE-005")
   expectRejected("2.4 Borrow-during-mutation", "unsafe_borrow.nim", "--mem-safe", "borrows from")
   expectRejected("2.5 Stack address escape", "unsafe_stack_escape.nim", "--mem-safe", "MEM-SAFE-002")
+  expectRejected("2.6 Generic proc unsafe cast/ptr", "unsafe_generic_cast.nim", "--mem-safe", "MEM-SAFE-001")
+  expectRejected("2.7 Pragma {.push checks: off.}", "unsafe_push_checks_off.nim", "--mem-safe", "MEM-SAFE-007")
 
   echo "\n[SUITE 3] --safe-mode Zero-Exception Policy..."
   expectRejected("3.1 Explicit raise statement rejected", "unsafe_raise_stmt.nim", "--safe-mode", "SAFE-MODE-001")
@@ -82,6 +93,12 @@ proc main() =
     "-d:danger --check-safe-atf",
     "ATF-005"
   )
+  expectRejected(
+    "4.3 Local {.push checks: off.} rejected by ATF",
+    "unsafe_push_checks_off.nim",
+    "--check-safe-atf",
+    "ATF-005"
+  )
 
   echo "\n[SUITE 5] Explicit {.trustedUnsafe.} Escape Hatch (Rust unsafe equivalent)..."
   let trustedSrc = FixturesDir / "trusted_unsafe_escape_hatch.nim"
@@ -94,7 +111,7 @@ proc main() =
   echo "  [PASS] 5.1 Audited {.trustedUnsafe.} proc & block compiled and passed ATF."
 
   # Clean up generated fixture executables/report artifacts
-  for stem in ["safe_valid", "trusted_unsafe_escape_hatch"]:
+  for stem in ["safe_valid", "safe_generic_valid", "trusted_unsafe_escape_hatch"]:
     let exeF = FixturesDir / (stem & ".exe")
     if fileExists(exeF): removeFile(exeF)
   if fileExists(reportPath):

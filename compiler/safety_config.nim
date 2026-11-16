@@ -19,6 +19,11 @@ type
     astViolations*: int
     atfViolations*: int
 
+  CheckSuppression* = object
+    file*: string
+    line*: int
+    detail*: string
+
   SafetyConfig* = object
     memSafeEnabled*: bool
     safeModeEnabled*: bool
@@ -27,6 +32,7 @@ type
     atfReportPath*: string
     userModuleNames*: HashSet[string]
     userModuleCStems*: HashSet[string]
+    checkSuppressions*: seq[CheckSuppression]
     stats*: SafetyStats
 
 var gSafety*: SafetyConfig
@@ -40,6 +46,7 @@ proc resetSafetyConfig*() =
     atfReportPath: "",
     userModuleNames: initHashSet[string](),
     userModuleCStems: initHashSet[string](),
+    checkSuppressions: @[],
     stats: SafetyStats()
   )
 

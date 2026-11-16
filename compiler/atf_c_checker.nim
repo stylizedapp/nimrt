@@ -300,6 +300,15 @@ proc runAtfCSafetyCheck*(conf: ConfigRef) =
       nimLine: 1,
       message: "Runtime bounds/overflow guards cannot be disabled (-d:danger / --checks:off) when --check-safe-atf is active"
     ))
+  for cs in gSafety.checkSuppressions:
+    violations.add(AtfViolation(
+      rule: "ATF-005",
+      cFile: "",
+      cLine: 0,
+      nimFile: cs.file,
+      nimLine: cs.line,
+      message: cs.detail
+    ))
 
   var auditedFiles = 0
   for cf in conf.toCompile:
