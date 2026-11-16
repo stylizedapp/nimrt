@@ -252,15 +252,10 @@ nimble showcase_html
 
 ```powershell
 # Полная проектная документация с индексом (проверено: exit 0)
+nim doc --project --index:on --outdir:htmldocs src/corex.nim
 nim doc --project --index:on --outdir:htmldocs src/algx.nim
 nim doc --project --index:on --outdir:htmldocs src/nimui.nim
-
-# Отдельные подмодули corex (например allocators, result, signals, testing):
-nim doc --outdir:htmldocs src/corex/allocators.nim
-nim doc --outdir:htmldocs src/corex/signals.nim
 ```
-
-> Примечание: `nim doc` для корневого `src/corex.nim` сейчас останавливается на неоднозначности `atomics.load` / `concurrency.load` в `src/corex/async.nim(225, 26)` (в режиме `docgen`), поэтому для `corex` используйте генерацию по конкретным подмодулям.
 
 > **Языковая заметка по документации:** `README.md`, [`docs/STATE.md`](docs/STATE.md), [`docs/BENCHMARK_SHOWCASE.md`](docs/BENCHMARK_SHOWCASE.md) и [`docs/NIM_ROADMAP_FEATURES.md`](docs/NIM_ROADMAP_FEATURES.md) ведутся на русском языке; архитектурные спецификации [`docs/MANIFEST.md`](docs/MANIFEST.md), [`docs/PROJECT.md`](docs/PROJECT.md) и [`docs/DECISIONS.md`](docs/DECISIONS.md) ведутся на английском языке.
 
