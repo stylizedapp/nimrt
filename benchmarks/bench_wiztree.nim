@@ -13,8 +13,8 @@
 import std/[strformat, monotimes, times]
 import corex
 import algx
-import wiztree/types
-import wiztree/tree
+import ../apps/wiztree/types
+import ../apps/wiztree/tree
 
 const
   Count500K = 500_000

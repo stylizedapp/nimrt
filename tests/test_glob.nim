@@ -1,4 +1,4 @@
-import everything/src/search
+import ../apps/everything/src/search
 
 proc runGlobTests() =
   echo "=== RUNNING MATCHGLOB TESTS ==="

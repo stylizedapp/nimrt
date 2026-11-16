@@ -13,8 +13,8 @@ import corex
 import corex/[allocators, result, testing, concurrency]
 import corex/platform/windows/win32_fs
 import corex/platform/windows/win32_volume
-import everything/src/indexer
-import everything/src/usn_monitor
+import ../apps/everything/src/indexer
+import ../apps/everything/src/usn_monitor
 
 # =============================================================================
 # Mock Record & Buffer Generators

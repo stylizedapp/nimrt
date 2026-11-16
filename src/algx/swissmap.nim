@@ -180,7 +180,7 @@ proc grow[K, V](m: var FastMap[K, V]) {.raises: [].} =
   let oldCap = m.ctrl.len
   let newCap = if oldCap == 0: 64 else: oldCap * 2
   let newMask = newCap - 1
-  let newGroupMask = newMask shr 4
+  let newSlotMask = newMask xor 15
 
   var newCtrl = newSeq[uint8](newCap)
   var newKeys = newSeq[K](newCap)
@@ -199,20 +199,19 @@ proc grow[K, V](m: var FastMap[K, V]) {.raises: [].} =
     if tag >= 2'u8:
       let k = pOldKeys[i]
       let h = fastHash(k)
-      var g = int(h and uint64(newGroupMask))
+      var baseIdx = int(h and uint64(newSlotMask))
       var step = 0
       while true:
-        let baseIdx = g shl 4
         let grp = loadCtrlGroup(addr pNewCtrl[baseIdx])
         let emptyMask = matchGroupEmpty(grp)
-        if emptyMask != 0'u32:
+        if likely(emptyMask != 0'u32):
           let target = baseIdx + countTrailingZeroBits(emptyMask)
           pNewCtrl[target] = tag
           pNewKeys[target] = k
           pNewVals[target] = pOldVals[i]
           break
-        inc step
-        g = (g + step) and newGroupMask
+        step += 16
+        baseIdx = (baseIdx + step) and newSlotMask
 
   m.ctrl = move(newCtrl)
   m.keys = move(newKeys)
@@ -221,22 +220,22 @@ proc grow[K, V](m: var FastMap[K, V]) {.raises: [].} =
   m.usedSlots = m.count
 
 proc put*[K, V](m: var FastMap[K, V], key: K, val: V) {.inline, raises: [].} =
-  if m.ctrl.len == 0 or (m.usedSlots + 1) * 4 >= m.ctrl.len * 3:
+  if unlikely(m.ctrl.len == 0 or (m.usedSlots + 1) * 4 >= m.ctrl.len * 3):
     m.grow()
 
   let h = fastHash(key)
   let tag = extractTag(h)
-  let groupMask = m.mask shr 4
+  let slotMask = m.mask xor 15
   let pCtrl = cast[ptr UncheckedArray[uint8]](addr m.ctrl[0])
   let pKeys = cast[ptr UncheckedArray[K]](addr m.keys[0])
   let pVals = cast[ptr UncheckedArray[V]](addr m.vals[0])
 
-  var g = int(h and uint64(groupMask))
+  var baseIdx = int(h and uint64(slotMask))
   var step = 0
+  let hasTombstones = m.usedSlots > m.count
   var firstDeleted = -1
 
   while true:
-    let baseIdx = g shl 4
     let grp = loadCtrlGroup(addr pCtrl[baseIdx])
 
     # 1. Match tag across 16 slots in parallel with SSE2
@@ -244,23 +243,23 @@ proc put*[K, V](m: var FastMap[K, V], key: K, val: V) {.inline, raises: [].} =
     while matchMask != 0'u32:
       let slotOffset = countTrailingZeroBits(matchMask)
       let slotIdx = baseIdx + slotOffset
-      if pKeys[slotIdx] == key:
+      if likely(pKeys[slotIdx] == key):
         pVals[slotIdx] = val
         return
       matchMask = matchMask and (matchMask - 1'u32)
 
-    # 2. Track first deleted slot
-    if firstDeleted < 0:
+    # 2. Track first deleted slot (only when tombstones exist)
+    if unlikely(hasTombstones and firstDeleted < 0):
       let delMask = matchGroupDeleted(grp)
       if delMask != 0'u32:
         firstDeleted = baseIdx + countTrailingZeroBits(delMask)
 
     # 3. Match empty slots across 16 slots in parallel
     let emptyMask = matchGroupEmpty(grp)
-    if emptyMask != 0'u32:
-      let target = if firstDeleted >= 0: firstDeleted
+    if likely(emptyMask != 0'u32):
+      let target = if unlikely(firstDeleted >= 0): firstDeleted
                    else: baseIdx + countTrailingZeroBits(emptyMask)
-      if firstDeleted < 0:
+      if likely(firstDeleted < 0):
         inc(m.usedSlots)
       pCtrl[target] = tag
       pKeys[target] = key
@@ -269,103 +268,100 @@ proc put*[K, V](m: var FastMap[K, V], key: K, val: V) {.inline, raises: [].} =
       return
 
     # 4. Triangular / quadratic group jumping
-    inc step
-    g = (g + step) and groupMask
+    step += 16
+    baseIdx = (baseIdx + step) and slotMask
 
 proc `[]=`*[K, V](m: var FastMap[K, V], key: K, val: V) {.inline, raises: [].} =
   m.put(key, val)
 
 proc getOrDefault*[K, V](m: FastMap[K, V], key: K, defaultVal: V): V {.inline, raises: [].} =
-  if m.count == 0 or m.ctrl.len == 0:
+  if unlikely(m.count == 0):
     return defaultVal
 
   let h = fastHash(key)
   let tag = extractTag(h)
-  let groupMask = m.mask shr 4
+  let slotMask = m.mask xor 15
   let pCtrl = cast[ptr UncheckedArray[uint8]](unsafeAddr m.ctrl[0])
   let pKeys = cast[ptr UncheckedArray[K]](unsafeAddr m.keys[0])
   let pVals = cast[ptr UncheckedArray[V]](unsafeAddr m.vals[0])
 
-  var g = int(h and uint64(groupMask))
+  var baseIdx = int(h and uint64(slotMask))
   var step = 0
 
   while true:
-    let baseIdx = g shl 4
     let grp = loadCtrlGroup(addr pCtrl[baseIdx])
 
     var matchMask = matchGroupTag(grp, tag)
     while matchMask != 0'u32:
       let slotOffset = countTrailingZeroBits(matchMask)
       let slotIdx = baseIdx + slotOffset
-      if pKeys[slotIdx] == key:
+      if likely(pKeys[slotIdx] == key):
         return pVals[slotIdx]
       matchMask = matchMask and (matchMask - 1'u32)
 
     let emptyMask = matchGroupEmpty(grp)
-    if emptyMask != 0'u32:
+    if likely(emptyMask != 0'u32):
       return defaultVal
 
-    inc step
-    g = (g + step) and groupMask
+    step += 16
+    baseIdx = (baseIdx + step) and slotMask
 
 proc getOrDefault*[K, V](m: FastMap[K, V], key: K): V {.inline, raises: [].} =
   getOrDefault(m, key, default(V))
 
 proc contains*[K, V](m: FastMap[K, V], key: K): bool {.inline, raises: [].} =
-  if m.count == 0 or m.ctrl.len == 0:
+  if unlikely(m.count == 0):
     return false
 
   let h = fastHash(key)
   let tag = extractTag(h)
-  let groupMask = m.mask shr 4
+  let slotMask = m.mask xor 15
   let pCtrl = cast[ptr UncheckedArray[uint8]](unsafeAddr m.ctrl[0])
   let pKeys = cast[ptr UncheckedArray[K]](unsafeAddr m.keys[0])
 
-  var g = int(h and uint64(groupMask))
+  var baseIdx = int(h and uint64(slotMask))
   var step = 0
 
   while true:
-    let baseIdx = g shl 4
     let grp = loadCtrlGroup(addr pCtrl[baseIdx])
 
     var matchMask = matchGroupTag(grp, tag)
     while matchMask != 0'u32:
       let slotOffset = countTrailingZeroBits(matchMask)
       let slotIdx = baseIdx + slotOffset
-      if pKeys[slotIdx] == key:
+      if likely(pKeys[slotIdx] == key):
         return true
       matchMask = matchMask and (matchMask - 1'u32)
 
     let emptyMask = matchGroupEmpty(grp)
-    if emptyMask != 0'u32:
+    if likely(emptyMask != 0'u32):
       return false
 
-    inc step
-    g = (g + step) and groupMask
+    step += 16
+    baseIdx = (baseIdx + step) and slotMask
 
 proc del*[K, V](m: var FastMap[K, V], key: K): bool {.inline, raises: [].} =
-  if m.count == 0 or m.ctrl.len == 0:
+  if unlikely(m.count == 0):
     return false
 
   let h = fastHash(key)
   let tag = extractTag(h)
-  let groupMask = m.mask shr 4
+  let slotMask = m.mask xor 15
   let pCtrl = cast[ptr UncheckedArray[uint8]](addr m.ctrl[0])
   let pKeys = cast[ptr UncheckedArray[K]](addr m.keys[0])
   let pVals = cast[ptr UncheckedArray[V]](addr m.vals[0])
 
-  var g = int(h and uint64(groupMask))
+  var baseIdx = int(h and uint64(slotMask))
   var step = 0
 
   while true:
-    let baseIdx = g shl 4
     let grp = loadCtrlGroup(addr pCtrl[baseIdx])
 
     var matchMask = matchGroupTag(grp, tag)
     while matchMask != 0'u32:
       let slotOffset = countTrailingZeroBits(matchMask)
       let slotIdx = baseIdx + slotOffset
-      if pKeys[slotIdx] == key:
+      if likely(pKeys[slotIdx] == key):
         pCtrl[slotIdx] = SlotDeleted
         reset(pKeys[slotIdx])
         reset(pVals[slotIdx])
@@ -374,109 +370,106 @@ proc del*[K, V](m: var FastMap[K, V], key: K): bool {.inline, raises: [].} =
       matchMask = matchMask and (matchMask - 1'u32)
 
     let emptyMask = matchGroupEmpty(grp)
-    if emptyMask != 0'u32:
+    if likely(emptyMask != 0'u32):
       return false
 
-    inc step
-    g = (g + step) and groupMask
+    step += 16
+    baseIdx = (baseIdx + step) and slotMask
 
 proc get*[K, V](m: FastMap[K, V], key: K): Option[V] {.inline, raises: [].} =
   ## Safe non-panicking lookup returning Some(val) or None if key is absent.
-  if m.count == 0 or m.ctrl.len == 0:
+  if unlikely(m.count == 0):
     return none(V)
 
   let h = fastHash(key)
   let tag = extractTag(h)
-  let groupMask = m.mask shr 4
+  let slotMask = m.mask xor 15
   let pCtrl = cast[ptr UncheckedArray[uint8]](unsafeAddr m.ctrl[0])
   let pKeys = cast[ptr UncheckedArray[K]](unsafeAddr m.keys[0])
   let pVals = cast[ptr UncheckedArray[V]](unsafeAddr m.vals[0])
 
-  var g = int(h and uint64(groupMask))
+  var baseIdx = int(h and uint64(slotMask))
   var step = 0
 
   while true:
-    let baseIdx = g shl 4
     let grp = loadCtrlGroup(addr pCtrl[baseIdx])
 
     var matchMask = matchGroupTag(grp, tag)
     while matchMask != 0'u32:
       let slotOffset = countTrailingZeroBits(matchMask)
       let slotIdx = baseIdx + slotOffset
-      if pKeys[slotIdx] == key:
+      if likely(pKeys[slotIdx] == key):
         return some(pVals[slotIdx])
       matchMask = matchMask and (matchMask - 1'u32)
 
     let emptyMask = matchGroupEmpty(grp)
-    if emptyMask != 0'u32:
+    if likely(emptyMask != 0'u32):
       return none(V)
 
-    inc step
-    g = (g + step) and groupMask
+    step += 16
+    baseIdx = (baseIdx + step) and slotMask
 
 proc `[]`*[K, V](m: FastMap[K, V], key: K): lent V {.inline, raises: [].} =
-  if m.count > 0 and m.ctrl.len > 0:
+  if likely(m.count > 0):
     let h = fastHash(key)
     let tag = extractTag(h)
-    let groupMask = m.mask shr 4
+    let slotMask = m.mask xor 15
     let pCtrl = cast[ptr UncheckedArray[uint8]](unsafeAddr m.ctrl[0])
     let pKeys = cast[ptr UncheckedArray[K]](unsafeAddr m.keys[0])
     let pVals = cast[ptr UncheckedArray[V]](unsafeAddr m.vals[0])
 
-    var g = int(h and uint64(groupMask))
+    var baseIdx = int(h and uint64(slotMask))
     var step = 0
 
     while true:
-      let baseIdx = g shl 4
       let grp = loadCtrlGroup(addr pCtrl[baseIdx])
 
       var matchMask = matchGroupTag(grp, tag)
       while matchMask != 0'u32:
         let slotOffset = countTrailingZeroBits(matchMask)
         let slotIdx = baseIdx + slotOffset
-        if pKeys[slotIdx] == key:
+        if likely(pKeys[slotIdx] == key):
           return pVals[slotIdx]
         matchMask = matchMask and (matchMask - 1'u32)
 
       let emptyMask = matchGroupEmpty(grp)
-      if emptyMask != 0'u32:
+      if likely(emptyMask != 0'u32):
         break
 
-      inc step
-      g = (g + step) and groupMask
+      step += 16
+      baseIdx = (baseIdx + step) and slotMask
 
   raiseAssert("FastMap[]: key not found")
 
 proc `[]`*[K, V](m: var FastMap[K, V], key: K): var V {.inline, raises: [].} =
-  if m.count > 0 and m.ctrl.len > 0:
+  if likely(m.count > 0):
     let h = fastHash(key)
     let tag = extractTag(h)
-    let groupMask = m.mask shr 4
+    let slotMask = m.mask xor 15
     let pCtrl = cast[ptr UncheckedArray[uint8]](addr m.ctrl[0])
     let pKeys = cast[ptr UncheckedArray[K]](addr m.keys[0])
     let pVals = cast[ptr UncheckedArray[V]](addr m.vals[0])
 
-    var g = int(h and uint64(groupMask))
+    var baseIdx = int(h and uint64(slotMask))
     var step = 0
 
     while true:
-      let baseIdx = g shl 4
       let grp = loadCtrlGroup(addr pCtrl[baseIdx])
 
       var matchMask = matchGroupTag(grp, tag)
       while matchMask != 0'u32:
         let slotOffset = countTrailingZeroBits(matchMask)
         let slotIdx = baseIdx + slotOffset
-        if pKeys[slotIdx] == key:
+        if likely(pKeys[slotIdx] == key):
           return pVals[slotIdx]
         matchMask = matchMask and (matchMask - 1'u32)
 
       let emptyMask = matchGroupEmpty(grp)
-      if emptyMask != 0'u32:
+      if likely(emptyMask != 0'u32):
         break
 
-      inc step
-      g = (g + step) and groupMask
+      step += 16
+      baseIdx = (baseIdx + step) and slotMask
 
   raiseAssert("FastMap[]: key not found")
 
