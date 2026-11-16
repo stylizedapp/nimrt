@@ -1,0 +1,22 @@
+cff-version: 1.2.0
+message: "If you use this software in your research, benchmarks, or projects, please cite it as below."
+authors:
+  - family-names: "Sanalyny"
+    given-names: "Sanal"
+title: "NimRT: High-Performance Systems Foundation & Vulkan SDF Native UI Ecosystem for Nim"
+version: 0.1.0
+date-released: 2026-11-16
+url: "https://github.com/stylizedapp/nimrt"
+repository-code: "https://github.com/stylizedapp/nimrt"
+keywords:
+  - "nim"
+  - "vulkan"
+  - "gui"
+  - "html5"
+  - "css3"
+  - "quickjs"
+  - "sdf"
+  - "memory-safety"
+  - "systems-programming"
+  - "electron-alternative"
+license: MIT

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 📖 Documentation & Architecture Manifest
+    url: https://github.com/stylizedapp/nimrt/tree/main/docs
+    about: Read the architectural manifest, benchmark analyses, and design decisions.
+  - name: 💬 Discussions & Q&A
+    url: https://github.com/stylizedapp/nimrt/discussions
+    about: Ask questions, share ideas, or discuss implementation approaches with the community.

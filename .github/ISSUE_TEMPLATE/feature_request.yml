@@ -1,0 +1,51 @@
+name: '✨ Feature Request / Proposal'
+description: 'Suggest a new feature, algorithm, CSS property, or improvement for NimRT'
+title: '[FEATURE]: '
+labels: ['enhancement']
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for helping evolve NimRT! Please outline your proposal clearly so the team can review feasibility and architecture alignment.
+  - type: dropdown
+    id: category
+    attributes:
+      label: Area
+      description: What part of the ecosystem does this proposal target?
+      options:
+        - 'NimUI (HTML5 / CSS3 Features, Layout, Widgets)'
+        - 'GPU & Graphics (Vulkan backend, shaders, text rendering)'
+        - 'CoreX (Memory allocators, concurrency, platform I/O)'
+        - 'AlgX (Algorithms, data structures, SIMD acceleration)'
+        - 'QuickJS / JS Bridge & Capabilities'
+        - 'nim_safe Compiler & ATF Verification'
+        - 'Platform Support (Linux / macOS / POSIX porting)'
+        - 'Developer Experience & Documentation'
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or Motivation
+      description: Is your feature request related to a specific limitation or problem? Please describe.
+      placeholder: 'Currently, CSS Grid is unsupported, which makes complex 2D dashboards require nested flexboxes...'
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution / Design
+      description: A clear and concise description of what you want to happen and how it fits into the architecture.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Any alternative solutions or workarounds you have considered.
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Implementation
+      options:
+        - label: I am willing to submit a Pull Request for this feature.
