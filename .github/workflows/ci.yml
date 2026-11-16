@@ -38,6 +38,10 @@ jobs:
         shell: pwsh
         run: nimble build_compiler
 
+      - name: Build Release Binaries
+        shell: pwsh
+        run: nimble build_release
+
       - name: Run full test suite (nimble test_all)
         shell: pwsh
         run: nimble test_all

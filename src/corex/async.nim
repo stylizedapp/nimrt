@@ -222,7 +222,7 @@ when defined(windows):
     let reactor = arg
     var entries: array[ReactorBatchSize, OVERLAPPED_ENTRY]
 
-    while reactor.running.load(moAcquire):
+    while atomics.load(reactor.running, moAcquire):
       var removed: uint32 = 0
       let okVal = winGetQueuedCompletionStatusEx(
         reactor.iocpHandle,
@@ -266,7 +266,7 @@ when defined(windows):
         let errCode = int32(winGetLastError())
         if errCode == WAIT_TIMEOUT:
           continue
-        elif not reactor.running.load(moAcquire):
+        elif not atomics.load(reactor.running, moAcquire):
           break
 
   proc initAsyncReactor*(
@@ -284,16 +284,16 @@ when defined(windows):
     reactor.pool = pool
     reactor.overlappedPool = initOverlappedPool(poolCapacity, allocator)
     reactor.allocator = allocator
-    reactor.running.store(true, moRelaxed)
-    reactor.started.store(true, moRelaxed)
-    reactor.completedOps.store(0'u64, moRelaxed)
-    reactor.failedOps.store(0'u64, moRelaxed)
+    atomics.store(reactor.running, true, moRelaxed)
+    atomics.store(reactor.started, true, moRelaxed)
+    atomics.store(reactor.completedOps, 0'u64, moRelaxed)
+    atomics.store(reactor.failedOps, 0'u64, moRelaxed)
 
     try:
       createThread(reactor.workerThread, reactorWorkerProc, addr reactor)
     except CatchableError:
-      reactor.started.store(false, moRelaxed)
-      reactor.running.store(false, moRelaxed)
+      atomics.store(reactor.started, false, moRelaxed)
+      atomics.store(reactor.running, false, moRelaxed)
       discard winCloseHandle(reactor.iocpHandle)
       reactor.iocpHandle = nil
       return err[void, int32](ERROR_NOT_ENOUGH_MEMORY)
@@ -324,16 +324,16 @@ when defined(windows):
     p.pool = pool
     p.overlappedPool = initOverlappedPool(poolCapacity, allocator)
     p.allocator = allocator
-    p.running.store(true, moRelaxed)
-    p.started.store(true, moRelaxed)
-    p.completedOps.store(0'u64, moRelaxed)
-    p.failedOps.store(0'u64, moRelaxed)
+    atomics.store(p.running, true, moRelaxed)
+    atomics.store(p.started, true, moRelaxed)
+    atomics.store(p.completedOps, 0'u64, moRelaxed)
+    atomics.store(p.failedOps, 0'u64, moRelaxed)
 
     try:
       createThread(p.workerThread, reactorWorkerProc, p)
     except CatchableError:
-      p.started.store(false, moRelaxed)
-      p.running.store(false, moRelaxed)
+      atomics.store(p.started, false, moRelaxed)
+      atomics.store(p.running, false, moRelaxed)
       discard winCloseHandle(p.iocpHandle)
       p.iocpHandle = nil
       if allocator.freeFn != nil: allocator.freeFn(allocator.ctx, raw, sizeof(AsyncReactor))
@@ -347,9 +347,9 @@ when defined(windows):
     if reactor.running.exchange(false, moAcqRel):
       if reactor.iocpHandle != nil and reactor.iocpHandle != INVALID_HANDLE_VALUE:
         discard winPostQueuedCompletionStatus(reactor.iocpHandle, 0, ShutdownSentinelKey, nil)
-      if reactor.started.load(moAcquire):
+      if atomics.load(reactor.started, moAcquire):
         joinThread(reactor.workerThread)
-        reactor.started.store(false, moRelease)
+        atomics.store(reactor.started, false, moRelease)
 
   proc stop*(reactor: ptr AsyncReactor) {.inline, raises: [].} =
     if reactor != nil: stop(reactor[])
@@ -381,10 +381,10 @@ when defined(windows):
 
   proc getDefaultReactor*(pool: ptr ThreadPool = nil): ptr AsyncReactor {.raises: [].} =
     ## Returns the process-wide shared default AsyncReactor instance, initialized lazily.
-    var r = cast[ptr AsyncReactor](gDefaultReactor.load(moAcquire))
+    var r = cast[ptr AsyncReactor](atomics.load(gDefaultReactor, moAcquire))
     if r == nil:
       acquire(gDefaultReactorLock)
-      r = cast[ptr AsyncReactor](gDefaultReactor.load(moAcquire))
+      r = cast[ptr AsyncReactor](atomics.load(gDefaultReactor, moAcquire))
       if r == nil:
         var tp = pool
         if tp == nil:
@@ -392,17 +392,17 @@ when defined(windows):
         let res = newAsyncReactor(tp)
         if res.isOk:
           r = res.val
-          gDefaultReactor.store(cast[pointer](r), moRelease)
+          atomics.store(gDefaultReactor, cast[pointer](r), moRelease)
       release(gDefaultReactorLock)
     r
 
   proc shutdownAsyncReactor*() {.raises: [].} =
     ## Gracefully shuts down and frees the process-wide default AsyncReactor.
-    if gDefaultReactor.load(moAcquire) != nil:
+    if atomics.load(gDefaultReactor, moAcquire) != nil:
       acquire(gDefaultReactorLock)
-      let p = gDefaultReactor.load(moAcquire)
+      let p = atomics.load(gDefaultReactor, moAcquire)
       if p != nil:
-        gDefaultReactor.store(nil, moRelease)
+        atomics.store(gDefaultReactor, nil, moRelease)
         destroy(cast[ptr AsyncReactor](p))
       release(gDefaultReactorLock)
 

@@ -117,6 +117,15 @@ task test_stress, "Run adversarial I/O and filesystem walk stress tests":
   exec "nim c -r tests/stress_m5_io.nim"
   exec "nim c -r tests/stress_walkdir.nim"
 
+task build_release, "Build release binaries (html_desktop, wiztree, widget_gallery, nim_safe) into bin/":
+  when defined(windows):
+    if not fileExists("src/nimui/js/libquickjs.a"):
+      exec "powershell -ExecutionPolicy Bypass -File tools/build_quickjs.ps1"
+  exec "nim c -d:release --opt:speed --nimcache:nimcache/rel_html_desktop -o:bin/html_desktop.exe apps/html_desktop/src/main.nim"
+  exec "nim c -d:release --opt:speed --nimcache:nimcache/rel_wiztree -o:bin/wiztree.exe apps/wiztree/wiztree.nim"
+  exec "nim c -d:release --opt:speed --nimcache:nimcache/rel_widget_gallery -o:bin/widget_gallery.exe apps/widget_gallery/src/main.nim"
+  exec "nim c --skipParentCfg:on -d:release --nimcache:nimcache/rel_nim_safe -o:bin/nim_safe.exe compiler/nim_safe.nim"
+
 task test_all, "Run ALL ecosystem, UI, QuickJS, showcase, compiler, and disconnected tests":
   # Core ecosystem suite (`nimble test`)
   exec "nim c -r tests/test_ecosystem.nim"
@@ -164,6 +173,8 @@ task test_all, "Run ALL ecosystem, UI, QuickJS, showcase, compiler, and disconne
   exec "nim c -r tests/test_nimui_widgets.nim"
   exec "nim c -r tests/test_nimui_html_css.nim"
   exec "nim c -r tests/test_nimui_quickjs.nim"
+  exec "nim c -r tests/test_fuzz_mft.nim"
+  exec "nim c -r tests/test_fuzz_html_css.nim"
   exec "nim c -r tests/test_showcase_apps.nim"
   if not fileExists("bin/nim_safe.exe"):
     exec "nim c --skipParentCfg:on -d:release -o:bin/nim_safe.exe compiler/nim_safe.nim"
