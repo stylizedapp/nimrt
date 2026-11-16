@@ -1,0 +1,51 @@
+name: Nightly Concurrency Stress
+
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+env:
+  NIM_VERSION: '2.2.12'
+
+jobs:
+  concurrency-stress:
+    name: Concurrency 200-Run Stress (Windows)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Nim
+        uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: ${{ env.NIM_VERSION }}
+
+      - name: Compile concurrency stress tests
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path bin | Out-Null
+          nim c -d:release -o:bin/test_concurrency.exe tests/test_concurrency.nim
+          nim c -o:bin/test_workstealing.exe tests/test_workstealing.nim
+          nim c -o:bin/test_parallel_for_shutdown.exe tests/test_parallel_for_shutdown.nim
+          nim c -o:bin/test_ironclad_signals.exe tests/test_ironclad_signals.nim
+
+      - name: Run 200-iteration concurrency stress loop
+        shell: pwsh
+        run: |
+          $tests = @(
+            "bin/test_concurrency.exe",
+            "bin/test_workstealing.exe",
+            "bin/test_parallel_for_shutdown.exe",
+            "bin/test_ironclad_signals.exe"
+          )
+          for ($i = 1; $i -le 200; $i++) {
+            Write-Host "=== Iteration $i / 200 ==="
+            foreach ($t in $tests) {
+              & $t
+              if ($LASTEXITCODE -ne 0) {
+                throw "Failed on iteration $i : $t (exit code $LASTEXITCODE)"
+              }
+            }
+          }

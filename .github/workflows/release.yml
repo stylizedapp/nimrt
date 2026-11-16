@@ -1,0 +1,53 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+env:
+  NIM_VERSION: '2.2.12'
+
+jobs:
+  release:
+    name: Build & Publish Windows Release
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Nim
+        uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: ${{ env.NIM_VERSION }}
+
+      - name: Build QuickJS static library
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File tools/build_quickjs.ps1
+
+      - name: Build Release Binaries
+        shell: pwsh
+        run: nimble build_release
+
+      - name: Compute SHA256SUMS.txt
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem -Path bin/*.exe | Sort-Object Name
+          $lines = foreach ($f in $files) {
+            $hash = (Get-FileHash -Path $f.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $($f.Name)"
+          }
+          $lines | Set-Content -Path bin/SHA256SUMS.txt -Encoding ascii
+          Get-Content bin/SHA256SUMS.txt
+
+      - name: Attach binaries and SHA256SUMS.txt to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            bin/*.exe
+            bin/SHA256SUMS.txt
+          generate_release_notes: true
