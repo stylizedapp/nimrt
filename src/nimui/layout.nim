@@ -121,6 +121,7 @@ type
     pressedNode*: SlabId
     isDirty*: bool
     isLayoutDirty*: bool
+    dpiScale*: float32
     allocator*: Allocator
     arena*: ArenaAllocator
     drawInstances*: seq[UiDrawInstance]
@@ -158,6 +159,7 @@ proc initUiTree*(alloc: Allocator = defaultHeapAllocator()): UiTree {.raises: []
   result.pressedNode = SlabId(-1'i32)
   result.isDirty = true
   result.isLayoutDirty = true
+  result.dpiScale = 1.0f
   result.allocator = alloc
   result.arena = initArenaAllocator(2 * 1024 * 1024) # 2MB frame arena
   result.drawInstances = newSeqOfCap[UiDrawInstance](1024)
@@ -230,8 +232,9 @@ proc createNode*(tree: var UiTree, kind: NodeKind): SlabId {.raises: [].} =
 
 proc addChild*(tree: var UiTree, parentId, childId: SlabId) {.raises: [].} =
   if tree.nodes.contains(parentId) and tree.nodes.contains(childId):
+    let addRes = tree.nodes[parentId].children.add(childId)
+    doAssert addRes.isOk, "Failed to add child to UiNode children SmallVec"
     tree.nodes[childId].parent = parentId
-    discard tree.nodes[parentId].children.add(childId)
     tree.isDirty = true
     tree.isLayoutDirty = true
 
@@ -448,6 +451,13 @@ proc layoutNode*(
       layoutNode(tree, childId, childX, curMain, childW, childH, clip)
       curMain += childH + effectiveGap
 
+proc setDpiScale*(tree: var UiTree, dpiScale: float32) {.inline, raises: [].} =
+  let clamped = if dpiScale > 0.1f: dpiScale else: 1.0f
+  if tree.dpiScale != clamped:
+    tree.dpiScale = clamped
+    tree.isLayoutDirty = true
+    tree.isDirty = true
+
 proc layoutTree*(tree: var UiTree, screenWidth, screenHeight: float32, atlas: FontAtlas) {.raises: [].} =
   if tree.rootId == SlabId(-1'i32) or not tree.nodes.contains(tree.rootId):
     return
@@ -456,11 +466,22 @@ proc layoutTree*(tree: var UiTree, screenWidth, screenHeight: float32, atlas: Fo
   measureNode(tree, tree.rootId, atlas)
 
   # Pass 2: Top-down geometry distribution
-  let initialClip: array[4, uint16] = [0'u16, 0'u16, uint16(screenWidth), uint16(screenHeight)]
+  let initialClip: array[4, uint16] = [0'u16, 0'u16, uint16(clamp(screenWidth, 0.0f, 65535.0f)), uint16(clamp(screenHeight, 0.0f, 65535.0f))]
   layoutNode(tree, tree.rootId, 0.0f, 0.0f, screenWidth, screenHeight, initialClip)
 
   tree.isLayoutDirty = false
   tree.isDirty = true
+
+proc layoutTreePhysical*(
+  tree: var UiTree,
+  physicalWidth, physicalHeight: float32,
+  atlas: FontAtlas,
+  dpiScale: float32 = 1.0f
+) {.raises: [].} =
+  ## Lay out the UI tree in logical DIPs derived from physical framebuffer pixels and DPI scale.
+  let scale = if dpiScale > 0.1f: dpiScale else: 1.0f
+  tree.dpiScale = scale
+  tree.layoutTree(physicalWidth / scale, physicalHeight / scale, atlas)
 
 # =============================================================================
 # Drawing Instance Generation (Zero-Alloc Hot Path)
@@ -815,10 +836,35 @@ proc emitNodeInstances(
   for i in 0 ..< node.children.len:
     emitNodeInstances(tree, node.children[i], instances, atlas)
 
+proc scaleDrawInstancesForDpi*(
+  instances: var openArray[UiDrawInstance],
+  dpiScale: float32,
+  startIdx: int = 0
+) {.raises: [].} =
+  ## Scales logical DIP draw instances into physical framebuffer pixels.
+  ## Preserves sentinel unclipped bounds (0xFFFF).
+  if dpiScale <= 0.1f or abs(dpiScale - 1.0f) < 1e-4f:
+    return
+  for i in max(0, startIdx) ..< instances.len:
+    let inst = addr instances[i]
+    inst.pos[0] *= dpiScale
+    inst.pos[1] *= dpiScale
+    inst.size[0] *= dpiScale
+    inst.size[1] *= dpiScale
+    inst.cornerRadius *= dpiScale
+    inst.borderWidth *= dpiScale
+    inst.softness *= dpiScale
+    for k in 0 ..< 4:
+      let c = inst.clipRect[k]
+      if c != 0xFFFF'u16:
+        inst.clipRect[k] = uint16(clamp(int(round(float32(c) * dpiScale)), 0, 65535))
+
 proc buildDrawInstances*(tree: var UiTree, atlas: FontAtlas): ptr UiDrawInstance {.raises: [].} =
   tree.drawInstances.setLen(0)
   if tree.rootId != SlabId(-1'i32):
     emitNodeInstances(tree, tree.rootId, tree.drawInstances, atlas)
+  if tree.dpiScale > 0.1f and abs(tree.dpiScale - 1.0f) >= 1e-4f:
+    scaleDrawInstancesForDpi(tree.drawInstances, tree.dpiScale)
   tree.arena.reset() # Reset frame arena after recording
   tree.isDirty = false
   if tree.drawInstances.len > 0:

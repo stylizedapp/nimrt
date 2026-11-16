@@ -29,23 +29,39 @@ when defined(windows):
   proc Sleep(dwMilliseconds: uint32) {.stdcall, dynlib: "kernel32", importc: "Sleep", raises: [].}
 
 # =============================================================================
-# In-Memory Fallback Buffer & Control Flags
+# Context-Scoped & Thread-Local Fallback Buffer (No Unsynchronized Globals)
 # =============================================================================
 
-var gClipboardFallback*: string = ""
-var gForceClipboardFallback*: bool = false
+type
+  ClipboardContext* = object
+    fallbackBuffer*: string
+    forceFallback*: bool
+
+var gThreadClipboard {.threadvar.}: ClipboardContext
+
+proc initClipboardContext*(forceFallback: bool = false): ClipboardContext {.raises: [].} =
+  ClipboardContext(fallbackBuffer: "", forceFallback: forceFallback)
+
+proc setClipboardForceFallback*(ctx: var ClipboardContext, force: bool) {.raises: [].} =
+  ctx.forceFallback = force
+
+proc clearClipboardFallback*(ctx: var ClipboardContext) {.raises: [].} =
+  ctx.fallbackBuffer = ""
+
+proc getClipboardFallback*(ctx: ClipboardContext): string {.raises: [].} =
+  ctx.fallbackBuffer
 
 proc setClipboardForceFallback*(force: bool) {.raises: [].} =
-  ## Force the clipboard system to use the in-memory fallback buffer (for headless tests).
-  gForceClipboardFallback = force
+  ## Force the clipboard system on this thread to use the in-memory fallback buffer (for headless tests).
+  gThreadClipboard.forceFallback = force
 
 proc clearClipboardFallback*() {.raises: [].} =
-  ## Clears the in-memory fallback buffer.
-  gClipboardFallback = ""
+  ## Clears the thread-local in-memory fallback buffer.
+  gThreadClipboard.fallbackBuffer = ""
 
 proc getClipboardFallback*(): string {.raises: [].} =
-  ## Returns the current text in the in-memory fallback buffer.
-  gClipboardFallback
+  ## Returns the current text in the thread-local in-memory fallback buffer.
+  gThreadClipboard.fallbackBuffer
 
 # =============================================================================
 # UTF-16 <-> UTF-8 Safe Conversion
@@ -97,12 +113,12 @@ when defined(windows):
       Sleep(2)
     false
 
-proc setClipboardText*(text: string): bool {.raises: [].} =
+proc setClipboardText*(ctx: var ClipboardContext, text: string): bool {.raises: [].} =
   ## Sets the system clipboard text using CF_UNICODETEXT on Windows.
-  ## Falls back to an in-memory buffer if headless or on non-Windows platforms.
-  gClipboardFallback = text
+  ## Falls back to the context's in-memory buffer if headless or on non-Windows platforms.
+  ctx.fallbackBuffer = text
 
-  if gForceClipboardFallback:
+  if ctx.forceFallback:
     return true
 
   when defined(windows):
@@ -140,15 +156,20 @@ proc setClipboardText*(text: string): bool {.raises: [].} =
   else:
     return true
 
-proc getClipboardText*(): string {.raises: [].} =
+proc setClipboardText*(text: string): bool {.raises: [].} =
+  ## Sets the system clipboard text using CF_UNICODETEXT on Windows,
+  ## backed by thread-local fallback state when headless or non-Windows.
+  setClipboardText(gThreadClipboard, text)
+
+proc getClipboardText*(ctx: var ClipboardContext): string {.raises: [].} =
   ## Retrieves the system clipboard text in UTF-8 format.
-  ## Falls back to an in-memory buffer if headless, unavailable, or non-Windows.
-  if gForceClipboardFallback:
-    return gClipboardFallback
+  ## Falls back to the context's in-memory buffer if headless, unavailable, or non-Windows.
+  if ctx.forceFallback:
+    return ctx.fallbackBuffer
 
   when defined(windows):
     if not tryOpenClipboard(5):
-      return gClipboardFallback
+      return ctx.fallbackBuffer
 
     if IsClipboardFormatAvailable(CF_UNICODETEXT) == 0:
       discard CloseClipboard()
@@ -168,15 +189,19 @@ proc getClipboardText*(): string {.raises: [].} =
     discard GlobalUnlock(hData)
     discard CloseClipboard()
 
-    gClipboardFallback = converted
+    ctx.fallbackBuffer = converted
     return converted
   else:
-    return gClipboardFallback
+    return ctx.fallbackBuffer
 
-proc clearClipboard*(): bool {.discardable, raises: [].} =
-  ## Clears the system clipboard and fallback buffer.
-  gClipboardFallback = ""
-  if gForceClipboardFallback:
+proc getClipboardText*(): string {.raises: [].} =
+  ## Retrieves the system clipboard text in UTF-8 format using thread-local fallback state.
+  getClipboardText(gThreadClipboard)
+
+proc clearClipboard*(ctx: var ClipboardContext): bool {.discardable, raises: [].} =
+  ## Clears the system clipboard and context fallback buffer.
+  ctx.fallbackBuffer = ""
+  if ctx.forceFallback:
     return true
   when defined(windows):
     if not tryOpenClipboard(5):
@@ -186,3 +211,7 @@ proc clearClipboard*(): bool {.discardable, raises: [].} =
     return true
   else:
     return true
+
+proc clearClipboard*(): bool {.discardable, raises: [].} =
+  ## Clears the system clipboard and thread-local fallback buffer.
+  clearClipboard(gThreadClipboard)

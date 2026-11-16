@@ -23,7 +23,9 @@ import nimui/controls
 import nimui/clipboard
 import nimui/multiline
 import nimui/gpu/font_atlas
+import nimui/gpu/vulkan_api
 import nimui/gpu/vulkan_backend
+import nimui/window
 
 proc approxEq(a, b: float32, eps: float32 = 0.05f): bool {.inline, raises: [].} =
   abs(a - b) <= eps
@@ -1398,6 +1400,116 @@ proc testZeroLeakAudits(atlas: FontAtlas) =
     echo "  [PASS] 9.8 1,000 Full integrated UI trees passed with 0 leaks."
 
 # =============================================================================
+# SUITE 10: FontAtlas LRU Eviction, Unicode, High-DPI, IME & Vulkan Resilience
+# =============================================================================
+
+proc testGpuAtlasDpiAndResilienceSuite() =
+  echo "\n================================================================="
+  echo ">>> [SUITE 10] FONT ATLAS LRU, UNICODE, DPI, IME & VULKAN RESILIENCE <<<"
+  echo "================================================================="
+
+  testWithLeakCheck("10.1 FontAtlas Extended Unicode (Latin-1/Ext-A/B, Cyrillic) & Tofu Fallback"):
+    let atlas = initFontAtlas("Segoe UI", 32.0f)
+    doAssert atlas.width == 1024 and atlas.height == 1024
+    # Latin-1 Supplement & Extended-A/B diacritics
+    for cp in [0x00E9'u32, 0x00FC'u32, 0x00DF'u32, 0x0100'u32, 0x010D'u32, 0x017E'u32, 0x0219'u32]:
+      let g = atlas.getGlyph(Rune(cp))
+      doAssert g.advance > 0.0f and g.width > 0.0f, &"Missing extended Latin glyph 0x{cp:X}"
+    # Cyrillic U+0400..0x04FF
+    for cp in [0x0414'u32, 0x042F'u32, 0x0449'u32]:
+      let g = atlas.getGlyph(Rune(cp))
+      doAssert g.advance > 0.0f and g.width > 0.0f, &"Missing Cyrillic glyph 0x{cp:X}"
+    # Uncovered codepoint returns pinned tofu box (never vanishes)
+    let missing = atlas.getGlyph(Rune(0x13A0))
+    doAssert missing.width > 0.0f and missing.height > 0.0f and missing.uvMax[0] > missing.uvMin[0]
+    echo "  [PASS] 10.1 Extended Unicode & tofu missing-glyph fallback verified."
+
+  testWithLeakCheck("10.2 FontAtlas Genuine LRU Eviction, Repack & Explicit Oversize Error"):
+    var smallAtlas = initFontAtlas("Segoe UI", 16.0f, dpiScale = 1.0f, atlasWidth = 96, atlasHeight = 96)
+    let initialEpoch = smallAtlas.epoch
+
+    # Pack synthetic 20x20 glyphs until eviction triggers
+    var bmp = newSeq[uint8](20 * 20)
+    for i in 0 ..< bmp.len: bmp[i] = 200'u8
+
+    var packedCodes: seq[uint32] = @[]
+    for i in 0 ..< 40:
+      let cp = 0x5000'u32 + uint32(i)
+      let res = smallAtlas.packGlyphBitmap(cp, 20, 20, bmp, 20, 1.0f, 20.0f, 22.0f)
+      doAssert res.isOk, "LRU pack should succeed for 20x20 glyph in 96x96 atlas: " & (if res.isErr: res.error else: "")
+      packedCodes.add(cp)
+      # Touch first synthetic glyph periodically so it stays MRU and is NOT evicted
+      if i mod 3 == 0:
+        smallAtlas.touchGlyph(0x5000'u32)
+
+    doAssert smallAtlas.evictionCount > 0'u64, "Expected LRU evictions on 96x96 atlas"
+    doAssert smallAtlas.epoch > initialEpoch, "Expected atlas epoch increment on repack"
+    doAssert smallAtlas.hasResidentGlyph(0x5000'u32), "Touched MRU glyph 0x5000 must remain resident"
+
+    # Single glyph larger than atlas must return explicit Err result
+    var hugeBmp = newSeq[uint8](128 * 128)
+    let errRes = smallAtlas.packGlyphBitmap(0x6000'u32, 128, 128, hugeBmp, 128, 0.0f, 128.0f, 130.0f)
+    doAssert errRes.isErr, "Expected explicit error when single glyph exceeds atlas bounds"
+    doAssert smallAtlas.overflowCount > 0'u64 and smallAtlas.lastError.len > 0
+    echo "  [PASS] 10.2 Genuine LRU eviction, shelf compaction & explicit oversize error verified."
+
+  testWithLeakCheck("10.3 FontAtlas High-DPI (150%) Rasterization & Logical DIP Metrics"):
+    let atlas1x = initFontAtlas("Segoe UI", 32.0f, dpiScale = 1.0f)
+    let atlas15x = initFontAtlas("Segoe UI", 32.0f, dpiScale = 1.5f)
+    doAssert approxEq(atlas15x.baseSize, 32.0f)
+    doAssert approxEq(atlas15x.rasterSize, 48.0f)
+    let g1 = atlas1x.getGlyph(Rune('A'))
+    let g15 = atlas15x.getGlyph(Rune('A'))
+    # Logical advance in DIPs stays within ~1.5px across 1x vs 1.5x hinted rasterization
+    doAssert abs(g1.advance - g15.advance) <= 2.0f
+    echo "  [PASS] 10.3 High-DPI 150% rasterization & logical DIP metrics verified."
+
+  testWithLeakCheck("10.4 Context-Scoped ClipboardContext Isolation"):
+    var ctxA = initClipboardContext(forceFallback = true)
+    var ctxB = initClipboardContext(forceFallback = true)
+    doAssert setClipboardText(ctxA, "Alpha")
+    doAssert setClipboardText(ctxB, "Beta")
+    doAssert getClipboardText(ctxA) == "Alpha"
+    doAssert getClipboardText(ctxB) == "Beta"
+    discard clearClipboard(ctxA)
+    doAssert getClipboardText(ctxA) == ""
+    doAssert getClipboardText(ctxB) == "Beta"
+    echo "  [PASS] 10.4 Context-scoped ClipboardContext isolation verified."
+
+  testWithLeakCheck("10.5 Window DPI Scale & IME UTF-16->UTF-8 Surrogate Decoding"):
+    doAssert approxEq(queryDpiScale(96'u32), 1.0f)
+    doAssert approxEq(queryDpiScale(120'u32), 1.25f)
+    doAssert approxEq(queryDpiScale(144'u32), 1.5f)
+    # UTF-16: "日本" + surrogate pair U+1F680 ('🚀': 0xD83D, 0xDE80)
+    let u16 = [0x65E5'u16, 0x672C'u16, 0xD83D'u16, 0xDE80'u16]
+    doAssert decodeImeUtf16(u16) == "日本🚀"
+    echo "  [PASS] 10.5 Window DPI scale & IME UTF-16->UTF-8 decoding verified."
+
+  testWithLeakCheck("10.6 Vulkan Resilience (VK_ERROR_DEVICE_LOST & 0x0 Minimized Swapchain)"):
+    var vb: VulkanBackend
+    vb.isInitialized = true
+    vb.dpiScale = 1.5f
+    vb.swapchainExtent = VkExtent2D(width: 1500'u32, height: 900'u32)
+    let lex = vb.logicalExtent()
+    doAssert approxEq(lex.width, 1000.0f) and approxEq(lex.height, 600.0f)
+
+    # Minimized 0x0 window skips frame cleanly without touching swapchain
+    let minRes = vb.beginFrame(0'u32, 0'u32)
+    doAssert minRes.isErr and vb.isMinimized
+    doAssert not vb.recreateSwapchain(0'u32, 0'u32)
+
+    # VK_ERROR_DEVICE_LOST propagates explicitly
+    let lostChk = vb.checkVk(VK_ERROR_DEVICE_LOST, "testOp")
+    doAssert lostChk.isErr and vb.isDeviceLost()
+    let bfLost = vb.beginFrame(800'u32, 600'u32)
+    doAssert bfLost.isErr and "VK_ERROR_DEVICE_LOST" in bfLost.error
+    var dummyInst: UiDrawInstance
+    let riLost = vb.renderInstancesResult(0'u32, addr dummyInst, 1)
+    doAssert riLost.isErr and "VK_ERROR_DEVICE_LOST" in riLost.error
+    vb.isInitialized = false
+    echo "  [PASS] 10.6 Vulkan VK_ERROR_DEVICE_LOST & minimized 0x0 handling verified."
+
+# =============================================================================
 # Main Entry Point
 # =============================================================================
 
@@ -1418,6 +1530,7 @@ proc main() =
   testMultilineSuite(atlas)
   testTextAreaSuite(atlas)
   testZeroLeakAudits(atlas)
+  testGpuAtlasDpiAndResilienceSuite()
 
   echo "\n================================================================="
   echo ">>> [SUCCESS] ALL NIMUI WIDGETS TESTS PASSED WITH 0 LEAKS! <<<"

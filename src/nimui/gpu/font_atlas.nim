@@ -1,14 +1,24 @@
-## nimui/gpu/font_atlas — System Font Rasterizer & Texture Atlas
+## nimui/gpu/font_atlas — System Font Rasterizer, Dynamic LRU Texture Atlas & Metrics
 ##
-## Strict invariants:
-## - Native OS rasterization (GDI GetGlyphOutlineW on Windows) with zero external C dependencies.
-## - Supports full ASCII (32..126) + Cyrillic (U+0400..U+04FF) + General Punctuation + Symbols & Dingbats.
-## - Built-in fallback bitmap generator for Linux / headless environments.
-## - Produces an R8_UNORM texture map with normalized UV coordinates.
+## Architecture & Rendering Mechanism:
+## - Shapes/primitives in NimUI use analytical 2D SDF (`sdRoundedBox` in `ui.frag` / `rasterizer.nim`).
+## - Text glyphs in `FontAtlas` use Windows GDI `GetGlyphOutlineW(..., GGO_GRAY8_BITMAP, ...)`
+##   65-level anti-aliased grayscale coverage bitmaps packed into an `R8_UNORM` atlas texture
+##   (sampled bilinearly in `ui.frag` with `pow(rawAlpha, 0.78)` gamma compensation), NOT SDF.
+## - High-DPI crispness: `dpiScale` rasterizes GDI glyphs at `fontSize * dpiScale` physical pixels
+##   while keeping logical DIP metrics (`baseSize = fontSize`), eliminating upscaling blur at 125%-150%+ DPI.
+## - Unicode coverage: ASCII (32..126), UI Symbols & Dingbats, Latin-1 Supplement (U+00A0..U+00FF),
+##   Latin Extended-A & Extended-B (U+0100..U+024F), Cyrillic (U+0400..U+04FF), plus U+FFFD tofu fallback.
+## - Missing glyph detection: `GetGlyphIndicesW(GGI_MARK_NONEXISTING_GLYPHS)` + multi-font GDI fallback
+##   (`Segoe UI Symbol`, `Microsoft YaHei`, `Malgun Gothic`) + guaranteed pinned tofu box (`missingGlyph`).
+## - Genuine LRU eviction + shelf compaction/repack when full, returning explicit `Result` errors if a
+##   single glyph cannot fit even after evicting all evictable entries.
 
+import std/algorithm
 import ../../corex/unicode
+import ../../corex/result
 import ../../algx/swissmap
-export unicode
+export unicode, result
 
 type
   GlyphInfo* = object
@@ -20,18 +30,45 @@ type
     bearingY*: float32
     advance*: float32
 
+  AtlasGlyphSlot* = object
+    cp*: uint32
+    x*: uint16
+    y*: uint16
+    w*: uint16
+    h*: uint16
+    lastUsedTick*: uint64
+    pinned*: bool
+    active*: bool
+
   FontAtlas* = object
     width*: int
     height*: int
     baseSize*: float32
+    dpiScale*: float32
+    rasterSize*: float32
+    fontName*: string
     lineHeight*: float32
     ascender*: float32
     descender*: float32
     pixels*: seq[uint8]               # R8_UNORM pixel buffer
-    glyphs*: array[0x0500, GlyphInfo] # Fast direct lookup for 0..0x04FF (ASCII, Latin-1, Cyrillic)
+    glyphs*: array[0x0500, GlyphInfo] # Fast direct lookup for 0..0x04FF (ASCII, Latin-1/Ext-A/B, Cyrillic)
     extendedGlyphs*: FastMap[uint32, GlyphInfo] # Lookup for codepoints >= 0x0500
     kerningAscii*: seq[int8]          # Fast O(1) 256x256 direct lookup for ASCII/Latin-1
     kerningPairs*: FastMap[uint64, float32] # Kerning adjustments for extended/Unicode pairs
+
+    # Shelf packer & LRU eviction state
+    curX*: int
+    curY*: int
+    rowH*: int
+    lruTick*: uint64
+    epoch*: uint64
+    evictionCount*: uint64
+    overflowCount*: uint64
+    lastError*: string
+    atlasNeedsUpload*: bool
+    missingGlyph*: GlyphInfo
+    slots*: seq[AtlasGlyphSlot]
+    cpToSlot*: FastMap[uint32, int]
 
 # =============================================================================
 # Windows GDI Interop
@@ -106,6 +143,7 @@ when defined(windows):
     FF_DONTCARE = 0'i32
     FW_NORMAL = 400'i32
     GDI_ERROR = 0xFFFFFFFF'u32
+    GGI_MARK_NONEXISTING_GLYPHS = 0x0001'u32
 
   proc CreateCompatibleDC(hdc: HDC): HDC {.stdcall, dynlib: "gdi32", importc: "CreateCompatibleDC", raises: [].}
   proc DeleteDC(hdc: HDC): BOOL {.stdcall, dynlib: "gdi32", importc: "DeleteDC", raises: [].}
@@ -119,22 +157,33 @@ when defined(windows):
   ): HFONT {.stdcall, dynlib: "gdi32", importc: "CreateFontW", raises: [].}
   proc GetTextMetricsW(hdc: HDC, lptm: ptr TEXTMETRICW): BOOL {.stdcall, dynlib: "gdi32", importc: "GetTextMetricsW", raises: [].}
   proc GetKerningPairsW(hdc: HDC, nPairs: DWORD, lpKernPair: ptr KERNINGPAIR): DWORD {.stdcall, dynlib: "gdi32", importc: "GetKerningPairsW", raises: [].}
+  proc GetGlyphIndicesW(hdc: HDC, lpstr: ptr WORD, c: int32, pgi: ptr WORD, fl: DWORD): DWORD {.stdcall, dynlib: "gdi32", importc: "GetGlyphIndicesW", raises: [].}
   proc GetGlyphOutlineW(
     hdc: HDC, uChar: UINT, fuFormat: UINT, lpgm: ptr GLYPHMETRICS,
     cjBuffer: DWORD, pvBuffer: pointer, lpmat2: ptr MAT2
   ): DWORD {.stdcall, dynlib: "gdi32", importc: "GetGlyphOutlineW", raises: [].}
 
+  proc fontHasGlyph(hdc: HDC, cp: uint32): bool {.inline, raises: [].} =
+    if cp > 0xFFFF'u32:
+      return true # Let GetGlyphOutlineW check/skip surrogate outside BMP
+    var ch16 = uint16(cp)
+    var gIdx: uint16 = 0'u16
+    let res = GetGlyphIndicesW(hdc, addr ch16, 1, addr gIdx, GGI_MARK_NONEXISTING_GLYPHS)
+    if res == GDI_ERROR:
+      return true
+    gIdx != 0xFFFF'u16
+
 # =============================================================================
 # Helper: Standard Unicode Ranges for UI Rendering
 # =============================================================================
 
-proc collectCandidateCodepoints(): seq[uint32] {.raises: [].} =
+proc collectCandidateCodepoints*(): seq[uint32] {.raises: [].} =
   result = @[]
   # 1. ASCII printable (32..126)
-  for c in 32'u32 .. 126'u32: result.add(c)
-  
+  for c in 32'u32 .. 126'u32:
+    result.add(c)
+
   # 2. High-Priority UI Symbols & Dingbats (Checkmarks, Badges, Astrometrics, Bullets)
-  #    Always placed immediately after ASCII so they are guaranteed atlas slots.
   let prioritySymbols = [
     0x2713'u32, # ✓ Checkmark
     0x2714'u32, # ✔ Heavy checkmark
@@ -189,81 +238,552 @@ proc collectCandidateCodepoints(): seq[uint32] {.raises: [].} =
   for s in prioritySymbols:
     result.add(s)
 
-  # 3. Latin-1 Supplement (0x00A0..0x00FF)
+  # 3. Latin-1 Supplement (0x00A0..0x00FF: é, ü, ß, ñ, etc.)
   for c in 0x00A0'u32 .. 0x00FF'u32:
     if c notin prioritySymbols:
       result.add(c)
 
-  # 4. Cyrillic Basic (0x0400..0x045F: Russian, Ukrainian, Belarusian alphabets)
-  for c in 0x0400'u32 .. 0x045F'u32:
+  # 4. Latin Extended-A & Latin Extended-B (0x0100..0x024F)
+  for c in 0x0100'u32 .. 0x024F'u32:
+    result.add(c)
+
+  # 5. Full Cyrillic Block (0x0400..0x04FF)
+  for c in 0x0400'u32 .. 0x04FF'u32:
     result.add(c)
 
 # =============================================================================
-# Fallback Glyph Generation (Cross-Platform)
+# Shelf Packing & Genuine LRU Eviction Engine
 # =============================================================================
 
-proc initFallbackAtlas(atlas: var FontAtlas, fontSize: float32) =
-  atlas.width = 1024
-  atlas.height = 1024
+proc storeGlyphEntry(atlas: var FontAtlas, cp: uint32, g: GlyphInfo) {.inline, raises: [].} =
+  if cp < 0x0500'u32:
+    atlas.glyphs[cp] = g
+  else:
+    atlas.extendedGlyphs[cp] = g
+
+proc removeGlyphEntry(atlas: var FontAtlas, cp: uint32) {.inline, raises: [].} =
+  if cp < 0x0500'u32:
+    atlas.glyphs[cp] = GlyphInfo()
+  else:
+    discard atlas.extendedGlyphs.del(cp)
+
+proc getStoredGlyph(atlas: FontAtlas, cp: uint32): GlyphInfo {.inline, raises: [].} =
+  if cp < 0x0500'u32:
+    atlas.glyphs[cp]
+  else:
+    atlas.extendedGlyphs.getOrDefault(cp)
+
+proc advanceFrame*(atlas: var FontAtlas) {.inline, raises: [].} =
+  inc(atlas.lruTick)
+
+proc touchGlyph*(atlas: var FontAtlas, cp: uint32) {.inline, raises: [].} =
+  let slotIdx = atlas.cpToSlot.getOrDefault(cp, -1)
+  if slotIdx >= 0 and slotIdx < atlas.slots.len and atlas.slots[slotIdx].active:
+    inc(atlas.lruTick)
+    atlas.slots[slotIdx].lastUsedTick = atlas.lruTick
+
+proc activeGlyphCount*(atlas: FontAtlas): int {.inline, raises: [].} =
+  for s in atlas.slots:
+    if s.active:
+      inc(result)
+
+proc hasResidentGlyph*(atlas: FontAtlas, cp: uint32): bool {.inline, raises: [].} =
+  let idx = atlas.cpToSlot.getOrDefault(cp, -1)
+  idx >= 0 and idx < atlas.slots.len and atlas.slots[idx].active
+
+proc canPackSlots(
+  atlasW, atlasH: int,
+  slots: openArray[AtlasGlyphSlot],
+  skipFlags: openArray[bool],
+  newW, newH: int
+): bool {.raises: [].} =
+  var cx = 1
+  var cy = 1
+  var rh = 0
+
+  for i in 0 ..< slots.len:
+    if not slots[i].active or skipFlags[i]:
+      continue
+    let sw = int(slots[i].w)
+    let sh = int(slots[i].h)
+    if sw <= 0 or sh <= 0:
+      continue
+    if cx + sw + 2 >= atlasW:
+      cx = 1
+      cy += rh + 2
+      rh = 0
+    if cy + sh + 2 >= atlasH:
+      return false
+    cx += sw + 2
+    if sh > rh:
+      rh = sh
+
+  if newW > 0 and newH > 0:
+    if cx + newW + 2 >= atlasW:
+      cx = 1
+      cy += rh + 2
+      rh = 0
+    if cy + newH + 2 >= atlasH:
+      return false
+
+  true
+
+proc evictLruAndRepack(atlas: var FontAtlas, neededW, neededH: int): Result[void, string] {.raises: [].} =
+  var candidates = newSeqOfCap[tuple[tick: uint64, idx: int]](atlas.slots.len)
+  for i in 0 ..< atlas.slots.len:
+    if atlas.slots[i].active and not atlas.slots[i].pinned:
+      candidates.add((atlas.slots[i].lastUsedTick, i))
+
+  if candidates.len == 0:
+    return err[void, string]("Atlas full and no evictable (non-pinned) glyphs remain")
+
+  # Sort oldest-used first (genuine LRU order)
+  candidates.sort(proc(a, b: tuple[tick: uint64, idx: int]): int =
+    cmp(a.tick, b.tick)
+  )
+
+  var skipFlags = newSeq[bool](atlas.slots.len)
+  # Check if even evicting every non-pinned glyph can fit the incoming glyph
+  for c in candidates:
+    skipFlags[c.idx] = true
+  if not canPackSlots(atlas.width, atlas.height, atlas.slots, skipFlags, neededW, neededH):
+    return err[void, string]("Glyph cannot fit in atlas even after evicting all LRU entries")
+
+  # Binary search for the exact minimum number of LRU glyphs to evict
+  var lo = 1
+  var hi = candidates.len
+  var bestK = candidates.len
+  while lo <= hi:
+    let mid = (lo + hi) div 2
+    for i in 0 ..< skipFlags.len:
+      skipFlags[i] = false
+    for j in 0 ..< mid:
+      skipFlags[candidates[j].idx] = true
+    if canPackSlots(atlas.width, atlas.height, atlas.slots, skipFlags, neededW, neededH):
+      bestK = mid
+      hi = mid - 1
+    else:
+      lo = mid + 1
+
+  for i in 0 ..< skipFlags.len:
+    skipFlags[i] = false
+  for j in 0 ..< bestK:
+    let idx = candidates[j].idx
+    skipFlags[idx] = true
+    let cp = atlas.slots[idx].cp
+    atlas.removeGlyphEntry(cp)
+    discard atlas.cpToSlot.del(cp)
+    atlas.slots[idx].active = false
+
+  # Repack surviving glyphs into a clean pixel buffer (zero fragmentation)
+  var newPixels = newSeq[uint8](atlas.width * atlas.height)
+  var newSlots = newSeqOfCap[AtlasGlyphSlot](atlas.slots.len - bestK + 1)
+  atlas.cpToSlot.clear()
+  atlas.curX = 1
+  atlas.curY = 1
+  atlas.rowH = 0
+
+  for i in 0 ..< atlas.slots.len:
+    if not atlas.slots[i].active:
+      continue
+    var s = atlas.slots[i]
+    let sw = int(s.w)
+    let sh = int(s.h)
+    if sw > 0 and sh > 0:
+      if atlas.curX + sw + 2 >= atlas.width:
+        atlas.curX = 1
+        atlas.curY += atlas.rowH + 2
+        atlas.rowH = 0
+
+      let oldX = int(s.x)
+      let oldY = int(s.y)
+      let nx = atlas.curX
+      let ny = atlas.curY
+      for r in 0 ..< sh:
+        copyMem(
+          addr newPixels[(ny + r) * atlas.width + nx],
+          addr atlas.pixels[(oldY + r) * atlas.width + oldX],
+          sw
+        )
+
+      s.x = uint16(nx)
+      s.y = uint16(ny)
+      var g = atlas.getStoredGlyph(s.cp)
+      g.uvMin = [float32(nx) / float32(atlas.width), float32(ny) / float32(atlas.height)]
+      g.uvMax = [float32(nx + sw) / float32(atlas.width), float32(ny + sh) / float32(atlas.height)]
+      atlas.storeGlyphEntry(s.cp, g)
+
+      atlas.curX += sw + 2
+      if sh > atlas.rowH:
+        atlas.rowH = sh
+
+    let newIdx = newSlots.len
+    newSlots.add(s)
+    atlas.cpToSlot[s.cp] = newIdx
+
+  atlas.slots = move(newSlots)
+  atlas.pixels = move(newPixels)
+  atlas.evictionCount += uint64(bestK)
+  inc(atlas.epoch)
+  atlas.atlasNeedsUpload = true
+  ok[void, string]()
+
+proc packGlyphBitmap*(
+  atlas: var FontAtlas,
+  cp: uint32,
+  bw, bh: int,
+  bitmap: openArray[uint8],
+  pitch: int,
+  bearingX, bearingY, advance: float32,
+  isGray64: bool = false,
+  pinned: bool = false,
+  allowEvict: bool = true
+): Result[GlyphInfo, string] {.raises: [].} =
+  ## Packs a rasterized glyph bitmap into the atlas shelf, triggering genuine LRU eviction
+  ## and shelf compaction if full. Returns an explicit error if the glyph still cannot fit.
+  let existingIdx = atlas.cpToSlot.getOrDefault(cp, -1)
+  if existingIdx >= 0 and existingIdx < atlas.slots.len and atlas.slots[existingIdx].active:
+    inc(atlas.lruTick)
+    atlas.slots[existingIdx].lastUsedTick = atlas.lruTick
+    if pinned:
+      atlas.slots[existingIdx].pinned = true
+    return ok[GlyphInfo, string](atlas.getStoredGlyph(cp))
+
+  let invScale = if atlas.dpiScale > 0.1f: 1.0f / atlas.dpiScale else: 1.0f
+
+  if bw <= 0 or bh <= 0 or cp == 32'u32:
+    var g: GlyphInfo
+    g.advance = advance * invScale
+    atlas.storeGlyphEntry(cp, g)
+    inc(atlas.lruTick)
+    let idx = atlas.slots.len
+    atlas.slots.add(AtlasGlyphSlot(
+      cp: cp, x: 0, y: 0, w: 0, h: 0,
+      lastUsedTick: atlas.lruTick, pinned: pinned, active: true
+    ))
+    atlas.cpToSlot[cp] = idx
+    return ok[GlyphInfo, string](g)
+
+  let slotW = bw + 2
+  let slotH = bh + 2
+
+  if slotW + 2 >= atlas.width or slotH + 2 >= atlas.height:
+    let errMsg = "Glyph codepoint 0x" & $cp & " (" & $slotW & "x" & $slotH & ") exceeds atlas bounds (" & $atlas.width & "x" & $atlas.height & ")"
+    atlas.lastError = errMsg
+    inc(atlas.overflowCount)
+    return err[GlyphInfo, string](errMsg)
+
+  if atlas.curX + slotW + 2 >= atlas.width:
+    atlas.curX = 1
+    atlas.curY += atlas.rowH + 2
+    atlas.rowH = 0
+
+  if atlas.curY + slotH + 2 >= atlas.height:
+    if not allowEvict:
+      let errMsg = "Atlas full (" & $atlas.width & "x" & $atlas.height & ") during non-evicting pack"
+      atlas.lastError = errMsg
+      inc(atlas.overflowCount)
+      return err[GlyphInfo, string](errMsg)
+
+    let evictRes = atlas.evictLruAndRepack(slotW, slotH)
+    if evictRes.isErr:
+      atlas.lastError = evictRes.error
+      inc(atlas.overflowCount)
+      return err[GlyphInfo, string](evictRes.error)
+
+    if atlas.curX + slotW + 2 >= atlas.width:
+      atlas.curX = 1
+      atlas.curY += atlas.rowH + 2
+      atlas.rowH = 0
+    if atlas.curY + slotH + 2 >= atlas.height:
+      let errMsg = "Atlas full after LRU compaction"
+      atlas.lastError = errMsg
+      inc(atlas.overflowCount)
+      return err[GlyphInfo, string](errMsg)
+
+  let dstX = atlas.curX
+  let dstY = atlas.curY
+
+  for r in 0 ..< bh:
+    for c in 0 ..< bw:
+      let rawVal = bitmap[r * pitch + c]
+      let alpha = if isGray64:
+        uint8(min(255'u32, (uint32(rawVal) * 255'u32 + 32'u32) div 64'u32))
+      else:
+        rawVal
+      atlas.pixels[(dstY + 1 + r) * atlas.width + (dstX + 1 + c)] = alpha
+
+  var g: GlyphInfo
+  g.advance = advance * invScale
+  g.bearingX = (bearingX - 1.0f) * invScale
+  g.bearingY = (bearingY + 1.0f) * invScale
+  g.width = float32(slotW) * invScale
+  g.height = float32(slotH) * invScale
+  g.uvMin = [float32(dstX) / float32(atlas.width), float32(dstY) / float32(atlas.height)]
+  g.uvMax = [float32(dstX + slotW) / float32(atlas.width), float32(dstY + slotH) / float32(atlas.height)]
+
+  atlas.curX += slotW + 2
+  if slotH > atlas.rowH:
+    atlas.rowH = slotH
+
+  atlas.storeGlyphEntry(cp, g)
+  inc(atlas.lruTick)
+  let slotIdx = atlas.slots.len
+  atlas.slots.add(AtlasGlyphSlot(
+    cp: cp,
+    x: uint16(dstX), y: uint16(dstY),
+    w: uint16(slotW), h: uint16(slotH),
+    lastUsedTick: atlas.lruTick,
+    pinned: pinned,
+    active: true
+  ))
+  atlas.cpToSlot[cp] = slotIdx
+  atlas.atlasNeedsUpload = true
+  ok[GlyphInfo, string](g)
+
+proc generateTofuBitmap(charW, charH: int): seq[uint8] {.raises: [].} =
+  let w = max(4, charW)
+  let h = max(6, charH)
+  let stroke = max(1, min(w, h) div 6)
+  result = newSeq[uint8](w * h)
+  for y in 0 ..< h:
+    for x in 0 ..< w:
+      let isBorder = (x < stroke or x >= w - stroke or y < stroke or y >= h - stroke)
+      if isBorder:
+        result[y * w + x] = 220'u8
+
+proc ensurePinnedMissingGlyph(atlas: var FontAtlas) {.raises: [].} =
+  let charW = max(6, int(atlas.rasterSize * 0.55f))
+  let charH = max(8, int(atlas.rasterSize * 0.78f))
+  let tofu = generateTofuBitmap(charW, charH)
+  let res = atlas.packGlyphBitmap(
+    0xFFFD'u32, charW, charH, tofu, charW,
+    bearingX = 1.0f,
+    bearingY = float32(charH),
+    advance = float32(charW + max(2, int(atlas.rasterSize * 0.1f))),
+    isGray64 = false,
+    pinned = true,
+    allowEvict = true
+  )
+  if res.isOk:
+    atlas.missingGlyph = res.val
+
+# =============================================================================
+# Fallback Glyph Generation (Cross-Platform / Headless)
+# =============================================================================
+
+proc initAtlasBase(
+  atlas: var FontAtlas,
+  fontName: string,
+  fontSize: float32,
+  dpiScale: float32,
+  atlasWidth, atlasHeight: int
+) {.raises: [].} =
+  let effDpi = if dpiScale > 0.1f: dpiScale else: 1.0f
+  let effW = max(64, atlasWidth)
+  let effH = max(64, atlasHeight)
+  atlas.width = effW
+  atlas.height = effH
   atlas.baseSize = fontSize
+  atlas.dpiScale = effDpi
+  atlas.rasterSize = fontSize * effDpi
+  atlas.fontName = fontName
+  atlas.pixels = newSeq[uint8](effW * effH)
+  atlas.extendedGlyphs = initFastMap[uint32, GlyphInfo](2048)
+  atlas.kerningAscii = newSeq[int8](256 * 256)
+  atlas.kerningPairs = initFastMap[uint64, float32]()
+  atlas.curX = 1
+  atlas.curY = 1
+  atlas.rowH = 0
+  atlas.lruTick = 0
+  atlas.epoch = 1
+  atlas.evictionCount = 0
+  atlas.overflowCount = 0
+  atlas.lastError = ""
+  atlas.atlasNeedsUpload = true
+  atlas.slots = newSeqOfCap[AtlasGlyphSlot](1024)
+  atlas.cpToSlot = initFastMap[uint32, int](2048)
+
+proc initFallbackAtlas(atlas: var FontAtlas, fontSize: float32) {.raises: [].} =
+  let rs = atlas.rasterSize
   atlas.lineHeight = fontSize * 1.25f
   atlas.ascender = fontSize * 0.9f
   atlas.descender = fontSize * 0.25f
-  atlas.pixels = newSeq[uint8](atlas.width * atlas.height)
-  atlas.extendedGlyphs = initFastMap[uint32, GlyphInfo](1024)
-  atlas.kerningAscii = newSeq[int8](256 * 256)
-  atlas.kerningPairs = initFastMap[uint64, float32]()
 
-  # Provide a minimal readable proportional glyph generator
-  let charW = int(fontSize * 0.6f)
-  let charH = int(fontSize * 0.85f)
-  var curX = 1
-  var curY = 1
+  atlas.ensurePinnedMissingGlyph()
+
+  let charW = max(4, int(rs * 0.6f))
+  let charH = max(6, int(rs * 0.85f))
+  var bmp = newSeq[uint8](charW * charH)
+  for y in 0 ..< charH:
+    for x in 0 ..< charW:
+      let isBorder = (x == 0 or x == charW - 1 or y == 0 or y == charH - 1)
+      bmp[y * charW + x] = if isBorder: 220'u8 else: 180'u8
 
   let candidates = collectCandidateCodepoints()
-
   for code in candidates:
-    if curX + charW + 2 >= atlas.width:
-      curX = 1
-      curY += charH + 2
-    if curY + charH + 2 >= atlas.height:
-      break
-
-    if code != 32'u32: # Non-space glyph
-      for y in 0 ..< charH:
-        for x in 0 ..< charW:
-          let isBorder = (x == 0 or x == charW - 1 or y == 0 or y == charH - 1)
-          let val = if isBorder: 220'u8 else: 180'u8
-          atlas.pixels[(curY + y) * atlas.width + (curX + x)] = val
-
-    var g: GlyphInfo
-    g.width = if code == 32'u32: 0.0f else: float32(charW)
-    g.height = if code == 32'u32: 0.0f else: float32(charH)
-    g.bearingX = 0.0f
-    g.bearingY = float32(charH)
-    g.advance = float32(charW + 2)
-    g.uvMin = [float32(curX) / float32(atlas.width), float32(curY) / float32(atlas.height)]
-    g.uvMax = [float32(curX + charW) / float32(atlas.width), float32(curY + charH) / float32(atlas.height)]
-
-    if code < 0x0500'u32:
-      atlas.glyphs[code] = g
+    let isCore = code <= 126'u32
+    let res = if code == 32'u32:
+      atlas.packGlyphBitmap(
+        code, 0, 0, bmp, charW,
+        0.0f, 0.0f, float32(charW + 2),
+        isGray64 = false, pinned = (code == uint32('?')), allowEvict = false
+      )
     else:
-      atlas.extendedGlyphs[code] = g
-
-    curX += charW + 2
+      atlas.packGlyphBitmap(
+        code, charW, charH, bmp, charW,
+        0.0f, float32(charH), float32(charW + 2),
+        isGray64 = false, pinned = (code == uint32('?')), allowEvict = false
+      )
+    if res.isErr:
+      if isCore:
+        # Retry with LRU eviction for core ASCII if needed
+        let retry = atlas.packGlyphBitmap(
+          code, charW, charH, bmp, charW,
+          0.0f, float32(charH), float32(charW + 2),
+          isGray64 = false, pinned = (code == uint32('?')), allowEvict = true
+        )
+        if retry.isErr:
+          atlas.storeGlyphEntry(code, atlas.missingGlyph)
+      else:
+        break
 
 # =============================================================================
-# System Atlas Generation (Windows GDI)
+# System Atlas Generation (Windows GDI) & Dynamic Glyph Rasterization
 # =============================================================================
 
-proc initFontAtlas*(fontName: string = "Segoe UI", fontSize: float32 = 32.0f): FontAtlas {.raises: [].} =
-  result.width = 1024
-  result.height = 1024
-  result.baseSize = fontSize
-  result.pixels = newSeq[uint8](result.width * result.height)
-  result.extendedGlyphs = initFastMap[uint32, GlyphInfo](2048)
-  result.kerningAscii = newSeq[int8](256 * 256)
-  result.kerningPairs = initFastMap[uint64, float32]()
+when defined(windows):
+  proc queryGdiGlyph(
+    hdc: HDC,
+    fonts: openArray[HFONT],
+    ch: uint32,
+    tempBuf: var seq[uint8],
+    outGm: var GLYPHMETRICS,
+    outReqSize: var uint32
+  ): bool {.raises: [].} =
+    var mat: MAT2
+    mat.eM11.value = 1
+    mat.eM22.value = 1
+
+    for i, fnt in fonts:
+      if fnt == nil:
+        continue
+      discard SelectObject(hdc, fnt)
+      if i > 0 and not fontHasGlyph(hdc, ch):
+        continue
+      if i == 0 and not fontHasGlyph(hdc, ch):
+        continue
+
+      var gm: GLYPHMETRICS
+      let reqSize = GetGlyphOutlineW(hdc, ch, GGO_GRAY8_BITMAP, addr gm, 0, nil, addr mat)
+      if reqSize == GDI_ERROR:
+        continue
+      if reqSize == 0 and ch != 32'u32 and gm.gmCellIncX == 0:
+        continue
+
+      if reqSize > 0 and gm.gmBlackBoxX > 0 and gm.gmBlackBoxY > 0 and ch != 32'u32:
+        if tempBuf.len < int(reqSize):
+          tempBuf.setLen(int(reqSize))
+        let fetched = GetGlyphOutlineW(hdc, ch, GGO_GRAY8_BITMAP, addr gm, reqSize, addr tempBuf[0], addr mat)
+        if fetched != reqSize:
+          continue
+
+      outGm = gm
+      outReqSize = reqSize
+      return true
+
+    false
+
+proc ensureGlyph*(atlas: var FontAtlas, cp: uint32): Result[GlyphInfo, string] {.raises: [].} =
+  ## Ensures `cp` is resident in the atlas, dynamically rasterizing it (via GDI on Windows)
+  ## and evicting LRU entries if the atlas is full.
+  let existingIdx = atlas.cpToSlot.getOrDefault(cp, -1)
+  if existingIdx >= 0 and existingIdx < atlas.slots.len and atlas.slots[existingIdx].active:
+    inc(atlas.lruTick)
+    atlas.slots[existingIdx].lastUsedTick = atlas.lruTick
+    return ok[GlyphInfo, string](atlas.getStoredGlyph(cp))
+
+  when defined(windows):
+    let hdc = CreateCompatibleDC(nil)
+    if hdc == nil:
+      return err[GlyphInfo, string]("CreateCompatibleDC failed")
+
+    let rSize = max(1'i32, int32(atlas.rasterSize + 0.5f))
+    let hPrimary = CreateFontW(
+      -rSize, 0, 0, 0, FW_NORMAL, 0, 0, 0,
+      DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+      CLEARTYPE_QUALITY, DEFAULT_PITCH or FF_DONTCARE,
+      newWideCString(if atlas.fontName.len > 0: atlas.fontName else: "Segoe UI")
+    )
+    let hSymbol = CreateFontW(
+      -rSize, 0, 0, 0, FW_NORMAL, 0, 0, 0,
+      DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+      CLEARTYPE_QUALITY, DEFAULT_PITCH or FF_DONTCARE,
+      newWideCString("Segoe UI Symbol")
+    )
+    let hCjk = CreateFontW(
+      -rSize, 0, 0, 0, FW_NORMAL, 0, 0, 0,
+      DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+      CLEARTYPE_QUALITY, DEFAULT_PITCH or FF_DONTCARE,
+      newWideCString("Microsoft YaHei")
+    )
+    let hKr = CreateFontW(
+      -rSize, 0, 0, 0, FW_NORMAL, 0, 0, 0,
+      DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+      CLEARTYPE_QUALITY, DEFAULT_PITCH or FF_DONTCARE,
+      newWideCString("Malgun Gothic")
+    )
+    let oldFont = SelectObject(hdc, hPrimary)
+    var tempBuf = newSeq[uint8](4096)
+    var gm: GLYPHMETRICS
+    var reqSize: uint32 = 0
+
+    let found = queryGdiGlyph(hdc, [hPrimary, hSymbol, hCjk, hKr], cp, tempBuf, gm, reqSize)
+    discard SelectObject(hdc, oldFont)
+    if hPrimary != nil: discard DeleteObject(hPrimary)
+    if hSymbol != nil: discard DeleteObject(hSymbol)
+    if hCjk != nil: discard DeleteObject(hCjk)
+    if hKr != nil: discard DeleteObject(hKr)
+    discard DeleteDC(hdc)
+
+    if not found:
+      if atlas.missingGlyph.width > 0.0f:
+        return ok[GlyphInfo, string](atlas.missingGlyph)
+      return err[GlyphInfo, string]("Codepoint 0x" & $cp & " has no glyph in system fonts")
+
+    if reqSize > 0 and gm.gmBlackBoxX > 0 and gm.gmBlackBoxY > 0 and cp != 32'u32:
+      let bw = int(gm.gmBlackBoxX)
+      let bh = int(gm.gmBlackBoxY)
+      let pitch = (bw + 3) and not 3
+      return atlas.packGlyphBitmap(
+        cp, bw, bh, tempBuf, pitch,
+        float32(gm.gmptGlyphOrigin.x), float32(gm.gmptGlyphOrigin.y),
+        float32(gm.gmCellIncX), isGray64 = true, pinned = false, allowEvict = true
+      )
+    else:
+      return atlas.packGlyphBitmap(
+        cp, 0, 0, tempBuf, 0,
+        0.0f, 0.0f, float32(gm.gmCellIncX),
+        isGray64 = true, pinned = false, allowEvict = true
+      )
+  else:
+    let charW = max(4, int(atlas.rasterSize * 0.55f))
+    let charH = max(6, int(atlas.rasterSize * 0.78f))
+    let tofu = generateTofuBitmap(charW, charH)
+    atlas.packGlyphBitmap(
+      cp, charW, charH, tofu, charW,
+      1.0f, float32(charH), float32(charW + 2),
+      isGray64 = false, pinned = false, allowEvict = true
+    )
+
+proc initFontAtlas*(
+  fontName: string = "Segoe UI",
+  fontSize: float32 = 32.0f,
+  dpiScale: float32 = 1.0f,
+  atlasWidth: int = 1024,
+  atlasHeight: int = 1024
+): FontAtlas {.raises: [].} =
+  initAtlasBase(result, fontName, fontSize, dpiScale, atlasWidth, atlasHeight)
 
   when defined(windows):
     let hdc = CreateCompatibleDC(nil)
@@ -271,9 +791,12 @@ proc initFontAtlas*(fontName: string = "Segoe UI", fontSize: float32 = 32.0f): F
       initFallbackAtlas(result, fontSize)
       return
 
+    let rSize = max(1'i32, int32(result.rasterSize + 0.5f))
+    let invDpi = if result.dpiScale > 0.1f: 1.0f / result.dpiScale else: 1.0f
+
     let wFontName = newWideCString(fontName)
     let hFont = CreateFontW(
-      -int32(fontSize), 0, 0, 0, FW_NORMAL,
+      -rSize, 0, 0, 0, FW_NORMAL,
       0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
       CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH or FF_DONTCARE,
       wFontName
@@ -284,10 +807,9 @@ proc initFontAtlas*(fontName: string = "Segoe UI", fontSize: float32 = 32.0f): F
       initFallbackAtlas(result, fontSize)
       return
 
-    # Secondary fallback font for symbols/dingbats not present in primary font
-    let hFallbackFont = if fontName != "Segoe UI Symbol":
+    let hFallbackSymbol = if fontName != "Segoe UI Symbol":
       CreateFontW(
-        -int32(fontSize), 0, 0, 0, FW_NORMAL,
+        -rSize, 0, 0, 0, FW_NORMAL,
         0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
         CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH or FF_DONTCARE,
         newWideCString("Segoe UI Symbol")
@@ -297,7 +819,7 @@ proc initFontAtlas*(fontName: string = "Segoe UI", fontSize: float32 = 32.0f): F
 
     let oldFont = SelectObject(hdc, hFont)
 
-    # Query kerning pairs for the selected font
+    # Query kerning pairs for the primary font (convert to logical DIPs)
     let kernCount = GetKerningPairsW(hdc, 0, nil)
     if kernCount > 0:
       var pairs = newSeq[KERNINGPAIR](kernCount)
@@ -305,16 +827,15 @@ proc initFontAtlas*(fontName: string = "Segoe UI", fontSize: float32 = 32.0f): F
       for i in 0 ..< int(fetched):
         let f = pairs[i].wFirst
         let s = pairs[i].wSecond
-        let amt = pairs[i].iKernAmount
+        let amt = float32(pairs[i].iKernAmount) * invDpi
         if f < 256 and s < 256:
-          result.kerningAscii[(int(f) shl 8) or int(s)] = int8(amt)
+          result.kerningAscii[(int(f) shl 8) or int(s)] = int8(clamp(int(amt), -127, 127))
         else:
           let key = (uint64(f) shl 32) or uint64(s)
-          result.kerningPairs[key] = float32(amt)
+          result.kerningPairs[key] = amt
 
-    # If fallback font present, query its kerning pairs too
-    if hFallbackFont != nil:
-      discard SelectObject(hdc, hFallbackFont)
+    if hFallbackSymbol != nil:
+      discard SelectObject(hdc, hFallbackSymbol)
       let fbKernCount = GetKerningPairsW(hdc, 0, nil)
       if fbKernCount > 0:
         var fbPairs = newSeq[KERNINGPAIR](fbKernCount)
@@ -322,124 +843,103 @@ proc initFontAtlas*(fontName: string = "Segoe UI", fontSize: float32 = 32.0f): F
         for i in 0 ..< int(fbFetched):
           let f = fbPairs[i].wFirst
           let s = fbPairs[i].wSecond
-          let amt = fbPairs[i].iKernAmount
+          let amt = float32(fbPairs[i].iKernAmount) * invDpi
           if f < 256 and s < 256:
             let idx = (int(f) shl 8) or int(s)
             if result.kerningAscii[idx] == 0:
-              result.kerningAscii[idx] = int8(amt)
+              result.kerningAscii[idx] = int8(clamp(int(amt), -127, 127))
           else:
             let key = (uint64(f) shl 32) or uint64(s)
             if not result.kerningPairs.contains(key):
-              result.kerningPairs[key] = float32(amt)
+              result.kerningPairs[key] = amt
       discard SelectObject(hdc, hFont)
 
     var tm: TEXTMETRICW
     if GetTextMetricsW(hdc, addr tm) != 0:
-      result.lineHeight = float32(tm.tmHeight + tm.tmExternalLeading)
-      result.ascender = float32(tm.tmAscent)
-      result.descender = float32(tm.tmDescent)
+      result.lineHeight = float32(tm.tmHeight + tm.tmExternalLeading) * invDpi
+      result.ascender = float32(tm.tmAscent) * invDpi
+      result.descender = float32(tm.tmDescent) * invDpi
     else:
       result.lineHeight = fontSize * 1.3f
       result.ascender = fontSize * 0.9f
       result.descender = fontSize * 0.3f
 
-    var mat: MAT2
-    mat.eM11.value = 1
-    mat.eM22.value = 1
-
-    var curX = 1
-    var curY = 1
-    var rowH = 0
+    # Always pin a guaranteed tofu replacement glyph first
+    result.ensurePinnedMissingGlyph()
 
     var tempBuf = newSeq[uint8](4096)
-
     let charsToRasterize = collectCandidateCodepoints()
+    let fonts = [hFont, hFallbackSymbol]
 
     for ch in charsToRasterize:
       var gm: GLYPHMETRICS
-      var reqSize = GetGlyphOutlineW(hdc, ch, GGO_GRAY8_BITMAP, addr gm, 0, nil, addr mat)
-      var switchedFont = false
-
-      # If primary font failed or has no glyph for a non-space char, try fallback font
-      if (reqSize == GDI_ERROR or (reqSize == 0 and ch != 32'u32)) and hFallbackFont != nil:
-        discard SelectObject(hdc, hFallbackFont)
-        switchedFont = true
-        reqSize = GetGlyphOutlineW(hdc, ch, GGO_GRAY8_BITMAP, addr gm, 0, nil, addr mat)
-
-      # If still error or invalid, restore font if switched and continue
-      if reqSize == GDI_ERROR:
-        if switchedFont:
-          discard SelectObject(hdc, hFont)
+      var reqSize: uint32 = 0
+      if not queryGdiGlyph(hdc, fonts, ch, tempBuf, gm, reqSize):
         continue
 
-      var g: GlyphInfo
-      g.advance = float32(gm.gmCellIncX)
-
-      if reqSize > 0 and gm.gmBlackBoxX > 0 and gm.gmBlackBoxY > 0 and ch != 32'u32:
-        g.bearingX = float32(gm.gmptGlyphOrigin.x - 1)
-        g.bearingY = float32(gm.gmptGlyphOrigin.y + 1)
-        g.width = float32(gm.gmBlackBoxX + 2)
-        g.height = float32(gm.gmBlackBoxY + 2)
-
-        if tempBuf.len < int(reqSize):
-          tempBuf.setLen(int(reqSize))
-
-        let fetched = GetGlyphOutlineW(hdc, ch, GGO_GRAY8_BITMAP, addr gm, reqSize, addr tempBuf[0], addr mat)
-        if fetched == reqSize:
-          let bw = int(gm.gmBlackBoxX)
-          let bh = int(gm.gmBlackBoxY)
-          let slotW = bw + 2
-          let slotH = bh + 2
-
-          if curX + slotW + 2 >= result.width:
-            curX = 1
-            curY += rowH + 2
-            rowH = 0
-
-          if curY + slotH + 2 >= result.height:
-            # Atlas full
-            if switchedFont:
-              discard SelectObject(hdc, hFont)
-            break
-
-          let pitch = (bw + 3) and not 3
-
-          for r in 0 ..< bh:
-            for c in 0 ..< bw:
-              let val = uint32(tempBuf[r * pitch + c]) # 0..64
-              let alpha = min(255'u32, (val * 255'u32 + 32'u32) div 64'u32)
-              result.pixels[(curY + 1 + r) * result.width + (curX + 1 + c)] = uint8(alpha)
-
-          g.uvMin = [float32(curX) / float32(result.width), float32(curY) / float32(result.height)]
-          g.uvMax = [float32(curX + slotW) / float32(result.width), float32(curY + slotH) / float32(result.height)]
-
-          curX += slotW + 2
-          if slotH > rowH:
-            rowH = slotH
+      let isPinned = (ch == uint32('?') or ch == 32'u32)
+      let packRes = if reqSize > 0 and gm.gmBlackBoxX > 0 and gm.gmBlackBoxY > 0 and ch != 32'u32:
+        let bw = int(gm.gmBlackBoxX)
+        let bh = int(gm.gmBlackBoxY)
+        let pitch = (bw + 3) and not 3
+        result.packGlyphBitmap(
+          ch, bw, bh, tempBuf, pitch,
+          float32(gm.gmptGlyphOrigin.x), float32(gm.gmptGlyphOrigin.y),
+          float32(gm.gmCellIncX), isGray64 = true, pinned = isPinned, allowEvict = false
+        )
       else:
-        # Whitespace / zero-box glyphs must not emit geometry
-        g.bearingX = 0.0f
-        g.bearingY = 0.0f
-        g.width = 0.0f
-        g.height = 0.0f
-        g.uvMin = [0.0f, 0.0f]
-        g.uvMax = [0.0f, 0.0f]
+        result.packGlyphBitmap(
+          ch, 0, 0, tempBuf, 0,
+          0.0f, 0.0f, float32(gm.gmCellIncX),
+          isGray64 = true, pinned = isPinned, allowEvict = false
+        )
 
-      if switchedFont:
-        discard SelectObject(hdc, hFont)
+      if packRes.isErr:
+        # Atlas capacity reached during prewarm: keep already-packed high-priority ranges
+        # intact (or retry with LRU eviction only if core ASCII isn't complete yet).
+        if ch <= 126'u32:
+          let retry = if reqSize > 0 and gm.gmBlackBoxX > 0 and gm.gmBlackBoxY > 0 and ch != 32'u32:
+            let bw = int(gm.gmBlackBoxX)
+            let bh = int(gm.gmBlackBoxY)
+            let pitch = (bw + 3) and not 3
+            result.packGlyphBitmap(
+              ch, bw, bh, tempBuf, pitch,
+              float32(gm.gmptGlyphOrigin.x), float32(gm.gmptGlyphOrigin.y),
+              float32(gm.gmCellIncX), isGray64 = true, pinned = isPinned, allowEvict = true
+            )
+          else:
+            ok[GlyphInfo, string](GlyphInfo())
+          if retry.isErr:
+            result.storeGlyphEntry(ch, result.missingGlyph)
+        else:
+          result.lastError = packRes.error
+          break
 
-      if ch < 0x0500'u32:
-        result.glyphs[ch] = g
-      else:
-        result.extendedGlyphs[ch] = g
+    # Refresh LRU ticks on core ASCII + symbols so extended glyphs are evicted first if dynamic pressure occurs
+    for c in 32'u32 .. 126'u32:
+      result.touchGlyph(c)
 
     discard SelectObject(hdc, oldFont)
     discard DeleteObject(hFont)
-    if hFallbackFont != nil:
-      discard DeleteObject(hFallbackFont)
+    if hFallbackSymbol != nil:
+      discard DeleteObject(hFallbackSymbol)
     discard DeleteDC(hdc)
   else:
     initFallbackAtlas(result, fontSize)
+
+proc rebuildForDpi*(atlas: var FontAtlas, dpiScale: float32) {.raises: [].} =
+  ## Rebuilds the font atlas at the given DPI scale while preserving font name, logical size, and atlas dimensions.
+  let effDpi = if dpiScale > 0.1f: dpiScale else: 1.0f
+  if abs(atlas.dpiScale - effDpi) < 1e-4f:
+    return
+  let name = if atlas.fontName.len > 0: atlas.fontName else: "Segoe UI"
+  let sz = if atlas.baseSize > 0.0f: atlas.baseSize else: 32.0f
+  let w = if atlas.width > 0: atlas.width else: 1024
+  let h = if atlas.height > 0: atlas.height else: 1024
+  let prevEpoch = atlas.epoch
+  atlas = initFontAtlas(name, sz, effDpi, w, h)
+  atlas.epoch = prevEpoch + 1
+  atlas.atlasNeedsUpload = true
 
 # =============================================================================
 # Text Measurement & Glyph Query Helpers
@@ -448,9 +948,6 @@ proc initFontAtlas*(fontName: string = "Segoe UI", fontSize: float32 = 32.0f): F
 {.push stacktrace: off, linetrace: off.}
 
 proc isIgnoredCodepoint*(cp: uint32): bool {.inline, raises: [].} =
-  # Variation selectors (U+FE00..U+FE0F, specifically U+FE0F)
-  # Variation selectors supplement (U+E0100..U+E01EF)
-  # Zero-width spaces, BOM, joiners, carriage return, null, word joiner, soft hyphen
   (cp >= 0xFE00'u32 and cp <= 0xFE0F'u32) or
   (cp >= 0xE0100'u32 and cp <= 0xE01EF'u32) or
   cp == 0'u32 or cp == 13'u32 or
@@ -484,8 +981,25 @@ proc getGlyph*(atlas: FontAtlas, r: Rune): GlyphInfo {.inline, raises: [].} =
       if g.advance > 0.0f or g.width > 0.0f:
         return g
 
-  # Fallback to question mark or space
+  # Non-covered codepoints fall back cleanly to the pinned tofu replacement box (never silently vanish)
+  if atlas.missingGlyph.width > 0.0f or atlas.missingGlyph.advance > 0.0f:
+    return atlas.missingGlyph
   result = atlas.glyphs[ord('?')]
+
+proc getGlyphMut*(atlas: var FontAtlas, r: Rune): GlyphInfo {.inline, raises: [].} =
+  ## Looks up a glyph and updates its LRU timestamp (dynamically rasterizing if missing).
+  let cp = uint32(r)
+  if isIgnoredCodepoint(cp):
+    return GlyphInfo()
+  let slotIdx = atlas.cpToSlot.getOrDefault(cp, -1)
+  if slotIdx >= 0 and slotIdx < atlas.slots.len and atlas.slots[slotIdx].active:
+    inc(atlas.lruTick)
+    atlas.slots[slotIdx].lastUsedTick = atlas.lruTick
+    return atlas.getStoredGlyph(cp)
+  let res = atlas.ensureGlyph(cp)
+  if res.isOk:
+    return res.val
+  atlas.getGlyph(r)
 
 proc measureText*(atlas: FontAtlas, text: string, fontSize: float32): tuple[width, height: float32] {.raises: [].} =
   let scale = if atlas.baseSize > 0.0f: fontSize / atlas.baseSize else: 1.0f
@@ -512,7 +1026,6 @@ proc measureText*(atlas: FontAtlas, text: string, fontSize: float32): tuple[widt
       curLineW += atlas.getKerning(prevRune, r) * scale
 
     let g = atlas.getGlyph(r)
-    # Account for visual right-side overhang past advance (italics, curves, serifs)
     let overhang = max(0.0f, (g.bearingX + g.width - g.advance) * scale)
     lastGlyphExtra = overhang
     curLineW += g.advance * scale

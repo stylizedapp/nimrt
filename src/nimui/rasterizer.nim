@@ -310,5 +310,5 @@ proc savePng*(fb: SoftwareFramebuffer, path: string): bool {.raises: [].} =
     return false
   var fh = fhRes.get
   let wrRes = fh.write(unsafeAddr bytes[0], bytes.len)
-  discard fh.close()
-  wrRes.isOk and wrRes.get == bytes.len
+  let closeRes = fh.close()
+  wrRes.isOk and wrRes.get == bytes.len and closeRes.isOk
