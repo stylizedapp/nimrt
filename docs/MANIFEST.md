@@ -152,7 +152,7 @@ src/
         ├── vulkan_backend.nim  # Vulkan 1.1+ backend, single vkCmdDrawIndexed instancing
         ├── vulkan_api.nim      # Direct Win32 vulkan-1.dll dynamic loader & structs
         ├── shaders.nim         # Compiled SPIR-V shaders (quad SDF + glyph rendering)
-        └── font_atlas.nim      # Monospace SDF font atlas & glyph metric cache
+        └── font_atlas.nim      # GDI-rasterized glyph atlas (R8 coverage), LRU eviction & glyph metric cache
 ```
 
 ### 3.2 Tier 1: `corex` (Foundational System Primitives)
@@ -316,8 +316,8 @@ The platform layer isolates operating system specifics behind high-level, cross-
    - 64-byte POD `UiDrawInstance` vertex attributes: rectangle bounds `(x, y, w, h)`, clip rect, fill color, border color, border width, corner radius, texture atlas coordinates `(u0, v0, u1, v1)`, and primitive mode (solid quad vs textured glyph).
    - Compiled SPIR-V shaders with signed-distance-field (SDF) anti-aliased rounded corners and alpha-blended text.
 
-3. **SDF Font Atlas & Rasterizer (`nimui/gpu/font_atlas`)**:
-   - Pre-baked 512x512 monochrome SDF texture atlas supporting proportional and monospace ASCII font metrics.
+3. **Glyph Atlas & Rasterizer (`nimui/gpu/font_atlas`)**:
+   - 1024x1024 `R8_UNORM` glyph atlas rasterized via Win32 GDI `GetGlyphOutlineW(GGO_GRAY8_BITMAP)` (65-level anti-aliased coverage, **not** a signed-distance-field; only box/border primitives use analytical SDF in `ui.frag`). Covers ASCII, Latin-1/Latin Extended-A/B (`U+00A0..U+024F`), Cyrillic and UI symbols, with LRU eviction, symbol-font fallback and a `U+FFFD` tofu glyph for missing codepoints, plus DPI-scaled rasterization.
    - Zero-allocation string measurement and quad generation with kerning and baseline alignment.
 
 4. **Declarative DSL & Reactive Bindings (`nimui/dsl`)**:
@@ -475,3 +475,4 @@ let tree = ui:
 ## 7. Conclusion
 
 The Nim High-Performance Core Ecosystem establishes an uncompromising foundation for modern systems programming. By playing "3D chess" with hardware cache lines, deterministic lifetimes, and kernel abstractions, it delivers bare-metal execution speeds on par with heavily optimized Rust, while preserving the elegance, readability, and expressive clarity that make Nim exceptional.
+
