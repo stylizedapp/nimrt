@@ -39,15 +39,16 @@ nim/
 ## Основные модули
 
 ### 1. `src/corex/` — Системное ядро
-- `allocators.nim`, `slab.nim`, `memory.nim`, `stringarena.nim` — `TrackingAllocator`, арены, `Slab[T]`, строковые арены и контроль фрагментации.
+- `allocators.nim`, `slab.nim`, `memory.nim`, `stringarena.nim`, `testing.nim` — `TrackingAllocator`, арены, `Slab[T]`, строковые арены и контроль утечек (`testWithLeakCheck` проверяет и `TrackingAllocator`, и ORC-дельту через `orcOccupiedMem()` / `assertZeroOrcLeaks()`).
 - `result.nim`, `adt.nim`, `traits.nim` — `Result[T, E]`, `Option[T]`, алгебраические типы и явная обработка ошибок без исключений (`{.raises: [].}`).
 - `signals.nim` — реактивный DAG-движок (`ReactiveRuntime`, `Signal[T]`, `Computed[T]`, `effect`) без утечек и лишних пересчётов.
 - `unicode.nim` — декодирование UTF-8, графемные/руновые утилиты и безопасный рендер Кириллицы и ASCII без `std/unicode`.
-- `async.nim`, `workstealing.nim`, `mft.nim`, `fs.nim`, `platform/windows/` — IOCP-реактор, work-stealing пул потоков, прямой парсер NTFS MFT.
+- `concurrency.nim` (фасад над `src/corex/concurrency/{primitives,pool,parallel}.nim`), `async.nim`, `workstealing.nim`, `mft.nim`, `fs.nim`, `platform/windows/` — IOCP-реактор, work-stealing пул потоков (`setDefaultPool`/`hasDefaultPool`/`trySpawn`/`tryParallelFor`), прямой парсер NTFS MFT.
 
 ### 2. `src/algx/` — Высокопроизводительные алгоритмы
+*(В debug/тестовых сборках работают полные runtime-проверки границ; `{.push checks: off.}` включается только при `-d:release` или `-d:danger`.)*
 - `ultrasort.nim` — гибридный 3-уровневый Cache-Aware MSD Radix Sort + L1 Insertion Sort.
-- `swissmap.nim` — быстрая плоская хэш-таблица (`FastMap`).
+- `swissmap.nim` — плоская хэш-таблица (`FastMap`) с 16-байтовым SSE2-поиском (`_mm_cmpeq_epi8` / `_mm_movemask_epi8`) и 16-байтовым SWAR-фоллбэком (`-d:noSse2`).
 - `zeropack.nim` — Zero-Copy POD-сериализация и потоковый JSON.
 - `simdscan.nim`, `heap.nim` — 8-канальная векторизованная аналитика массивов и кэш-дружественная куча.
 
@@ -133,18 +134,25 @@ nim c -r apps/nimui_demo/src/main.nim --screenshot singularity.png
 ### Запуск тестов
 
 ```powershell
+# Полный прогон всех сьютов (38+ тестов, включает автосборку libquickjs.a и nim_safe.exe)
+nimble test_all
+
 # Базовые системные тесты CoreX / AlgX / MFT / Signals / IOCP
 nimble test
 
-# Полный набор тестов NimUI (Layout, Widgets, Zero-JS HTML5/CSS3) и QuickJS
+# Полный набор тестов NimUI (Layout, Widgets, HTML5/CSS3) и QuickJS
 nimble test_ui
 nimble test_js
 
-# Верификация гибридного memory-safe компилятора (--mem-safe, --safe-mode, --check-safe-atf)
+# Верификация экспериментального memory-safe компилятора (--mem-safe, --safe-mode, --check-safe-atf)
 nimble test_compiler
 
 # Проверка всех 4 витринных приложений в headless-режиме + генерация скриншотов
 nimble test_showcase
+
+# Фаззинг-тесты (100 000 входов каждый): MFT и HTML/CSS/JS
+nim c -r tests/test_fuzz_mft.nim
+nim c -r tests/test_fuzz_html_css.nim
 
 # Бенчмарки против Rust (генерирует benchmarks/showcase.html)
 nimble showcase_html
@@ -220,10 +228,16 @@ nimble showcase_html
 Для локальной генерации HTML-документации по исходным модулям (каталог `htmldocs/` добавлен в `.gitignore`):
 
 ```powershell
-nim doc --project --index:on --outdir:htmldocs src/corex.nim
+# Полная проектная документация с индексом (проверено: exit 0)
 nim doc --project --index:on --outdir:htmldocs src/algx.nim
 nim doc --project --index:on --outdir:htmldocs src/nimui.nim
+
+# Отдельные подмодули corex (например allocators, result, signals, testing):
+nim doc --outdir:htmldocs src/corex/allocators.nim
+nim doc --outdir:htmldocs src/corex/signals.nim
 ```
+
+> Примечание: `nim doc` для корневого `src/corex.nim` сейчас останавливается на неоднозначности `atomics.load` / `concurrency.load` в `src/corex/async.nim(225, 26)` (в режиме `docgen`), поэтому для `corex` используйте генерацию по конкретным подмодулям.
 
 > **Языковая заметка по документации:** `README.md`, [`docs/STATE.md`](docs/STATE.md), [`docs/BENCHMARK_SHOWCASE.md`](docs/BENCHMARK_SHOWCASE.md) и [`docs/NIM_ROADMAP_FEATURES.md`](docs/NIM_ROADMAP_FEATURES.md) ведутся на русском языке; архитектурные спецификации [`docs/MANIFEST.md`](docs/MANIFEST.md), [`docs/PROJECT.md`](docs/PROJECT.md) и [`docs/DECISIONS.md`](docs/DECISIONS.md) ведутся на английском языке.
 

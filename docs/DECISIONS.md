@@ -16,20 +16,22 @@ wgPtr.add(1)
 If enqueuing into the local deque or injection queue fails (e.g., due to an exception during queue expansion, queue full condition, or during a concurrent pool shutdown sequence), `wgPtr` was already incremented, but the job would never be executed by any worker thread. Consequently, `wg.done()` would never be called for that abandoned chunk. When the coordinating thread subsequently invoked `wg.wait()`, it entered an indefinite sleep waiting for a counter that could never reach zero, resulting in an unrecoverable **deadlock**.
 
 ### Decision & Implementation
-Inside `src/corex/concurrency.nim` (`parallelFor`), wrap the push call in a `try...except CatchableError, Defect:` block with an explicit rollback of the `WaitGroup` counter and immediate re-raise (so `Defect` is never swallowed, in compliance with the M11 zero-exception / `Defect` safety policy):
+Inside `src/corex/concurrency/parallel.nim` (re-exported by `src/corex/concurrency.nim`), `parallelForImpl` uses `Result`-based submission (`pool.trySubmitJob(job)`) and decrements `WaitGroup` cleanly if submission returns `Err`. The outer block catches only `CatchableError` (never `Defect`, in strict compliance with the M11 zero-exception / `Defect` policy):
 
 ```nim
 wgPtr.add(1)
 let job = Job(fn: runChunkJob, arg: addr jobs[idx], cleanup: nil)
-try:
-  if isWorker:
-    pool.deques[tWorkerId].push(job)
-  else:
-    pool.pushInjection(job)
-except CatchableError, Defect:
-  wgPtr.add(-1)   # rollback: task not in queue, done() will not be called
-  raise
+let subRes = pool.trySubmitJob(job)
+if subRes.isErr:
+  wgPtr.add(-1) # rollback: task not queued, done() will not be called
+  stoppedDuringPush = true
+  break
 inc(pushedChunks)
+...
+except CatchableError:
+  if pushedChunks > 0:
+    wgPtr.wait()
+  raise
 ```
 
 ### Verification & Impact

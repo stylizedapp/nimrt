@@ -47,9 +47,11 @@
 | `tests/test_adversarial_m5.nim` | ✅ 5/5 стресс-тестов | Буферы >64KB, суррогаты UTF-16, 48-bit MFT, кластеры |
 | `tests/test_nimui_layout.nim` (`--mm:orc --threads:on --panics:on`) | ✅ 5/5 сьютов (20 проверок) | Flexbox, HitTest, VirtualList 1M, Signals, 1000-cycle audit (`TrackingAllocator`) |
 | `tests/test_nimui_widgets.nim`, `tests/test_nimui_html_css.nim` | ✅ NimUI Widgets & HTML/CSS | Нативные контролы, HTML5/CSS3 subset и `HtmlBindingRegistry` |
+| `tests/test_fuzz_mft.nim` | ✅ 100,000 входов | Детерминированный фаззинг `$MFT` парсера (включая границы `$DATA` и `parseRunList`) |
+| `tests/test_fuzz_html_css.nim` | ✅ 100,000 входов | Детерминированный фаззинг HTML/CSS парсера, `var()` циклов и JS-валидатора |
 | `tests/test_nimui_quickjs.nim` | ✅ 4/4 сьюта QuickJS | Валидатор философии, `Allocator` bridge (`TrackingAllocator`), 30-cycle стресс, Pomodoro |
-| `tests/test_safe_compiler.nim` | ✅ 5/5 сьютов `nim_safe` | `--mem-safe`, `--safe-mode`, `--check-safe-atf` + ATF проверка C-кода |
-| `tests/test_showcase_apps.nim` | ✅ Headless Showcase | Headless-сборка и экспорт скриншотов всех 4 витринных приложений |
+| `tests/test_safe_compiler.nim` | ✅ 5/5 сьютов `nim_safe` | `--mem-safe`, `--safe-mode`, `--check-safe-atf` + ATF проверка C-кода (требует `nimble build_compiler`) |
+| `tests/test_showcase_apps.nim` | ✅ Headless Showcase (4/4) | Headless-сборка (изолированный `--nimcache`) и экспорт 9 PNG всех 4 витринных приложений |
 | `apps/nimui_demo/src/main.nim` (`--screenshot`) | ✅ Singularity Lab | Текущее демо на Vulkan 1.1+ (`~5 MB` trimmed WS после `EmptyWorkingSet()`); заменило M14 Raycast `--bench` |
 
 ---
@@ -99,18 +101,24 @@
 
 ---
 
-## Исправления и доработки, внесённые в текущем цикле
+## Исправления и доработки в текущем цикле подготовки v0.1.0 (2026-11-16)
 
-1. **`src/corex/concurrency.nim:1296-1300` (`freeTaskEnv`):**
-   - Добавлен вызов `reset(env.task)` перед `deallocShared(env)`.
-   - В ARC/ORC closure окружение хранится внутри дескриптора proc; явный `reset` гарантирует своевременный вызов деструкторов захваченных переменных до освобождения памяти обёртки задачи.
-2. **`src/algx/zeropack.nim:95-131` (`packBin` / `unpackBin`):**
-   - Устранены предупреждения `UnreachableCode` за счёт перехода от ранних `return` внутри `when isBlittable(...)` к строгой структуре `when ... else:`.
-   - Сборка с `--warnings:on` теперь проходит абсолютно чисто (0 предупреждений).
-3. **`src/corex/platform/windows/win32_fs.nim` & `src/corex/io.nim`:**
-   - Верифицированы RAII-деструкторы `FileHandle` с защитой от двойного закрытия, буферизованные потоки с автоматическим сбросом (flush) при деструкции и заполнении, а также структуры MFT/USN Journal.
-4. **Историческая заметка (`apps/nimui_demo`, M14 `runHeadlessBenchmark`):**
-   - В исходной M14-версии Raycast Spotlight (до замены на Singularity Lab в коммите `dc90d16`) порог проверки `buildDrawInstances` в Debug был `< 3.000 ms`, а в Release `< 0.200 ms` (`0.020 ms` CPU build time без учёта GPU/present). В текущем `apps/nimui_demo` (`Singularity Lab`) используется интерактивный цикл Vulkan 1.1+ и headless-скриншоты `--screenshot`.
+1. **Ядро `corex` & `algx`:**
+   - `src/algx/*`: `{.push checks: off.}` перенесено под `when defined(release) or defined(danger):` — debug/тестовые сборки работают с полными проверками границ.
+   - `src/corex/testing.nim`: добавлены `orcOccupiedMem()`, `orcHeapDelta()`, `assertZeroOrcLeaks()`, `testWithOrcLeakCheck()`; `testWithLeakCheck` проверяет и `TrackingAllocator`, и ORC-дельту (`GC_fullCollect()` + `getOccupiedMem()`).
+   - `src/corex/concurrency.nim` разделён на `src/corex/concurrency/{primitives,pool,parallel}.nim`; глобальные локи переведены на `SpinLock`, добавлены `setDefaultPool` / `hasDefaultPool` и `Result`-API (`trySpawn`, `tryParallelFor`), исключена ловля `Defect`.
+   - `src/algx/swissmap.nim` (`FastMap`): обновлён до 16-байтового SSE2-пробирования (`_mm_cmpeq_epi8` / `_mm_movemask_epi8` + SWAR-фоллбэк под `-d:noSse2`).
+   - `src/corex/platform/windows/win32_mft.nim`: усилены проверки границ при разборе `$DATA` / `parseRunList` / UTF-16LE и добавлен фаззер `tests/test_fuzz_mft.nim` (100 000 кейсов).
+   - `apps/wiztree/types.nim`: исправлена утечка ORC (2,688 байт) в `Tree.=destroy` — добавлено явное уничтожение `frnMap` и `parentFrns`.
+2. **`nimui` GPU, окно, контролы, HTML/CSS и QuickJS:**
+   - `src/nimui/gpu/font_atlas.nim`: LRU-вытеснение при переполнении атласа, расширение Unicode (Latin-1 + Latin Extended-A/B `U+00A0..U+024F` + кириллица `U+0400..U+04FF`), fallback-шрифты и tofu `U+FFFD`, DPI-масштабирование; уточнено, что текст использует 65-уровневые GDI coverage-битмапы в `R8_UNORM` (не SDF), а SDF применяется для боксов/рамок.
+   - `src/nimui/gpu/vulkan_backend.nim` & `window.nim`: обработка `VK_ERROR_DEVICE_LOST`, опциональный `-d:nimuiValidation`, пропуск рендера при свёрнутом окне (`0×0`), `WM_DPICHANGED`, базовая `WM_IME_COMPOSITION`, `clipboard.nim` переведён на `threadvar`.
+   - `src/nimui/controls.nim` разделён на `src/nimui/controls/{common,checkbox,radio,slider,dropdown,tooltip}.nim`.
+   - `src/nimui/html_css.nim` разделён на `src/nimui/html/{types,parser,cascade,compiler}.nim`; расширены CSS3/HTML5, нестандартные цвета темы вынесены в opt-in `parseThemeColor`, добавлен 100k-фаззер `tests/test_fuzz_html_css.nim`.
+3. **Инфраструктура, документация и бенчмарки:**
+   - Добавлены `LICENSE` (MIT), `CHANGELOG.md`, `CONTRIBUTING.md`, `.github/workflows/ci.yml` (Windows CI + strict warnings), `nimble test_all` / `build_quickjs` / `build_shaders`.
+   - `benchmarks/run_benchmarks.ps1` переведён на `--mm:orc`; в `README.md`, `docs/STATE.md`, `docs/DECISIONS.md`, `docs/MANIFEST.md`, `docs/PROJECT.md` и `docs/BENCHMARK_SHOWCASE.md` приведены честные формулировки безопасности, учёта утечек, ограничений и метрик M14.
+   - **Историческая заметка (`apps/nimui_demo`, M14 `runHeadlessBenchmark`):** в исходной M14-версии Raycast Spotlight (до замены на Singularity Lab в `dc90d16`) `0.020 ms` означало CPU-время `buildDrawInstances`, а `68 KB` — память после `EmptyWorkingSet()` без Vulkan. В текущем `apps/nimui_demo` (`Singularity Lab`) используется интерактивный цикл Vulkan 1.1+ и headless-скриншоты `--screenshot`.
 
 ---
 
