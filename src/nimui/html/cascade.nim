@@ -883,11 +883,49 @@ proc evalMediaQuery*(query: string, media: CssMediaContext): bool {.raises: [].}
       return true
   false
 
+proc isSupportedCssProperty*(prop: string): bool {.raises: [].} =
+  ## Returns true if `prop` is handled by `applyDeclaration` or is a CSS custom property (`--*`).
+  let low = htmlToLowerAscii(htmlStripAscii(prop))
+  if low.len >= 2 and low[0] == '-' and low[1] == '-':
+    return true
+  case low
+  of "display", "position", "z-index",
+     "top", "right", "bottom", "left",
+     "flex-direction", "flex-wrap", "justify-content", "align-items", "align-self",
+     "width", "height", "min-width", "max-width", "min-height", "max-height",
+     "flex-grow", "flex-shrink", "flex-basis", "flex",
+     "padding", "padding-top", "padding-right", "padding-bottom", "padding-left",
+     "margin", "margin-top", "margin-right", "margin-bottom", "margin-left",
+     "gap", "row-gap", "column-gap",
+     "color", "background", "background-color", "background-image",
+     "border", "border-width", "border-color", "border-radius",
+     "opacity", "box-shadow",
+     "font-size", "font-weight", "font-family", "line-height",
+     "cursor", "text-overflow", "white-space",
+     "list-style", "list-style-type",
+     "transition", "transition-property", "transition-duration", "transition-timing-function", "transition-delay",
+     "overflow", "overflow-y",
+     "text-align":
+    true
+  else:
+    false
+
+proc recordUnsupportedCssProperty*(list: var seq[string], prop: string) {.raises: [].} =
+  ## Records an unsupported CSS property name at most once (warn-once).
+  let low = htmlToLowerAscii(htmlStripAscii(prop))
+  if low.len == 0 or (low.len >= 2 and low[0] == '-' and low[1] == '-'):
+    return
+  for existing in list:
+    if existing == low:
+      return
+  list.add(low)
+
 proc parseCssSheetInternal(
   clean: string,
   media: CssMediaContext,
   orderCounter: var int,
   outRules: var seq[CssRule],
+  outUnsupported: var seq[string],
   depth: int
 ) {.raises: [].} =
   if depth >= MaxMediaRecursionDepth:
@@ -933,7 +971,7 @@ proc parseCssSheetInternal(
         if htmlStartsWithIgnoreCase(prelude, "@media"):
           let query = htmlStripAscii(prelude[6 ..< prelude.len])
           if evalMediaQuery(query, media):
-            parseCssSheetInternal(blockBody, media, orderCounter, outRules, depth + 1)
+            parseCssSheetInternal(blockBody, media, orderCounter, outRules, outUnsupported, depth + 1)
       elif i < clean.len:
         inc i
       continue
@@ -979,6 +1017,10 @@ proc parseCssSheetInternal(
     if decls.len == 0:
       continue
 
+    for d in decls:
+      if not isSupportedCssProperty(d.prop):
+        recordUnsupportedCssProperty(outUnsupported, d.prop)
+
     var sStart = 0
     for k in 0 .. selectorListStr.len:
       if k == selectorListStr.len or selectorListStr[k] == ',':
@@ -996,13 +1038,13 @@ proc parseCssSheet*(
   css: string,
   media: CssMediaContext = defaultCssMediaContext()
 ): CssStylesheet {.raises: [].} =
-  result = CssStylesheet(rules: @[])
+  result = CssStylesheet(rules: @[], unsupportedProperties: @[])
   let clean = stripCssComments(css)
   var orderCounter = 0
-  parseCssSheetInternal(clean, media, orderCounter, result.rules, 0)
+  parseCssSheetInternal(clean, media, orderCounter, result.rules, result.unsupportedProperties, 0)
 
 proc mergeStylesheets*(a, b: CssStylesheet): CssStylesheet {.raises: [].} =
-  result = CssStylesheet(rules: @[])
+  result = CssStylesheet(rules: @[], unsupportedProperties: @[])
   var order = 0
   for r in a.rules:
     var copyR = r
@@ -1014,6 +1056,10 @@ proc mergeStylesheets*(a, b: CssStylesheet): CssStylesheet {.raises: [].} =
     copyR.order = order
     inc order
     result.rules.add(copyR)
+  for u in a.unsupportedProperties:
+    recordUnsupportedCssProperty(result.unsupportedProperties, u)
+  for u in b.unsupportedProperties:
+    recordUnsupportedCssProperty(result.unsupportedProperties, u)
 
 # =============================================================================
 # Selector Matching & Cascade
@@ -1131,10 +1177,14 @@ proc applyBoxSpacingShorthand(
   autoFlags = [t.isAuto, r.isAuto, b.isAuto, l.isAuto]
 
 proc applyDeclaration*(style: var CssComputedStyle, prop, rawVal: string) {.raises: [].} =
+  let propName = htmlToLowerAscii(htmlStripAscii(prop))
   let val = htmlStripAscii(rawVal)
   let low = htmlToLowerAscii(val)
 
-  case prop
+  if propName.len >= 2 and propName[0] == '-' and propName[1] == '-':
+    return
+
+  case propName
   of "display":
     case low
     of "none": style.display = cdNone
@@ -1361,7 +1411,7 @@ proc applyDeclaration*(style: var CssComputedStyle, prop, rawVal: string) {.rais
       let c = parseCssColor(val)
       if c.isSome:
         style.bgColor = c.get()
-        if prop == "background":
+        if propName == "background":
           style.bgGradient = CssLinearGradient(active: false, angleDeg: 180.0'f32, stops: @[])
       else:
         for tok in splitCssValueTokens(val):
@@ -1497,7 +1547,7 @@ proc applyDeclaration*(style: var CssComputedStyle, prop, rawVal: string) {.rais
     else:
       style.justifyContent = jcStart
   else:
-    discard
+    recordUnsupportedCssProperty(style.unsupportedProperties, propName)
 
 proc defaultElementStyle*(tag: string, parentStyle: CssComputedStyle): CssComputedStyle {.raises: [].} =
   result = CssComputedStyle(
@@ -1571,7 +1621,8 @@ proc defaultElementStyle*(tag: string, parentStyle: CssComputedStyle): CssComput
     listStyleSet: false,
     transition: "",
     overflowY: false,
-    customVars: parentStyle.customVars
+    customVars: parentStyle.customVars,
+    unsupportedProperties: @[]
   )
 
   case tag
@@ -1689,7 +1740,8 @@ proc defaultRootStyle*(): CssComputedStyle {.raises: [].} =
     textOverflow: "clip",
     whiteSpace: "normal",
     listStyleType: "disc",
-    customVars: @[]
+    customVars: @[],
+    unsupportedProperties: @[]
   )
 
 proc applyPseudoDeclarations(style: var CssComputedStyle, pseudo: CssPseudoKind, decls: seq[CssDeclaration]) {.raises: [].} =

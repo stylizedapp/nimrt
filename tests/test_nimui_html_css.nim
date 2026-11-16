@@ -622,6 +622,219 @@ proc testExtendedCssAndHtmlTags(atlas: FontAtlas) =
     doAssert parseHtmlDoc("<svg><script>evil()</script></svg>").isErr()
     echo "  [PASS] 6.2 Margin, min/max constraints & HTML5 tags verified."
 
+  testWithLeakCheck("6.3 Unsupported CSS Property Warn-Once Diagnostics"):
+    let cssA = """
+      :root { --accent: #3B82F6; }
+      .a {
+        width: 100px;
+        grid-template-columns: 1fr 1fr;
+        box-sizing: border-box;
+        transition: opacity 200ms ease-out;
+      }
+      .b {
+        grid-template-columns: 2fr 1fr;
+        GRID-TEMPLATE-COLUMNS: auto;
+        color: var(--accent);
+      }
+    """
+    let cssB = """
+      .c {
+        box-sizing: content-box;
+        writing-mode: vertical-rl;
+      }
+    """
+    let sheetA = parseCssSheet(cssA)
+    doAssert sheetA.unsupportedProperties == @["grid-template-columns", "box-sizing"],
+      "Expected warn-once list [@[\"grid-template-columns\", \"box-sizing\"]], got " & $sheetA.unsupportedProperties
+
+    let sheetB = parseCssSheet(cssB)
+    doAssert sheetB.unsupportedProperties == @["box-sizing", "writing-mode"]
+
+    let merged = mergeStylesheets(sheetA, sheetB)
+    doAssert merged.unsupportedProperties == @["grid-template-columns", "box-sizing", "writing-mode"],
+      "Merged stylesheet must deduplicate unsupported properties"
+
+    let doc = parseHtmlDoc("""<div id="x" style="filter: blur(4px); FILTER: blur(8px); width: 100px;">Hi</div>""").get()
+    let xStyle = computeNodeStyle(doc, doc.findById("x").get(), sheetA, defaultRootStyle())
+    doAssert xStyle.unsupportedProperties == @["filter"],
+      "Inline unsupported properties must warn once, got " & $xStyle.unsupportedProperties
+
+    var directStyle = defaultRootStyle()
+    directStyle.applyDeclaration("backdrop-filter", "blur(6px)")
+    directStyle.applyDeclaration("Backdrop-Filter", "blur(12px)")
+    doAssert directStyle.unsupportedProperties == @["backdrop-filter"]
+    echo "  [PASS] 6.3 Unsupported CSS property warn-once diagnostics verified."
+
+  testWithLeakCheck("6.4 Extended CSS3 Layout & Numeric Expectations (margin, min/max, flex-wrap, align-self, opacity, box-shadow, gradient, var(), @media, transition)"):
+    let html = """
+      <style>
+        :root {
+          --card-w: 220px;
+          --accent: #3B82F6;
+        }
+        #col {
+          display: flex;
+          flex-direction: column;
+          align-items: stretch;
+          width: 400px;
+          height: 500px;
+          padding: 10px;
+        }
+        #m-first {
+          width: 100px;
+          height: 40px;
+          margin: 10px 20px 30px 40px;
+          background: #1E293B;
+        }
+        #m-second {
+          width: 100px;
+          height: 30px;
+          margin-top: 5px;
+          background: #334155;
+        }
+        #m-center {
+          width: 100px;
+          height: 20px;
+          margin: 0 auto;
+          background: #475569;
+        }
+        #min-w {
+          width: 50px;
+          min-width: 120px;
+          height: 20px;
+          background: #0EA5E9;
+        }
+        #max-w {
+          width: 100%;
+          max-width: 240px;
+          height: 20px;
+          background: #14B8A6;
+        }
+        #self-start {
+          align-self: flex-start;
+          height: 20px;
+          background: #F59E0B;
+        }
+        #self-stretch {
+          align-self: stretch;
+          height: 20px;
+          background: #EF4444;
+        }
+        #fx {
+          width: var(--card-w);
+          height: 30px;
+          background: linear-gradient(90deg, #FF0000 0%, #0000FF 100%);
+          color: var(--unset-fg, #10B981);
+          border: 2px solid var(--accent);
+          opacity: 0.5;
+          box-shadow: 2px 4px 10px 1px rgba(255, 0, 0, 0.5), inset 0 1px 3px #00FF00;
+          flex-wrap: wrap-reverse;
+          transition: opacity 200ms ease-out;
+        }
+        @media (min-width: 800px) and (prefers-color-scheme: dark) {
+          #media-box { width: 320px; height: 24px; background: #0F172A; }
+        }
+        @media (max-width: 500px) and (prefers-color-scheme: light) {
+          #media-box { width: 120px; height: 24px; background: #E2E8F0; }
+        }
+      </style>
+      <div id="col">
+        <div id="m-first">First</div>
+        <div id="m-second">Second</div>
+        <div id="m-center">Centered</div>
+        <div id="min-w">MinW</div>
+        <div id="max-w">MaxW</div>
+        <div id="self-start">SelfStart</div>
+        <div id="self-stretch">SelfStretch</div>
+        <div id="fx">FX</div>
+        <div id="media-box">Media</div>
+      </div>
+    """
+    let doc = parseHtmlDoc(html).get()
+    let darkWide = CssMediaContext(viewportWidth: 1280.0f, viewportHeight: 800.0f, prefersDark: true)
+    let sheetWide = parseCssSheet(doc.embeddedCss, darkWide)
+    doAssert sheetWide.unsupportedProperties.len == 0,
+      "Supported properties must not warn: " & $sheetWide.unsupportedProperties
+
+    var tree = initUiTree(testAlloc)
+    defer: tree.destroy()
+    var rt = initReactiveRuntime(testAlloc)
+    defer: rt.destroy()
+    var bindings = initHtmlBindingRegistry()
+    defer: bindings.destroy()
+
+    doAssert mountHtml(tree, addr rt, doc, sheetWide, bindings).isOk()
+    tree.layoutTree(800.0f, 600.0f, atlas)
+
+    # 1. margin shorthand + sibling vertical offset + margin: 0 auto centering
+    let mf = tree.nodes[bindings.getNodeById("m-first").get()].computedRect
+    doAssert approxEq(mf.x, 50.0f), "Expected m-first.x=50 (pad 10 + margin-left 40), got " & $mf.x
+    doAssert approxEq(mf.y, 20.0f), "Expected m-first.y=20 (pad 10 + margin-top 10), got " & $mf.y
+
+    let ms = tree.nodes[bindings.getNodeById("m-second").get()].computedRect
+    doAssert approxEq(ms.y, 95.0f), "Expected m-second.y=95 (20 + 40 + 30 + 5), got " & $ms.y
+
+    let mc = tree.nodes[bindings.getNodeById("m-center").get()].computedRect
+    # #col inner width = 400 - 20 = 380; centered 100px box => x = 10 + (380 - 100)/2 = 150
+    doAssert approxEq(mc.x, 150.0f), "Expected margin: 0 auto centered x=150, got " & $mc.x
+
+    # 2. min-width & max-width
+    let minR = tree.nodes[bindings.getNodeById("min-w").get()].computedRect
+    doAssert approxEq(minR.w, 120.0f), "Expected min-width 120, got " & $minR.w
+    let maxR = tree.nodes[bindings.getNodeById("max-w").get()].computedRect
+    doAssert approxEq(maxR.w, 240.0f), "Expected max-width 240, got " & $maxR.w
+
+    # 3. align-self: flex-start vs stretch in column layout
+    let ssR = tree.nodes[bindings.getNodeById("self-start").get()].computedRect
+    let stR = tree.nodes[bindings.getNodeById("self-stretch").get()].computedRect
+    doAssert ssR.w < 380.0f, "Expected align-self: flex-start not to stretch to 380, got " & $ssR.w
+    doAssert approxEq(stR.w, 380.0f), "Expected align-self: stretch to fill 380, got " & $stR.w
+
+    # 4. fx: var(), linear-gradient, opacity, box-shadow, flex-wrap, transition
+    let fxSlab = bindings.getNodeById("fx").get()
+    let fxRect = tree.nodes[fxSlab].computedRect
+    doAssert approxEq(fxRect.w, 220.0f), "Expected var(--card-w) = 220, got " & $fxRect.w
+    doAssert (tree.nodes[fxSlab].bgColor and 0xFF'u32) == 128'u32, "Expected opacity 0.5 on gradient bg alpha"
+    doAssert (tree.nodes[fxSlab].borderColor and 0xFF'u32) == 128'u32, "Expected opacity 0.5 on var(--accent) border"
+    doAssert (tree.nodes[fxSlab].textColor and 0xFF'u32) == 128'u32, "Expected opacity 0.5 on var() fallback fg"
+
+    let colIdx = doc.findById("col").get()
+    let htmlIdx = doc.nodes[0].children[0]
+    let rootBase = computeNodeStyle(doc, htmlIdx, sheetWide, defaultRootStyle())
+    let colStyle = computeNodeStyle(doc, colIdx, sheetWide, rootBase)
+    let fxStyle = computeNodeStyle(doc, doc.findById("fx").get(), sheetWide, colStyle)
+    doAssert fxStyle.flexWrap == cfwWrapReverse
+    doAssert fxStyle.transition == "opacity 200ms ease-out"
+    doAssert fxStyle.bgGradient.active and approxEq(fxStyle.bgGradient.angleDeg, 90.0f)
+    doAssert fxStyle.bgGradient.stops.len == 2
+    doAssert fxStyle.bgGradient.stops[0].color == 0xFF0000FF'u32
+    doAssert fxStyle.bgGradient.stops[1].color == 0x0000FFFF'u32
+    doAssert fxStyle.boxShadows.len == 2
+    doAssert approxEq(fxStyle.boxShadows[0].offsetX, 2.0f) and approxEq(fxStyle.boxShadows[0].offsetY, 4.0f)
+    doAssert approxEq(fxStyle.boxShadows[0].blur, 10.0f) and approxEq(fxStyle.boxShadows[0].spread, 1.0f)
+    doAssert not fxStyle.boxShadows[0].inset and fxStyle.boxShadows[0].color == 0xFF000080'u32
+    doAssert fxStyle.boxShadows[1].inset and fxStyle.boxShadows[1].color == 0x00FF00FF'u32
+
+    # 5. @media wide/dark vs narrow/light
+    let mbWide = bindings.getNodeById("media-box").get()
+    doAssert approxEq(tree.nodes[mbWide].computedRect.w, 320.0f)
+    doAssert tree.nodes[mbWide].bgColor == 0x0F172AFF'u32
+
+    let lightNarrow = CssMediaContext(viewportWidth: 360.0f, viewportHeight: 640.0f, prefersDark: false)
+    let sheetNarrow = parseCssSheet(doc.embeddedCss, lightNarrow)
+    var tree2 = initUiTree(testAlloc)
+    defer: tree2.destroy()
+    var rt2 = initReactiveRuntime(testAlloc)
+    defer: rt2.destroy()
+    var bindings2 = initHtmlBindingRegistry()
+    defer: bindings2.destroy()
+    doAssert mountHtml(tree2, addr rt2, doc, sheetNarrow, bindings2).isOk()
+    tree2.layoutTree(360.0f, 640.0f, atlas)
+    let mbNarrow = bindings2.getNodeById("media-box").get()
+    doAssert approxEq(tree2.nodes[mbNarrow].computedRect.w, 120.0f)
+    doAssert tree2.nodes[mbNarrow].bgColor == 0xE2E8F0FF'u32
+    echo "  [PASS] 6.4 Extended CSS3 layout & numeric expectations verified."
+
 proc main() =
   echo "================================================================="
   echo ">>> STARTING PURE-NIM HTML5/CSS3 ENGINE TEST SUITE <<<"

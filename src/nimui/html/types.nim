@@ -77,6 +77,7 @@ type
 
   CssStylesheet* = object
     rules*: seq[CssRule]
+    unsupportedProperties*: seq[string]
 
   CssDisplay* = enum
     cdBlock
@@ -206,6 +207,7 @@ type
     transition*: string
     overflowY*: bool
     customVars*: seq[CssCustomVar]
+    unsupportedProperties*: seq[string]
 
   HtmlClickProc* = proc() {.closure, gcsafe, raises: [].}
   HtmlInputProc* = proc(text: string) {.closure, gcsafe, raises: [].}
