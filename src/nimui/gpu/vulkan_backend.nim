@@ -123,7 +123,7 @@ static:
 # =============================================================================
 
 proc destroy*(backend: var VulkanBackend) {.raises: [].}
-proc recreateSwapchain*(backend: var VulkanBackend, width, height: uint32): bool {.raises: [].}
+proc recreateSwapchain*(backend: var VulkanBackend, width, height: uint32): bool {.trustedUnsafe, raises: [].}
 
 proc recordVkError*(backend: var VulkanBackend, res: VkResult, op: string) {.raises: [].} =
   backend.lastVkResult = res
@@ -151,7 +151,8 @@ proc logicalExtent*(backend: VulkanBackend): tuple[width, height: float32] {.inl
   let scale = if backend.dpiScale > 0.1f: backend.dpiScale else: 1.0f
   (float32(backend.swapchainExtent.width) / scale, float32(backend.swapchainExtent.height) / scale)
 
-proc hasValidationLayer(api: VulkanApi): bool {.raises: [].} =
+# Safe: queries Vulkan instance layer properties into stack/heap seq via vkEnumerateInstanceLayerProperties.
+proc hasValidationLayer(api: VulkanApi): bool {.trustedUnsafe, raises: [].} =
   if api.vkEnumerateInstanceLayerProperties.isNil:
     return false
   var count: uint32 = 0
@@ -175,7 +176,8 @@ proc hasValidationLayer(api: VulkanApi): bool {.raises: [].} =
 # Memory Helper
 # =============================================================================
 
-proc findMemoryType(api: VulkanApi, physicalDevice: VkPhysicalDevice, typeFilter: uint32, properties: VkFlags): int32 {.raises: [].} =
+# Safe: queries Vulkan physical device memory properties into local VkPhysicalDeviceMemoryProperties.
+proc findMemoryType(api: VulkanApi, physicalDevice: VkPhysicalDevice, typeFilter: uint32, properties: VkFlags): int32 {.trustedUnsafe, raises: [].} =
   var memProps: VkPhysicalDeviceMemoryProperties
   api.vkGetPhysicalDeviceMemoryProperties(physicalDevice, addr memProps)
   for i in 0 ..< int32(memProps.memoryTypeCount):
@@ -187,6 +189,7 @@ proc findMemoryType(api: VulkanApi, physicalDevice: VkPhysicalDevice, typeFilter
 # Buffer & Image Allocations
 # =============================================================================
 
+# Safe: allocates and binds a Vulkan buffer + device memory; destroys buffer on failure.
 proc createBuffer(
   backend: VulkanBackend,
   size: VkDeviceSize,
@@ -194,7 +197,7 @@ proc createBuffer(
   properties: VkFlags,
   outBuffer: var VkBuffer,
   outMemory: var VkDeviceMemory
-): bool {.raises: [].} =
+): bool {.trustedUnsafe, raises: [].} =
   var bufferInfo = VkBufferCreateInfo(
     sType: VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
     size: size,
@@ -250,7 +253,8 @@ proc cleanupSwapchain(backend: var VulkanBackend) {.raises: [].} =
     backend.api.vkDestroySwapchainKHR(backend.device, backend.swapchain, nil)
     backend.swapchain = 0
 
-proc initSurfaceConfig*(backend: var VulkanBackend, width, height: uint32): bool {.raises: [].} =
+# Safe: queries Vulkan surface capabilities/formats/present modes for a live VkSurfaceKHR.
+proc initSurfaceConfig*(backend: var VulkanBackend, width, height: uint32): bool {.trustedUnsafe, raises: [].} =
   var surfCaps: VkSurfaceCapabilitiesKHR
   let capRes = backend.api.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(backend.physicalDevice, backend.surface, addr surfCaps)
   if capRes != VK_SUCCESS:
@@ -281,7 +285,8 @@ proc initSurfaceConfig*(backend: var VulkanBackend, width, height: uint32): bool
   backend.swapchainFormat = chosenFormat.format
   true
 
-proc createSwapchain(backend: var VulkanBackend, width, height: uint32, oldSwapchain: VkSwapchainKHR = 0): bool {.raises: [].} =
+# Safe: creates Vulkan swapchain, image views, and framebuffers for live device/surface.
+proc createSwapchain(backend: var VulkanBackend, width, height: uint32, oldSwapchain: VkSwapchainKHR = 0): bool {.trustedUnsafe, raises: [].} =
   if width == 0 or height == 0:
     backend.isMinimized = true
     return false
@@ -422,7 +427,8 @@ proc createSwapchain(backend: var VulkanBackend, width, height: uint32, oldSwapc
 
   true
 
-proc recreateSwapchain*(backend: var VulkanBackend, width, height: uint32): bool {.raises: [].} =
+# Safe: waits for device idle and recreates swapchain via createSwapchain.
+proc recreateSwapchain*(backend: var VulkanBackend, width, height: uint32): bool {.trustedUnsafe, raises: [].} =
   if backend.device.isNil or backend.deviceLost:
     return false
   if width == 0 or height == 0:
@@ -470,7 +476,8 @@ proc recreateSwapchain*(backend: var VulkanBackend, width, height: uint32): bool
 # Pipeline, RenderPass, and Shaders
 # =============================================================================
 
-proc createPipeline(backend: var VulkanBackend, atlas: FontAtlas): bool {.raises: [].} =
+# Safe: creates Vulkan render pass, shader modules, descriptor sets, and graphics pipeline.
+proc createPipeline(backend: var VulkanBackend, atlas: FontAtlas): bool {.trustedUnsafe, raises: [].} =
   # 1. RenderPass
   var colorAttachment = VkAttachmentDescription(
     format: backend.swapchainFormat,
@@ -912,13 +919,14 @@ proc createPipeline(backend: var VulkanBackend, atlas: FontAtlas): bool {.raises
 # Initialization & Setup
 # =============================================================================
 
+# Safe: initializes Vulkan instance, Win32 surface, device, swapchain, pipeline, and ring buffers.
 proc initVulkanBackend*(
   hwnd: pointer,
   width, height: uint32,
   fontAtlas: FontAtlas,
   enableValidation: bool = defined(nimuiValidation),
   dpiScale: float32 = 1.0f
-): Result[VulkanBackend, string] {.raises: [].} =
+): Result[VulkanBackend, string] {.trustedUnsafe, raises: [].} =
   var b: VulkanBackend
   b.hwnd = hwnd
   b.dpiScale = if dpiScale > 0.1f: dpiScale else: 1.0f
@@ -1177,7 +1185,8 @@ proc initVulkanBackend*(
 # Rendering & Frame Submission
 # =============================================================================
 
-proc uploadFontAtlas*(backend: var VulkanBackend, atlas: FontAtlas): Result[void, string] {.raises: [].} =
+# Safe: stages and uploads FontAtlas pixel buffer to GPU VkImage via one-shot command buffer.
+proc uploadFontAtlas*(backend: var VulkanBackend, atlas: FontAtlas): Result[void, string] {.trustedUnsafe, raises: [].} =
   ## Re-uploads FontAtlas pixel data (e.g., after dynamic LRU eviction or DPI rebuild) to the GPU texture.
   if not backend.isInitialized or backend.device.isNil:
     return err[void, string]("Backend not initialized")
@@ -1308,12 +1317,13 @@ proc uploadFontAtlas*(backend: var VulkanBackend, atlas: FontAtlas): Result[void
   if subRes.isErr: return subRes
   waitRes
 
+# Safe: destroys lost Vulkan device and re-initializes via initVulkanBackend with valid HWND.
 proc recoverFromDeviceLost*(
   backend: var VulkanBackend,
   hwnd: pointer,
   width, height: uint32,
   fontAtlas: FontAtlas
-): Result[void, string] {.raises: [].} =
+): Result[void, string] {.trustedUnsafe, raises: [].} =
   ## Tears down a lost Vulkan device cleanly and attempts full backend re-initialization.
   let useVal = backend.validationEnabled
   let dpi = backend.dpiScale
@@ -1324,7 +1334,8 @@ proc recoverFromDeviceLost*(
   backend = reinit.val
   ok[void, string]()
 
-proc beginFrame*(backend: var VulkanBackend, width, height: uint32): Result[uint32, string] {.raises: [].} =
+# Safe: waits on frame fence and acquires next Vulkan swapchain image.
+proc beginFrame*(backend: var VulkanBackend, width, height: uint32): Result[uint32, string] {.trustedUnsafe, raises: [].} =
   if not backend.isInitialized:
     return err[uint32, string]("Backend not initialized")
   if backend.deviceLost:
@@ -1377,13 +1388,14 @@ proc beginFrame*(backend: var VulkanBackend, width, height: uint32): Result[uint
     return err[uint32, string](chk.error)
   ok[uint32, string](imageIndex)
 
+# Safe: copies bounded drawCount instances into mapped ring buffer and records/presents Vulkan frame.
 proc renderInstancesResult*(
   backend: var VulkanBackend,
   imageIndex: uint32,
   instances: ptr UiDrawInstance,
   count: int,
   clearColor: uint32 = 0x121214FF
-): Result[void, string] {.raises: [].} =
+): Result[void, string] {.trustedUnsafe, raises: [].} =
   if not backend.isInitialized:
     return err[void, string]("Backend not initialized")
   if backend.deviceLost:
@@ -1530,13 +1542,14 @@ proc renderInstancesResult*(
   backend.currentFrame = (backend.currentFrame + 1) mod MaxFramesInFlight
   ok[void, string]()
 
+# Safe: forwards instances pointer to renderInstancesResult (nil/count-guarded).
 proc renderInstances*(
   backend: var VulkanBackend,
   imageIndex: uint32,
   instances: ptr UiDrawInstance,
   count: int,
   clearColor: uint32 = 0x121214FF
-) {.raises: [].} =
+) {.trustedUnsafe, raises: [].} =
   let res = backend.renderInstancesResult(imageIndex, instances, count, clearColor)
   if res.isErr:
     backend.lastError = res.error

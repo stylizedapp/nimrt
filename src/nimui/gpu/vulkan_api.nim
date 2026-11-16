@@ -6,6 +6,7 @@
 ## - Zero external dependencies.
 
 import std/dynlib
+import corex/result
 
 type
   VkHandle* = pointer
@@ -1158,7 +1159,8 @@ type
 # Dynamic Loader
 # =============================================================================
 
-proc loadVulkanApi*(): VulkanApi {.raises: [].} =
+# Safe: dynamic loader for vulkan-1.dll / libvulkan.so function pointers via vkGetInstanceProcAddr.
+proc loadVulkanApi*(): VulkanApi {.trustedUnsafe, raises: [].} =
   when defined(windows):
     result.lib = loadLib("vulkan-1.dll")
   elif defined(macosx):
@@ -1183,7 +1185,8 @@ proc loadVulkanApi*(): VulkanApi {.raises: [].} =
   result.vkCreateInstance = cast[PFN_vkCreateInstance](result.vkGetInstanceProcAddr(nil, "vkCreateInstance"))
   result.vkEnumerateInstanceLayerProperties = cast[PFN_vkEnumerateInstanceLayerProperties](result.vkGetInstanceProcAddr(nil, "vkEnumerateInstanceLayerProperties"))
 
-proc loadInstanceProcs*(api: var VulkanApi, instance: VkInstance) {.raises: [].} =
+# Safe: resolves Vulkan instance function pointers via vkGetInstanceProcAddr for a live VkInstance.
+proc loadInstanceProcs*(api: var VulkanApi, instance: VkInstance) {.trustedUnsafe, raises: [].} =
   template load(field, name) =
     field = cast[typeof(field)](api.vkGetInstanceProcAddr(instance, name))
 
@@ -1206,7 +1209,8 @@ proc loadInstanceProcs*(api: var VulkanApi, instance: VkInstance) {.raises: [].}
   when defined(windows):
     load(api.vkCreateWin32SurfaceKHR, "vkCreateWin32SurfaceKHR")
 
-proc loadDeviceProcs*(api: var VulkanApi, device: VkDevice) {.raises: [].} =
+# Safe: resolves Vulkan device function pointers via vkGetDeviceProcAddr for a live VkDevice.
+proc loadDeviceProcs*(api: var VulkanApi, device: VkDevice) {.trustedUnsafe, raises: [].} =
   template load(field, name) =
     if not api.vkGetDeviceProcAddr.isNil:
       field = cast[typeof(field)](api.vkGetDeviceProcAddr(device, name))

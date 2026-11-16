@@ -1,7 +1,6 @@
 ## nimui/controls/dropdown — Dropdown / Select Control & Overlay Renderer
 
-import corex/slab
-import corex/signals
+import corex/[slab, signals, result]
 import algx/swissmap
 import ../layout
 import ../dsl
@@ -34,7 +33,8 @@ proc newDropdown*(
     computedHeaderRect: (0.0f, 0.0f, 0.0f, 0.0f)
   )
 
-proc updateVisuals*(dd: DropdownControl, tree: ptr UiTree) {.raises: [].} =
+# Safe: tree is nil-checked before deref and owned by the caller.
+proc updateVisuals*(dd: DropdownControl, tree: ptr UiTree) {.trustedUnsafe, raises: [].} =
   if tree == nil or dd == nil: return
   if dd.textId != SlabId(-1) and tree.nodes.contains(dd.textId):
     let title = if dd.selectedIndex >= 0 and dd.selectedIndex < dd.items.len:
@@ -48,25 +48,29 @@ proc updateVisuals*(dd: DropdownControl, tree: ptr UiTree) {.raises: [].} =
     tree.nodes[dd.headerId].borderColor = if dd.isOpen: ColFocusRing else: ColBorderCtl
   tree.isDirty = true
 
-proc open*(dd: DropdownControl, tree: ptr UiTree = nil) {.raises: [].} =
+# Safe: tree is nil-checked before deref and owned by the caller.
+proc open*(dd: DropdownControl, tree: ptr UiTree = nil) {.trustedUnsafe, raises: [].} =
   if dd == nil or dd.disabled or dd.isOpen: return
   dd.isOpen = true
   if tree != nil:
     updateVisuals(dd, tree)
 
-proc close*(dd: DropdownControl, tree: ptr UiTree = nil) {.raises: [].} =
+# Safe: tree is nil-checked before deref and owned by the caller.
+proc close*(dd: DropdownControl, tree: ptr UiTree = nil) {.trustedUnsafe, raises: [].} =
   if dd == nil or not dd.isOpen: return
   dd.isOpen = false
   dd.hoveredIndex = -1
   if tree != nil:
     updateVisuals(dd, tree)
 
-proc toggle*(dd: DropdownControl, tree: ptr UiTree = nil) {.raises: [].} =
+# Safe: tree is a non-owning pointer forwarded to open/close.
+proc toggle*(dd: DropdownControl, tree: ptr UiTree = nil) {.trustedUnsafe, raises: [].} =
   if dd == nil or dd.disabled: return
   if dd.isOpen: dd.close(tree)
   else: dd.open(tree)
 
-proc select*(dd: DropdownControl, idx: int, tree: ptr UiTree = nil) {.raises: [].} =
+# Safe: tree is a non-owning pointer forwarded to updateVisuals (nil-checked).
+proc select*(dd: DropdownControl, idx: int, tree: ptr UiTree = nil) {.trustedUnsafe, raises: [].} =
   if dd == nil: return
   if idx >= 0 and idx < dd.items.len:
     dd.selectedIndex = idx
@@ -75,7 +79,8 @@ proc select*(dd: DropdownControl, idx: int, tree: ptr UiTree = nil) {.raises: []
     if not dd.onSelect.isNil:
       dd.onSelect(idx)
 
-proc getPopupRect*(dd: DropdownControl, tree: ptr UiTree = nil): tuple[x, y, w, h: float32] {.raises: [].} =
+# Safe: tree is nil-checked before deref and owned by the caller.
+proc getPopupRect*(dd: DropdownControl, tree: ptr UiTree = nil): tuple[x, y, w, h: float32] {.trustedUnsafe, raises: [].} =
   let (hx, hy, hw, hh) = if tree != nil and tree.nodes.contains(dd.headerId):
     tree.nodes[dd.headerId].computedRect
   else:
@@ -83,7 +88,8 @@ proc getPopupRect*(dd: DropdownControl, tree: ptr UiTree = nil): tuple[x, y, w, 
   let popupH = float32(dd.items.len) * dd.itemHeight + 8.0f
   (hx, hy + hh + 4.0f, hw, popupH)
 
-proc handleMouseDown*(dd: DropdownControl, px, py: float32, tree: ptr UiTree = nil): bool {.raises: [].} =
+# Safe: tree is nil-checked before deref and owned by the caller.
+proc handleMouseDown*(dd: DropdownControl, px, py: float32, tree: ptr UiTree = nil): bool {.trustedUnsafe, raises: [].} =
   if dd == nil or dd.disabled: return false
 
   let (hx, hy, hw, hh) = if tree != nil and tree.nodes.contains(dd.headerId):
@@ -109,7 +115,8 @@ proc handleMouseDown*(dd: DropdownControl, px, py: float32, tree: ptr UiTree = n
       return true
   false
 
-proc handleMouseMove*(dd: DropdownControl, px, py: float32, tree: ptr UiTree = nil): bool {.raises: [].} =
+# Safe: tree is nil-checked before deref and owned by the caller.
+proc handleMouseMove*(dd: DropdownControl, px, py: float32, tree: ptr UiTree = nil): bool {.trustedUnsafe, raises: [].} =
   if dd == nil or not dd.isOpen: return false
   let (px0, py0, pw, ph) = dd.getPopupRect(tree)
   if px >= px0 and px <= px0 + pw and py >= py0 and py <= py0 + ph:
@@ -126,7 +133,8 @@ proc handleMouseMove*(dd: DropdownControl, px, py: float32, tree: ptr UiTree = n
       if tree != nil: tree.isDirty = true
   false
 
-proc handleKeyDown*(dd: DropdownControl, keyCode: uint32, tree: ptr UiTree = nil): bool {.raises: [].} =
+# Safe: tree is nil-checked before deref and owned by the caller.
+proc handleKeyDown*(dd: DropdownControl, keyCode: uint32, tree: ptr UiTree = nil): bool {.trustedUnsafe, raises: [].} =
   if dd == nil or dd.disabled: return false
   if not dd.isOpen:
     if keyCode == KeySpace or keyCode == KeyReturn or keyCode == KeyDown:
@@ -156,12 +164,13 @@ proc handleKeyDown*(dd: DropdownControl, keyCode: uint32, tree: ptr UiTree = nil
       discard
   false
 
+# Safe: tree is a non-owning pointer forwarded to getPopupRect (nil-checked).
 proc renderOverlay*(
   dd: DropdownControl,
   instances: var seq[UiDrawInstance],
   atlas: FontAtlas,
   tree: ptr UiTree = nil
-) {.raises: [].} =
+) {.trustedUnsafe, raises: [].} =
   if dd == nil or not dd.isOpen or dd.items.len == 0: return
 
   let (px0, py0, pw, ph) = dd.getPopupRect(tree)
@@ -246,14 +255,16 @@ proc Dropdown*(
   reg.nodeToDropdown[labelNode] = ctrl
   reg.nodeToDropdown[arrowNode] = ctrl
 
-  let treePtr = addr tree
-  let ddRef = ctrl
-  let clickProc = proc() {.closure, gcsafe, raises: [].} =
-    ddRef.toggle(treePtr)
+  # Safe: treePtr is a non-owning pointer to caller-owned UiTree outliving the onClick closure.
+  block trustedUnsafe:
+    let treePtr = addr tree
+    let ddRef = ctrl
+    let clickProc = proc() {.closure, gcsafe, raises: [].} =
+      ddRef.toggle(treePtr)
 
-  tree.nodes[header].onClick = clickProc
-  tree.nodes[labelNode].onClick = clickProc
-  tree.nodes[arrowNode].onClick = clickProc
+    tree.nodes[header].onClick = clickProc
+    tree.nodes[labelNode].onClick = clickProc
+    tree.nodes[arrowNode].onClick = clickProc
 
   header
 
@@ -269,12 +280,13 @@ proc Dropdown*(
   let ctrl = newDropdown(items, selectedIndex, onSelect = onSelect)
   Dropdown(tree, parent, ctrl, width, height)
 
+# Safe: tree and rt are non-owning pointers to caller-owned UiTree/ReactiveRuntime outliving the effect.
 proc bindDropdown*(
   tree: ptr UiTree,
   rt: ptr ReactiveRuntime,
   dd: DropdownControl,
   sig: Signal[int]
-): EffectId {.discardable, raises: [].} =
+): EffectId {.trustedUnsafe, discardable, raises: [].} =
   result = rt.createEffect(proc() =
     let val = sig.get()
     if dd.selectedIndex != val:

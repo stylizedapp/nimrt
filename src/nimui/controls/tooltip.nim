@@ -39,8 +39,7 @@ proc update*(
     tt.visible = false
     return
 
-  let target = addr tree.nodes[tt.targetId]
-  let isHovered = target.isHovered or (tree.hoveredNode == tt.targetId)
+  let isHovered = tree.nodes[tt.targetId].isHovered or (tree.hoveredNode == tt.targetId)
   tt.visible = isHovered
 
   if tt.visible:
@@ -51,7 +50,7 @@ proc update*(
 
     let cw = tw + tt.padding * 2.0f
     let ch = th + tt.padding * 1.5f
-    let (tx, ty, twTarget, thTarget) = target.computedRect
+    let (tx, ty, twTarget, thTarget) = tree.nodes[tt.targetId].computedRect
 
     var cx = tx + (twTarget - cw) * 0.5f
     cx = max(4.0f, min(screenW - cw - 4.0f, cx))

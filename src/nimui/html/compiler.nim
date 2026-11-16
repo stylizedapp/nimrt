@@ -212,6 +212,7 @@ proc collectDirectTextAndElementChildren(
           outDirectText.add(' ')
         outDirectText.add(t)
 
+# Safe: rt and addr tree are non-owning pointers to caller-owned runtime/tree outliving closures.
 proc attachReactiveBindings(
   tree: var UiTree,
   rt: ptr ReactiveRuntime,
@@ -221,7 +222,7 @@ proc attachReactiveBindings(
   textSlab: SlabId,
   isInput: bool,
   isDisabled: bool
-) {.raises: [].} =
+) {.trustedUnsafe, raises: [].} =
   if not isDisabled:
     let clickOpt = htmlNode.getAttr("data-click")
     if clickOpt.isSome:
@@ -348,6 +349,7 @@ proc applyVisualOpacity(node: var UiNode, style: CssComputedStyle) {.inline, rai
     node.borderHoverColor = style.borderHoverColor
     node.textColor = style.fgColor
 
+# Safe: rt and treePtr are non-owning pointers to caller-owned runtime/tree outliving closures.
 proc mountElementRecursive(
   tree: var UiTree,
   rt: ptr ReactiveRuntime,
@@ -362,7 +364,7 @@ proc mountElementRecursive(
   parentSlab: SlabId,
   listMarkerPrefix: string = "",
   depth: int = 0
-): SlabId {.raises: [].} =
+): SlabId {.trustedUnsafe, raises: [].} =
   if depth >= MaxMountDepth or nodeIdx < 0 or nodeIdx >= doc.nodes.len:
     return SlabId(-1)
 
@@ -771,6 +773,7 @@ proc collectMountableTopElements(doc: HtmlDoc, outIndices: var seq[int]) {.raise
     elif not containsTag(HtmlSkipMountTags, child.tag):
       outIndices.add(cIdx)
 
+# Safe: rt is a non-owning pointer to caller-owned ReactiveRuntime outliving closures.
 proc mountHtml*(
   tree: var UiTree,
   rt: ptr ReactiveRuntime,
@@ -778,7 +781,7 @@ proc mountHtml*(
   sheet: CssStylesheet,
   bindings: var HtmlBindingRegistry,
   parentId: SlabId = SlabId(-1)
-): Result[SlabId, string] {.raises: [].} =
+): Result[SlabId, string] {.trustedUnsafe, raises: [].} =
   if doc.nodes.len == 0:
     return resErr[SlabId]("Cannot mount empty HtmlDoc")
 
@@ -857,6 +860,7 @@ proc mountHtml*(
   else:
     resOk(parentId)
 
+# Safe: rt is a non-owning pointer to caller-owned ReactiveRuntime outliving closures.
 proc mountHtmlString*(
   tree: var UiTree,
   rt: ptr ReactiveRuntime,
@@ -864,7 +868,7 @@ proc mountHtmlString*(
   extraCss: string,
   bindings: var HtmlBindingRegistry,
   parentId: SlabId = SlabId(-1)
-): Result[SlabId, string] {.raises: [].} =
+): Result[SlabId, string] {.trustedUnsafe, raises: [].} =
   let docRes = parseHtmlDoc(html)
   if docRes.isErr():
     return resErr[SlabId](docRes.error())

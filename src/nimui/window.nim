@@ -10,7 +10,7 @@
 ## - Live RAM working set query via psapi GetProcessMemoryInfo.
 
 import std/strformat
-import ../corex/unicode
+import ../corex/[unicode, result]
 export unicode
 
 when defined(windows):
@@ -128,43 +128,44 @@ when defined(windows):
     VK_DOWN*: uint32 = 0x28
     VK_DELETE*: uint32 = 0x2E
 
-  proc DefWindowProcW(hWnd: HWND, Msg: uint32, wParam: WPARAM, lParam: LPARAM): LRESULT {.stdcall, dynlib: "user32", importc: "DefWindowProcW", raises: [].}
-  proc GetKeyState(nVirtKey: int32): int16 {.stdcall, dynlib: "user32", importc: "GetKeyState", raises: [].}
-  proc RegisterClassExW(lpwcx: ptr WNDCLASSEXW): ATOM {.stdcall, dynlib: "user32", importc: "RegisterClassExW", raises: [].}
+  # Safe: standard Win32 user32/kernel32/imm32/psapi windowing, IME, and process FFI bindings.
+  proc DefWindowProcW(hWnd: HWND, Msg: uint32, wParam: WPARAM, lParam: LPARAM): LRESULT {.trustedUnsafe, stdcall, dynlib: "user32", importc: "DefWindowProcW", raises: [].}
+  proc GetKeyState(nVirtKey: int32): int16 {.trustedUnsafe, stdcall, dynlib: "user32", importc: "GetKeyState", raises: [].}
+  proc RegisterClassExW(lpwcx: ptr WNDCLASSEXW): ATOM {.trustedUnsafe, stdcall, dynlib: "user32", importc: "RegisterClassExW", raises: [].}
   proc CreateWindowExW(
     dwExStyle: uint32, lpClassName: WideCString, lpWindowName: WideCString,
     dwStyle: uint32, X, Y, nWidth, nHeight: int32,
     hWndParent: HWND, hMenu: pointer, hInstance: HINSTANCE, lpParam: pointer
-  ): HWND {.stdcall, dynlib: "user32", importc: "CreateWindowExW", raises: [].}
-  proc ShowWindow(hWnd: HWND, nCmdShow: int32): BOOL {.stdcall, dynlib: "user32", importc: "ShowWindow", raises: [].}
-  proc UpdateWindow(hWnd: HWND): BOOL {.stdcall, dynlib: "user32", importc: "UpdateWindow", raises: [].}
-  proc DestroyWindow(hWnd: HWND): BOOL {.stdcall, dynlib: "user32", importc: "DestroyWindow", raises: [].}
-  proc PeekMessageW(lpMsg: ptr MSG, hWnd: HWND, wMsgFilterMin, wMsgFilterMax, wRemoveMsg: uint32): BOOL {.stdcall, dynlib: "user32", importc: "PeekMessageW", raises: [].}
-  proc TranslateMessage(lpMsg: ptr MSG): BOOL {.stdcall, dynlib: "user32", importc: "TranslateMessage", raises: [].}
-  proc DispatchMessageW(lpMsg: ptr MSG): LRESULT {.stdcall, dynlib: "user32", importc: "DispatchMessageW", raises: [].}
-  proc PostQuitMessage(nExitCode: int32) {.stdcall, dynlib: "user32", importc: "PostQuitMessage", raises: [].}
-  proc SetWindowTextW(hWnd: HWND, lpString: WideCString): BOOL {.stdcall, dynlib: "user32", importc: "SetWindowTextW", raises: [].}
-  proc GetClientRect(hWnd: HWND, lpRect: ptr RECT): BOOL {.stdcall, dynlib: "user32", importc: "GetClientRect", raises: [].}
-  proc SetWindowLongPtrW(hWnd: HWND, nIndex: int32, dwNewLong: LPARAM): LPARAM {.stdcall, dynlib: "user32", importc: "SetWindowLongPtrW", raises: [].}
-  proc GetWindowLongPtrW(hWnd: HWND, nIndex: int32): LPARAM {.stdcall, dynlib: "user32", importc: "GetWindowLongPtrW", raises: [].}
-  proc MsgWaitForMultipleObjectsEx(nCount: uint32, pHandles: pointer, dwMilliseconds: uint32, dwWakeMask: uint32, dwFlags: uint32): uint32 {.stdcall, dynlib: "user32", importc: "MsgWaitForMultipleObjectsEx", raises: [].}
-  proc LoadCursorW(hInstance: HINSTANCE, lpCursorName: pointer): HCURSOR {.stdcall, dynlib: "user32", importc: "LoadCursorW", raises: [].}
-  proc GetModuleHandleW(lpModuleName: pointer): HINSTANCE {.stdcall, dynlib: "kernel32", importc: "GetModuleHandleW", raises: [].}
-  proc SetProcessDpiAwarenessContext(value: pointer): BOOL {.stdcall, dynlib: "user32", importc: "SetProcessDpiAwarenessContext", raises: [].}
-  proc SetProcessDPIAware(): BOOL {.stdcall, dynlib: "user32", importc: "SetProcessDPIAware", raises: [].}
-  proc GetDpiForWindow(hWnd: HWND): UINT {.stdcall, dynlib: "user32", importc: "GetDpiForWindow", raises: [].}
-  proc SetWindowPos(hWnd: HWND, hWndInsertAfter: HWND, X, Y, cx, cy: int32, uFlags: UINT): BOOL {.stdcall, dynlib: "user32", importc: "SetWindowPos", raises: [].}
-  proc IsIconic(hWnd: HWND): BOOL {.stdcall, dynlib: "user32", importc: "IsIconic", raises: [].}
-  proc AdjustWindowRectEx(lpRect: ptr RECT, dwStyle: uint32, bMenu: BOOL, dwExStyle: uint32): BOOL {.stdcall, dynlib: "user32", importc: "AdjustWindowRectEx", raises: [].}
+  ): HWND {.trustedUnsafe, stdcall, dynlib: "user32", importc: "CreateWindowExW", raises: [].}
+  proc ShowWindow(hWnd: HWND, nCmdShow: int32): BOOL {.trustedUnsafe, stdcall, dynlib: "user32", importc: "ShowWindow", raises: [].}
+  proc UpdateWindow(hWnd: HWND): BOOL {.trustedUnsafe, stdcall, dynlib: "user32", importc: "UpdateWindow", raises: [].}
+  proc DestroyWindow(hWnd: HWND): BOOL {.trustedUnsafe, stdcall, dynlib: "user32", importc: "DestroyWindow", raises: [].}
+  proc PeekMessageW(lpMsg: ptr MSG, hWnd: HWND, wMsgFilterMin, wMsgFilterMax, wRemoveMsg: uint32): BOOL {.trustedUnsafe, stdcall, dynlib: "user32", importc: "PeekMessageW", raises: [].}
+  proc TranslateMessage(lpMsg: ptr MSG): BOOL {.trustedUnsafe, stdcall, dynlib: "user32", importc: "TranslateMessage", raises: [].}
+  proc DispatchMessageW(lpMsg: ptr MSG): LRESULT {.trustedUnsafe, stdcall, dynlib: "user32", importc: "DispatchMessageW", raises: [].}
+  proc PostQuitMessage(nExitCode: int32) {.trustedUnsafe, stdcall, dynlib: "user32", importc: "PostQuitMessage", raises: [].}
+  proc SetWindowTextW(hWnd: HWND, lpString: WideCString): BOOL {.trustedUnsafe, stdcall, dynlib: "user32", importc: "SetWindowTextW", raises: [].}
+  proc GetClientRect(hWnd: HWND, lpRect: ptr RECT): BOOL {.trustedUnsafe, stdcall, dynlib: "user32", importc: "GetClientRect", raises: [].}
+  proc SetWindowLongPtrW(hWnd: HWND, nIndex: int32, dwNewLong: LPARAM): LPARAM {.trustedUnsafe, stdcall, dynlib: "user32", importc: "SetWindowLongPtrW", raises: [].}
+  proc GetWindowLongPtrW(hWnd: HWND, nIndex: int32): LPARAM {.trustedUnsafe, stdcall, dynlib: "user32", importc: "GetWindowLongPtrW", raises: [].}
+  proc MsgWaitForMultipleObjectsEx(nCount: uint32, pHandles: pointer, dwMilliseconds: uint32, dwWakeMask: uint32, dwFlags: uint32): uint32 {.trustedUnsafe, stdcall, dynlib: "user32", importc: "MsgWaitForMultipleObjectsEx", raises: [].}
+  proc LoadCursorW(hInstance: HINSTANCE, lpCursorName: pointer): HCURSOR {.trustedUnsafe, stdcall, dynlib: "user32", importc: "LoadCursorW", raises: [].}
+  proc GetModuleHandleW(lpModuleName: pointer): HINSTANCE {.trustedUnsafe, stdcall, dynlib: "kernel32", importc: "GetModuleHandleW", raises: [].}
+  proc SetProcessDpiAwarenessContext(value: pointer): BOOL {.trustedUnsafe, stdcall, dynlib: "user32", importc: "SetProcessDpiAwarenessContext", raises: [].}
+  proc SetProcessDPIAware(): BOOL {.trustedUnsafe, stdcall, dynlib: "user32", importc: "SetProcessDPIAware", raises: [].}
+  proc GetDpiForWindow(hWnd: HWND): UINT {.trustedUnsafe, stdcall, dynlib: "user32", importc: "GetDpiForWindow", raises: [].}
+  proc SetWindowPos(hWnd: HWND, hWndInsertAfter: HWND, X, Y, cx, cy: int32, uFlags: UINT): BOOL {.trustedUnsafe, stdcall, dynlib: "user32", importc: "SetWindowPos", raises: [].}
+  proc IsIconic(hWnd: HWND): BOOL {.trustedUnsafe, stdcall, dynlib: "user32", importc: "IsIconic", raises: [].}
+  proc AdjustWindowRectEx(lpRect: ptr RECT, dwStyle: uint32, bMenu: BOOL, dwExStyle: uint32): BOOL {.trustedUnsafe, stdcall, dynlib: "user32", importc: "AdjustWindowRectEx", raises: [].}
 
   # IME (imm32)
-  proc ImmGetContext(hWnd: HWND): HIMC {.stdcall, dynlib: "imm32", importc: "ImmGetContext", raises: [].}
-  proc ImmReleaseContext(hWnd: HWND, hIMC: HIMC): BOOL {.stdcall, dynlib: "imm32", importc: "ImmReleaseContext", raises: [].}
-  proc ImmGetCompositionStringW(hIMC: HIMC, dwIndex: DWORD, lpBuf: pointer, dwBufLen: DWORD): int32 {.stdcall, dynlib: "imm32", importc: "ImmGetCompositionStringW", raises: [].}
+  proc ImmGetContext(hWnd: HWND): HIMC {.trustedUnsafe, stdcall, dynlib: "imm32", importc: "ImmGetContext", raises: [].}
+  proc ImmReleaseContext(hWnd: HWND, hIMC: HIMC): BOOL {.trustedUnsafe, stdcall, dynlib: "imm32", importc: "ImmReleaseContext", raises: [].}
+  proc ImmGetCompositionStringW(hIMC: HIMC, dwIndex: DWORD, lpBuf: pointer, dwBufLen: DWORD): int32 {.trustedUnsafe, stdcall, dynlib: "imm32", importc: "ImmGetCompositionStringW", raises: [].}
 
   # PSAPI
-  proc GetProcessMemoryInfo(hProcess: pointer, ppsmps: ptr PROCESS_MEMORY_COUNTERS, cb: uint32): BOOL {.stdcall, dynlib: "psapi", importc: "GetProcessMemoryInfo", raises: [].}
-  proc GetCurrentProcess(): pointer {.stdcall, dynlib: "kernel32", importc: "GetCurrentProcess", raises: [].}
+  proc GetProcessMemoryInfo(hProcess: pointer, ppsmps: ptr PROCESS_MEMORY_COUNTERS, cb: uint32): BOOL {.trustedUnsafe, stdcall, dynlib: "psapi", importc: "GetProcessMemoryInfo", raises: [].}
+  proc GetCurrentProcess(): pointer {.trustedUnsafe, stdcall, dynlib: "kernel32", importc: "GetCurrentProcess", raises: [].}
 
 type
   UiEventKind* = enum
@@ -258,7 +259,8 @@ proc toPhysicalPx*(win: NativeWindow, logicalPx: float32): float32 {.inline, rai
 # =============================================================================
 
 when defined(windows):
-  proc readImeStringUtf8(hWnd: HWND, dwIndex: uint32): string {.raises: [].} =
+  # Safe: Win32 IMM32 context is nil-checked and released via defer; buf is sized to bytesLen.
+  proc readImeStringUtf8(hWnd: HWND, dwIndex: uint32): string {.trustedUnsafe, raises: [].} =
     let hImc = ImmGetContext(hWnd)
     if hImc == nil:
       return ""
@@ -277,7 +279,8 @@ when defined(windows):
     let actualUnits = min(unitCount, int(readBytes) div 2)
     decodeImeUtf16(buf.toOpenArray(0, actualUnits - 1))
 
-  proc wndProc(hWnd: HWND, uMsg: uint32, wParam: WPARAM, lParam: LPARAM): LRESULT {.stdcall.} =
+  # Safe: Win32 WndProc callback; GWLP_USERDATA pWin is nil-checked and updated by pollEvents/initNativeWindow.
+  proc wndProc(hWnd: HWND, uMsg: uint32, wParam: WPARAM, lParam: LPARAM): LRESULT {.trustedUnsafe, stdcall.} =
     let pWin = cast[ptr NativeWindow](GetWindowLongPtrW(hWnd, GWLP_USERDATA))
     if pWin != nil:
       case uMsg
@@ -415,7 +418,8 @@ when defined(windows):
 # Window Lifecycle
 # =============================================================================
 
-proc initNativeWindow*(title: string, width, height: int32): NativeWindow {.raises: [].} =
+# Safe: Win32 window creation and GWLP_USERDATA registration on owned NativeWindow.
+proc initNativeWindow*(title: string, width, height: int32): NativeWindow {.trustedUnsafe, raises: [].} =
   result.width = width
   result.height = height
   result.dpi = 96'u32
@@ -488,7 +492,8 @@ proc setTitle*(win: NativeWindow, title: string) {.raises: [].} =
       let wTitle = newWideCString(title)
       discard SetWindowTextW(win.hwnd, wTitle)
 
-proc pollEvents*(win: var NativeWindow): seq[UiEvent] {.raises: [].} =
+# Safe: Win32 PeekMessageW/DispatchMessageW loop updating GWLP_USERDATA to live `win` for synchronous dispatch.
+proc pollEvents*(win: var NativeWindow): seq[UiEvent] {.trustedUnsafe, raises: [].} =
   when defined(windows):
     var msg: MSG
     if win.hwnd != nil:
@@ -515,7 +520,8 @@ proc close*(win: var NativeWindow) {.raises: [].} =
 # Diagnostic Memory Stats
 # =============================================================================
 
-proc getProcessMemoryBytes*(): uint64 {.raises: [].} =
+# Safe: Win32 GetProcessMemoryInfo writes into stack-allocated PROCESS_MEMORY_COUNTERS with cb set.
+proc getProcessMemoryBytes*(): uint64 {.trustedUnsafe, raises: [].} =
   when defined(windows):
     var counters: PROCESS_MEMORY_COUNTERS
     counters.cb = uint32(sizeof(PROCESS_MEMORY_COUNTERS))

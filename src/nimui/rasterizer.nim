@@ -309,6 +309,9 @@ proc savePng*(fb: SoftwareFramebuffer, path: string): bool {.raises: [].} =
   if fhRes.isErr:
     return false
   var fh = fhRes.get
-  let wrRes = fh.write(unsafeAddr bytes[0], bytes.len)
+  # Safe: bytes.len > 0 is checked above, so bytes[0] is valid for the duration of fh.write.
+  var wrRes: Result[int, IOError]
+  block trustedUnsafe:
+    wrRes = fh.write(unsafeAddr bytes[0], bytes.len)
   let closeRes = fh.close()
   wrRes.isOk and wrRes.get == bytes.len and closeRes.isOk

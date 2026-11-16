@@ -1,8 +1,7 @@
 ## nimui/controls/slider — Slider Control & Reactive Bindings
 
 import std/math
-import corex/slab
-import corex/signals
+import corex/[slab, signals, result]
 import algx/swissmap
 import ../layout
 import ../dsl
@@ -35,7 +34,8 @@ proc newSlider*(
     onValueChange: onValueChange
   )
 
-proc updateSliderWeights*(slider: SliderControl, tree: ptr UiTree) {.raises: [].} =
+# Safe: tree is nil-checked before deref and owned by the caller.
+proc updateSliderWeights*(slider: SliderControl, tree: ptr UiTree) {.trustedUnsafe, raises: [].} =
   if tree == nil or slider == nil: return
   let span = max(0.0001f, slider.maxVal - slider.minVal)
   let ratio = clamp((slider.currentVal - slider.minVal) / span, 0.0f, 1.0f)
@@ -51,7 +51,8 @@ proc updateSliderWeights*(slider: SliderControl, tree: ptr UiTree) {.raises: [].
   tree.isLayoutDirty = true
   tree.isDirty = true
 
-proc setValue*(slider: SliderControl, val: float32, tree: ptr UiTree = nil) {.raises: [].} =
+# Safe: tree is a non-owning pointer forwarded to updateSliderWeights (nil-checked).
+proc setValue*(slider: SliderControl, val: float32, tree: ptr UiTree = nil) {.trustedUnsafe, raises: [].} =
   if slider == nil: return
   var clamped = clamp(val, slider.minVal, slider.maxVal)
   if slider.step > 0.0f:
@@ -65,7 +66,8 @@ proc setValue*(slider: SliderControl, val: float32, tree: ptr UiTree = nil) {.ra
     if not slider.onValueChange.isNil:
       slider.onValueChange(slider.currentVal)
 
-proc handleMouseDown*(slider: SliderControl, px, py: float32, tree: ptr UiTree = nil): bool {.raises: [].} =
+# Safe: tree is nil-checked before deref and owned by the caller.
+proc handleMouseDown*(slider: SliderControl, px, py: float32, tree: ptr UiTree = nil): bool {.trustedUnsafe, raises: [].} =
   if slider == nil or slider.disabled or tree == nil: return false
   if not tree.nodes.contains(slider.rootId): return false
 
@@ -81,7 +83,8 @@ proc handleMouseDown*(slider: SliderControl, px, py: float32, tree: ptr UiTree =
     return true
   false
 
-proc handleMouseMove*(slider: SliderControl, px, py: float32, tree: ptr UiTree = nil): bool {.raises: [].} =
+# Safe: tree is nil-checked before deref and owned by the caller.
+proc handleMouseMove*(slider: SliderControl, px, py: float32, tree: ptr UiTree = nil): bool {.trustedUnsafe, raises: [].} =
   if slider == nil or not slider.isDragging or slider.disabled or tree == nil: return false
   if not tree.nodes.contains(slider.rootId): return false
 
@@ -99,7 +102,8 @@ proc handleMouseUp*(slider: SliderControl, px, py: float32): bool {.raises: [].}
     return true
   false
 
-proc handleKeyDown*(slider: SliderControl, keyCode: uint32, tree: ptr UiTree = nil): bool {.raises: [].} =
+# Safe: tree is a non-owning pointer forwarded to setValue (nil-checked).
+proc handleKeyDown*(slider: SliderControl, keyCode: uint32, tree: ptr UiTree = nil): bool {.trustedUnsafe, raises: [].} =
   if slider == nil or slider.disabled: return false
   let stepVal = if slider.step > 0.0f: slider.step else: (slider.maxVal - slider.minVal) * 0.05f
   case keyCode
@@ -194,12 +198,13 @@ proc Slider*(
   let ctrl = newSlider(minVal, maxVal, currentVal, step, trackHeight, thumbSize, onValueChange)
   Slider(tree, parent, ctrl, width)
 
+# Safe: tree and rt are non-owning pointers to caller-owned UiTree/ReactiveRuntime outliving the effect.
 proc bindSlider*(
   tree: ptr UiTree,
   rt: ptr ReactiveRuntime,
   slider: SliderControl,
   sig: Signal[float32]
-): EffectId {.discardable, raises: [].} =
+): EffectId {.trustedUnsafe, discardable, raises: [].} =
   result = rt.createEffect(proc() =
     let val = sig.get()
     if slider.currentVal != val:

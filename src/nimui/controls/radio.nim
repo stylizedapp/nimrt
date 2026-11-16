@@ -1,7 +1,6 @@
 ## nimui/controls/radio — RadioButton & RadioGroup Controls
 
-import corex/slab
-import corex/signals
+import corex/[slab, signals, result]
 import algx/swissmap
 import ../layout
 import ../dsl
@@ -49,17 +48,17 @@ proc newRadioButton*(
       group.selectedValue = result.value
       group.selectedInt = result.valueInt
 
-proc updateVisuals*(radio: RadioButtonControl, tree: ptr UiTree) {.raises: [].} =
+# Safe: tree is nil-checked before deref and owned by the caller.
+proc updateVisuals*(radio: RadioButtonControl, tree: ptr UiTree) {.trustedUnsafe, raises: [].} =
   if tree == nil or radio == nil: return
   if radio.outerRingId != SlabId(-1) and tree.nodes.contains(radio.outerRingId):
-    let outer = addr tree.nodes[radio.outerRingId]
-    outer.borderColor = if radio.selected: ColFocusRing else: ColBorderCtl
+    tree.nodes[radio.outerRingId].borderColor = if radio.selected: ColFocusRing else: ColBorderCtl
   if radio.innerCircleId != SlabId(-1) and tree.nodes.contains(radio.innerCircleId):
-    let inner = addr tree.nodes[radio.innerCircleId]
-    inner.bgColor = if radio.selected: ColTextPrim else: 0x00000000'u32
+    tree.nodes[radio.innerCircleId].bgColor = if radio.selected: ColTextPrim else: 0x00000000'u32
   tree.isDirty = true
 
-proc select*(radio: RadioButtonControl, tree: ptr UiTree = nil) {.raises: [].} =
+# Safe: tree is a non-owning pointer forwarded to updateVisuals (nil-checked).
+proc select*(radio: RadioButtonControl, tree: ptr UiTree = nil) {.trustedUnsafe, raises: [].} =
   if radio == nil or radio.disabled: return
   if radio.group != nil:
     for other in radio.group.radios:
@@ -82,19 +81,22 @@ proc select*(radio: RadioButtonControl, tree: ptr UiTree = nil) {.raises: [].} =
     if not radio.group.onSelectInt.isNil:
       radio.group.onSelectInt(radio.valueInt)
 
-proc select*(group: RadioGroupControl, value: string, tree: ptr UiTree = nil) {.raises: [].} =
+# Safe: tree is a non-owning pointer forwarded to RadioButtonControl.select.
+proc select*(group: RadioGroupControl, value: string, tree: ptr UiTree = nil) {.trustedUnsafe, raises: [].} =
   if group == nil: return
   for r in group.radios:
     if r.value == value:
       r.select(tree)
       return
 
-proc select*(group: RadioGroupControl, index: int, tree: ptr UiTree = nil) {.raises: [].} =
+# Safe: tree is a non-owning pointer forwarded to RadioButtonControl.select.
+proc select*(group: RadioGroupControl, index: int, tree: ptr UiTree = nil) {.trustedUnsafe, raises: [].} =
   if group == nil: return
   if index >= 0 and index < group.radios.len:
     group.radios[index].select(tree)
 
-proc handleKeyDown*(group: RadioGroupControl, keyCode: uint32, tree: ptr UiTree = nil): bool {.raises: [].} =
+# Safe: tree is a non-owning pointer forwarded to RadioGroupControl.select.
+proc handleKeyDown*(group: RadioGroupControl, keyCode: uint32, tree: ptr UiTree = nil): bool {.trustedUnsafe, raises: [].} =
   if group == nil or group.radios.len == 0: return false
   case keyCode
   of KeyUp, KeyLeft:
@@ -172,16 +174,18 @@ proc RadioButton*(
   if lbl != SlabId(-1):
     reg.nodeToRadio[lbl] = ctrl
 
-  let treePtr = addr tree
-  let radioRef = ctrl
-  let clickProc = proc() {.closure, gcsafe, raises: [].} =
-    radioRef.select(treePtr)
+  # Safe: treePtr is a non-owning pointer to caller-owned UiTree outliving the onClick closure.
+  block trustedUnsafe:
+    let treePtr = addr tree
+    let radioRef = ctrl
+    let clickProc = proc() {.closure, gcsafe, raises: [].} =
+      radioRef.select(treePtr)
 
-  tree.nodes[outer].onClick = clickProc
-  tree.nodes[inner].onClick = clickProc
-  tree.nodes[root].onClick = clickProc
-  if lbl != SlabId(-1):
-    tree.nodes[lbl].onClick = clickProc
+    tree.nodes[outer].onClick = clickProc
+    tree.nodes[inner].onClick = clickProc
+    tree.nodes[root].onClick = clickProc
+    if lbl != SlabId(-1):
+      tree.nodes[lbl].onClick = clickProc
 
   root
 
@@ -244,12 +248,13 @@ proc RadioGroup*(
   getRegistry().radioGroups.add(group)
   (container, group)
 
+# Safe: tree and rt are non-owning pointers to caller-owned UiTree/ReactiveRuntime outliving the effect.
 proc bindRadioGroup*(
   tree: ptr UiTree,
   rt: ptr ReactiveRuntime,
   group: RadioGroupControl,
   sig: Signal[string]
-): EffectId {.discardable, raises: [].} =
+): EffectId {.trustedUnsafe, discardable, raises: [].} =
   result = rt.createEffect(proc() =
     let val = sig.get()
     if group.selectedValue != val:
@@ -258,6 +263,8 @@ proc bindRadioGroup*(
 
   let prevSelect = group.onSelect
   group.onSelect = proc(val: string) {.closure, gcsafe, raises: [].} =
-    sig.set(val)
+    var copy = newStringOfCap(val.len)
+    copy.add(val)
+    sig.set(copy)
     if not prevSelect.isNil:
       prevSelect(val)

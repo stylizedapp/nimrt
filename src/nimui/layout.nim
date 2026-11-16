@@ -248,7 +248,7 @@ proc measureNode*(tree: var UiTree, id: SlabId, atlas: FontAtlas) {.raises: [].}
   if not tree.nodes.contains(id):
     return
 
-  let nodePtr = addr tree.nodes[id]
+  template nodePtr: untyped = tree.nodes[id]
   var intrinsicW = 0.0f
   var intrinsicH = 0.0f
 
@@ -281,7 +281,7 @@ proc measureNode*(tree: var UiTree, id: SlabId, atlas: FontAtlas) {.raises: [].}
     for i in 0 ..< childCount:
       let childId = nodePtr.children[i]
       measureNode(tree, childId, atlas)
-      let childNode = addr tree.nodes[childId]
+      template childNode: untyped = tree.nodes[childId]
 
       if nodePtr.direction == fdRow:
         accMain += childNode.intrinsicSize.w
@@ -320,7 +320,7 @@ proc layoutNode*(
   if not tree.nodes.contains(id):
     return
 
-  let nodePtr = addr tree.nodes[id]
+  template nodePtr: untyped = tree.nodes[id]
 
   # 1. Compute node's actual dimensions
   var actualW: float32
@@ -371,7 +371,7 @@ proc layoutNode*(
 
   for i in 0 ..< childCount:
     let childId = nodePtr.children[i]
-    let childNode = addr tree.nodes[childId]
+    template childNode: untyped = tree.nodes[childId]
     if nodePtr.direction == fdRow:
       if childNode.widthMode.kind == smFlexGrow:
         totalFlexWeight += childNode.widthMode.val
@@ -409,7 +409,7 @@ proc layoutNode*(
 
   for i in 0 ..< childCount:
     let childId = nodePtr.children[i]
-    let childNode = addr tree.nodes[childId]
+    template childNode: untyped = tree.nodes[childId]
 
     var childW = childNode.intrinsicSize.w
     var childH = childNode.intrinsicSize.h
@@ -514,7 +514,8 @@ proc deleteTextInputSelection(node: var UiNode) {.raises: [].} =
     let delBytes = bHi - bLo
     let rem = node.text.len - bHi
     if rem > 0:
-      moveMem(addr node.text[bLo], addr node.text[bHi], rem)
+      for i in 0 ..< rem:
+        node.text[bLo + i] = node.text[bHi + i]
     node.text.setLen(node.text.len - delBytes)
     node.caretPos = lo
     node.selStart = lo
@@ -528,8 +529,10 @@ proc insertUtf8At(s: var string, bytePos: int, ins: string) {.inline, raises: []
   s.setLen(oldLen + ins.len)
   let tail = oldLen - bPos
   if tail > 0:
-    moveMem(addr s[bPos + ins.len], addr s[bPos], tail)
-  copyMem(addr s[bPos], unsafeAddr ins[0], ins.len)
+    for i in countdown(tail - 1, 0):
+      s[bPos + ins.len + i] = s[bPos + i]
+  for i in 0 ..< ins.len:
+    s[bPos + i] = ins[i]
 
 proc measureRunePrefix*(atlas: FontAtlas, text: string, runeCount: int, fontSize: float32): float32 {.raises: [].} =
   if runeCount <= 0 or text.len == 0 or atlas.baseSize <= 0.0f:
@@ -646,7 +649,7 @@ proc emitNodeInstances(
   if not tree.nodes.contains(id):
     return
 
-  let node = addr tree.nodes[id]
+  template node: untyped = tree.nodes[id]
   if node.clipRect[0] >= node.clipRect[2] or node.clipRect[1] >= node.clipRect[3]:
     return
 
@@ -706,7 +709,7 @@ proc emitNodeInstances(
     let textScrollX = if node.text.len > 0 and cursorW > availTextW: cursorW - availTextW else: 0.0f
 
     # Focused selection highlight behind text
-    if node.isFocused and hasSelection(node[]) and node.text.len > 0:
+    if node.isFocused and hasSelection(node) and node.text.len > 0:
       let sLo = clamp(min(node.selStart, node.selEnd), 0, totalRunes)
       let sHi = clamp(max(node.selStart, node.selEnd), 0, totalRunes)
       if sLo < sHi:
@@ -845,7 +848,7 @@ proc scaleDrawInstancesForDpi*(
   if dpiScale <= 0.1f or abs(dpiScale - 1.0f) < 1e-4f:
     return
   for i in max(0, startIdx) ..< instances.len:
-    let inst = addr instances[i]
+    template inst: untyped = instances[i]
     inst.pos[0] *= dpiScale
     inst.pos[1] *= dpiScale
     inst.size[0] *= dpiScale
@@ -858,7 +861,8 @@ proc scaleDrawInstancesForDpi*(
       if c != 0xFFFF'u16:
         inst.clipRect[k] = uint16(clamp(int(round(float32(c) * dpiScale)), 0, 65535))
 
-proc buildDrawInstances*(tree: var UiTree, atlas: FontAtlas): ptr UiDrawInstance {.raises: [].} =
+# Safe: returns pointer to tree.drawInstances[0] when non-empty for Vulkan upload; tree outlives the frame.
+proc buildDrawInstances*(tree: var UiTree, atlas: FontAtlas): ptr UiDrawInstance {.trustedUnsafe, raises: [].} =
   tree.drawInstances.setLen(0)
   if tree.rootId != SlabId(-1'i32):
     emitNodeInstances(tree, tree.rootId, tree.drawInstances, atlas)
@@ -881,7 +885,7 @@ proc hitTestNode*(tree: UiTree, id: SlabId, px, py: float32): SlabId {.raises: [
   if not tree.nodes.contains(id):
     return SlabId(-1'i32)
 
-  let node = addr tree.nodes[id]
+  template node: untyped = tree.nodes[id]
   let (x, y, w, h) = node.computedRect
 
   # Check clipping bounds
@@ -952,7 +956,7 @@ proc handleMouseWheel*(tree: var UiTree, px, py, delta: float32) {.raises: [].} 
   # Find scrollable container under cursor, bubbling up through parents
   var curr = hitTestNode(tree, tree.rootId, px, py)
   while curr != SlabId(-1'i32) and tree.nodes.contains(curr):
-    let node = addr tree.nodes[curr]
+    template node: untyped = tree.nodes[curr]
     if node.isScrollable or node.kind == nkVirtualList:
       let maxScroll = max(0.0f, node.contentHeight - node.computedRect.h)
       node.scrollOffset = max(0.0f, min(maxScroll, node.scrollOffset - delta * 0.4f))
@@ -963,13 +967,13 @@ proc handleMouseWheel*(tree: var UiTree, px, py, delta: float32) {.raises: [].} 
 
 proc handleChar*(tree: var UiTree, r: Rune) {.raises: [].} =
   if tree.focusedNode != SlabId(-1'i32) and tree.nodes.contains(tree.focusedNode):
-    let node = addr tree.nodes[tree.focusedNode]
+    template node: untyped = tree.nodes[tree.focusedNode]
     if node.kind == nkTextInput:
       let code = uint32(r)
       if code >= 32'u32 and code != 127'u32: # Printable char
-        clampTextInputState(node[])
-        if hasSelection(node[]):
-          deleteTextInputSelection(node[])
+        clampTextInputState(node)
+        if hasSelection(node):
+          deleteTextInputSelection(node)
         let utf8 = toUTF8(r)
         let bPos = runeByteOffset(node.text, node.caretPos)
         insertUtf8At(node.text, bPos, utf8)
@@ -983,9 +987,9 @@ proc handleChar*(tree: var UiTree, r: Rune) {.raises: [].} =
 
 proc handleKeyDown*(tree: var UiTree, keyCode: uint32, ctrlDown: bool = false, shiftDown: bool = false) {.raises: [].} =
   if tree.focusedNode != SlabId(-1'i32) and tree.nodes.contains(tree.focusedNode):
-    let node = addr tree.nodes[tree.focusedNode]
+    template node: untyped = tree.nodes[tree.focusedNode]
     if node.kind == nkTextInput:
-      clampTextInputState(node[])
+      clampTextInputState(node)
       let totalRunes = runeLen(node.text)
 
       if ctrlDown:
@@ -996,7 +1000,7 @@ proc handleKeyDown*(tree: var UiTree, keyCode: uint32, ctrlDown: bool = false, s
           node.caretPos = totalRunes
           tree.isDirty = true
         of 0x43'u32: # Ctrl+C: Copy
-          if hasSelection(node[]):
+          if hasSelection(node):
             let lo = min(node.selStart, node.selEnd)
             let hi = max(node.selStart, node.selEnd)
             let bLo = runeByteOffset(node.text, lo)
@@ -1004,14 +1008,14 @@ proc handleKeyDown*(tree: var UiTree, keyCode: uint32, ctrlDown: bool = false, s
             if bHi > bLo:
               discard setClipboardText(node.text[bLo ..< bHi])
         of 0x58'u32: # Ctrl+X: Cut
-          if hasSelection(node[]):
+          if hasSelection(node):
             let lo = min(node.selStart, node.selEnd)
             let hi = max(node.selStart, node.selEnd)
             let bLo = runeByteOffset(node.text, lo)
             let bHi = runeByteOffset(node.text, hi)
             if bHi > bLo:
               discard setClipboardText(node.text[bLo ..< bHi])
-            deleteTextInputSelection(node[])
+            deleteTextInputSelection(node)
             if not node.onInput.isNil:
               node.onInput(node.text)
             tree.isDirty = true
@@ -1023,8 +1027,8 @@ proc handleKeyDown*(tree: var UiTree, keyCode: uint32, ctrlDown: bool = false, s
             for ch in rawClip:
               if ch != '\r' and ch != '\n':
                 cleanClip.add(ch)
-            if hasSelection(node[]):
-              deleteTextInputSelection(node[])
+            if hasSelection(node):
+              deleteTextInputSelection(node)
             if cleanClip.len > 0:
               let bPos = runeByteOffset(node.text, node.caretPos)
               insertUtf8At(node.text, bPos, cleanClip)
@@ -1041,7 +1045,7 @@ proc handleKeyDown*(tree: var UiTree, keyCode: uint32, ctrlDown: bool = false, s
 
       case keyCode
       of 0x25'u32: # VK_LEFT
-        if not shiftDown and hasSelection(node[]):
+        if not shiftDown and hasSelection(node):
           let lo = min(node.selStart, node.selEnd)
           node.caretPos = lo
           node.selStart = lo
@@ -1056,7 +1060,7 @@ proc handleKeyDown*(tree: var UiTree, keyCode: uint32, ctrlDown: bool = false, s
             node.selEnd = node.caretPos
         tree.isDirty = true
       of 0x27'u32: # VK_RIGHT
-        if not shiftDown and hasSelection(node[]):
+        if not shiftDown and hasSelection(node):
           let hi = max(node.selStart, node.selEnd)
           node.caretPos = hi
           node.selStart = hi
@@ -1087,8 +1091,8 @@ proc handleKeyDown*(tree: var UiTree, keyCode: uint32, ctrlDown: bool = false, s
           node.selEnd = totalRunes
         tree.isDirty = true
       of 0x08'u32: # VK_BACK
-        if hasSelection(node[]):
-          deleteTextInputSelection(node[])
+        if hasSelection(node):
+          deleteTextInputSelection(node)
           if not node.onInput.isNil:
             node.onInput(node.text)
           tree.isDirty = true
@@ -1099,7 +1103,8 @@ proc handleKeyDown*(tree: var UiTree, keyCode: uint32, ctrlDown: bool = false, s
           let delBytes = bHi - bLo
           let rem = node.text.len - bHi
           if rem > 0:
-            moveMem(addr node.text[bLo], addr node.text[bHi], rem)
+            for i in 0 ..< rem:
+              node.text[bLo + i] = node.text[bHi + i]
           node.text.setLen(node.text.len - delBytes)
           dec(node.caretPos)
           node.selStart = node.caretPos
@@ -1109,8 +1114,8 @@ proc handleKeyDown*(tree: var UiTree, keyCode: uint32, ctrlDown: bool = false, s
           tree.isDirty = true
           tree.isLayoutDirty = true
       of 0x2E'u32: # VK_DELETE
-        if hasSelection(node[]):
-          deleteTextInputSelection(node[])
+        if hasSelection(node):
+          deleteTextInputSelection(node)
           if not node.onInput.isNil:
             node.onInput(node.text)
           tree.isDirty = true
@@ -1121,7 +1126,8 @@ proc handleKeyDown*(tree: var UiTree, keyCode: uint32, ctrlDown: bool = false, s
           let delBytes = bHi - bLo
           let rem = node.text.len - bHi
           if rem > 0:
-            moveMem(addr node.text[bLo], addr node.text[bHi], rem)
+            for i in 0 ..< rem:
+              node.text[bLo + i] = node.text[bHi + i]
           node.text.setLen(node.text.len - delBytes)
           node.selStart = node.caretPos
           node.selEnd = node.caretPos

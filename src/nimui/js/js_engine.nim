@@ -35,6 +35,7 @@ type
 
   QjsBridgeRuntimePtr = pointer
 
+# Safe: C FFI bindings to vendored QuickJS bridge (qjs_bridge.c).
 proc qjs_bridge_new(
   allocFn: QjsAllocFn,
   freeFn: QjsFreeFn,
@@ -44,14 +45,14 @@ proc qjs_bridge_new(
   maxSteps: uint64,
   hostCb: QjsHostCbFn,
   hostUserData: pointer
-): QjsBridgeRuntimePtr {.importc, cdecl.}
+): QjsBridgeRuntimePtr {.trustedUnsafe, importc, cdecl.}
 
-proc qjs_bridge_free(brt: QjsBridgeRuntimePtr) {.importc, cdecl.}
-proc qjs_bridge_set_host(brt: QjsBridgeRuntimePtr, hostCb: QjsHostCbFn, hostUserData: pointer) {.importc, cdecl.}
-proc qjs_bridge_reset_steps(brt: QjsBridgeRuntimePtr, maxSteps: uint64) {.importc, cdecl.}
-proc qjs_bridge_get_malloc_size(brt: QjsBridgeRuntimePtr): csize_t {.importc, cdecl.}
-proc qjs_bridge_get_malloc_count(brt: QjsBridgeRuntimePtr): csize_t {.importc, cdecl.}
-proc qjs_bridge_run_gc(brt: QjsBridgeRuntimePtr) {.importc, cdecl.}
+proc qjs_bridge_free(brt: QjsBridgeRuntimePtr) {.trustedUnsafe, importc, cdecl.}
+proc qjs_bridge_set_host(brt: QjsBridgeRuntimePtr, hostCb: QjsHostCbFn, hostUserData: pointer) {.trustedUnsafe, importc, cdecl.}
+proc qjs_bridge_reset_steps(brt: QjsBridgeRuntimePtr, maxSteps: uint64) {.trustedUnsafe, importc, cdecl.}
+proc qjs_bridge_get_malloc_size(brt: QjsBridgeRuntimePtr): csize_t {.trustedUnsafe, importc, cdecl.}
+proc qjs_bridge_get_malloc_count(brt: QjsBridgeRuntimePtr): csize_t {.trustedUnsafe, importc, cdecl.}
+proc qjs_bridge_run_gc(brt: QjsBridgeRuntimePtr) {.trustedUnsafe, importc, cdecl.}
 
 proc qjs_bridge_eval(
   brt: QjsBridgeRuntimePtr,
@@ -62,7 +63,7 @@ proc qjs_bridge_eval(
   outCap: int32,
   errBuf: cstring,
   errCap: int32
-): int32 {.importc, cdecl.}
+): int32 {.trustedUnsafe, importc, cdecl.}
 
 proc qjs_bridge_invoke_cb(
   brt: QjsBridgeRuntimePtr,
@@ -72,7 +73,7 @@ proc qjs_bridge_invoke_cb(
   outCap: int32,
   errBuf: cstring,
   errCap: int32
-): int32 {.importc, cdecl.}
+): int32 {.trustedUnsafe, importc, cdecl.}
 
 const
   OpDomGetText* = 1'i32
@@ -133,7 +134,8 @@ proc defaultQuickJsConfig*(
     validation: defaultJsValidationConfig(caps)
   )
 
-proc qjsNimAllocTrampoline(ctx: pointer, size: csize_t, align: csize_t): pointer {.cdecl, gcsafe, raises: [].} =
+# Safe: ctx is nil-checked and points to QuickJsEngine.allocBox owned by the engine.
+proc qjsNimAllocTrampoline(ctx: pointer, size: csize_t, align: csize_t): pointer {.trustedUnsafe, cdecl, gcsafe, raises: [].} =
   if ctx.isNil: return nil
   let allocPtr = cast[ptr Allocator](ctx)
   let res = allocPtr[].rawAlloc(int(size), int(align))
@@ -142,12 +144,14 @@ proc qjsNimAllocTrampoline(ctx: pointer, size: csize_t, align: csize_t): pointer
   else:
     nil
 
-proc qjsNimFreeTrampoline(ctx: pointer, p: pointer, size: csize_t) {.cdecl, gcsafe, raises: [].} =
+# Safe: ctx and p are nil-checked; delegates to QuickJsEngine.allocBox.dealloc.
+proc qjsNimFreeTrampoline(ctx: pointer, p: pointer, size: csize_t) {.trustedUnsafe, cdecl, gcsafe, raises: [].} =
   if ctx.isNil or p.isNil: return
   let allocPtr = cast[ptr Allocator](ctx)
   allocPtr[].dealloc(p, int(size))
 
-proc writeCStringBuffer(dst: cstring, cap: int32, src: string) {.raises: [].} =
+# Safe: dst is nil-checked and writes at most cap-1 bytes plus NUL terminator.
+proc writeCStringBuffer(dst: cstring, cap: int32, src: string) {.trustedUnsafe, raises: [].} =
   if dst.isNil or cap <= 0:
     return
   let buf = cast[ptr UncheckedArray[char]](dst)
@@ -156,13 +160,14 @@ proc writeCStringBuffer(dst: cstring, cap: int32, src: string) {.raises: [].} =
     buf[i] = src[i]
   buf[copyLen] = '\0'
 
+# Safe: userData is nil-checked and points to QuickJsEngine.hostBox owned by the engine.
 proc qjsHostTrampoline(
   userData: pointer,
   op: int32,
   a0, a1, a2: cstring,
   outBuf: cstring,
   outCap: int32
-): int32 {.cdecl, gcsafe, raises: [].} =
+): int32 {.trustedUnsafe, cdecl, gcsafe, raises: [].} =
   if userData.isNil:
     writeCStringBuffer(outBuf, outCap, "")
     return 0'i32
@@ -317,11 +322,12 @@ const Nim = {
 };
 """
 
+# Safe: brt is an owned QjsBridgeRuntimePtr; outBuf/errBuf are sized stack-owned strings.
 proc evalRawInternal(
   brt: QjsBridgeRuntimePtr,
   code: string,
   filename: string
-): Result[string, string] {.raises: [].} =
+): Result[string, string] {.trustedUnsafe, raises: [].} =
   var outBuf = newString(4096)
   var errBuf = newString(2048)
   let cCode = if code.len > 0: code.cstring else: "".cstring
@@ -342,22 +348,25 @@ proc evalRawInternal(
   let outLen = outBuf.cstring.len
   ok[string, string](if outLen > 0: outBuf[0 ..< outLen] else: "")
 
+# Safe: brt is an owned QjsBridgeRuntimePtr forwarded to evalRawInternal.
 proc evalCleanupInternal(
   brt: QjsBridgeRuntimePtr,
   code: string,
   filename: string
-) {.raises: [].} =
+) {.trustedUnsafe, raises: [].} =
   let res = evalRawInternal(brt, code, filename)
   if res.isErr():
     return
 
-proc setHostHandler*(eng: var QuickJsEngine, handler: JsHostDispatchProc) {.raises: [].} =
+# Safe: hostBox and brt are nil-checked and owned by QuickJsEngine.
+proc setHostHandler*(eng: var QuickJsEngine, handler: JsHostDispatchProc) {.trustedUnsafe, raises: [].} =
   if not eng.hostBox.isNil:
     eng.hostBox.handler = handler
     if not eng.brt.isNil:
       qjs_bridge_set_host(eng.brt, qjsHostTrampoline, eng.hostBox)
 
-proc destroy*(eng: var QuickJsEngine) {.raises: [].} =
+# Safe: frees owned QuickJS runtime, hostBox, and allocBox in reverse init order with nil guards.
+proc destroy*(eng: var QuickJsEngine) {.trustedUnsafe, raises: [].} =
   if not eng.brt.isNil:
     evalCleanupInternal(eng.brt, "__qjs_clear_all_cbs();", "<cleanup>")
     qjs_bridge_free(eng.brt)
@@ -372,10 +381,11 @@ proc destroy*(eng: var QuickJsEngine) {.raises: [].} =
   eng.timers.setLen(0)
   eng.initialized = false
 
+# Safe: allocates owned allocBox/hostBox/brt and cleans up on any allocation/init failure.
 proc initQuickJsEngine*(
   alloc: Allocator,
   cfg: QuickJsConfig = defaultQuickJsConfig()
-): Result[QuickJsEngine, string] {.raises: [].} =
+): Result[QuickJsEngine, string] {.trustedUnsafe, raises: [].} =
   let allocBoxRes = alloc.create(alloc)
   if allocBoxRes.isErr():
     return err[QuickJsEngine, string]("OutOfMemory allocating QuickJS Allocator box")

@@ -144,25 +144,27 @@ when defined(windows):
     GDI_ERROR = 0xFFFFFFFF'u32
     GGI_MARK_NONEXISTING_GLYPHS = 0x0001'u32
 
-  proc CreateCompatibleDC(hdc: HDC): HDC {.stdcall, dynlib: "gdi32", importc: "CreateCompatibleDC", raises: [].}
-  proc DeleteDC(hdc: HDC): BOOL {.stdcall, dynlib: "gdi32", importc: "DeleteDC", raises: [].}
-  proc SelectObject(hdc: HDC, h: HGDIOBJ): HGDIOBJ {.stdcall, dynlib: "gdi32", importc: "SelectObject", raises: [].}
-  proc DeleteObject(ho: HGDIOBJ): BOOL {.stdcall, dynlib: "gdi32", importc: "DeleteObject", raises: [].}
+  # Safe: standard Win32 gdi32.dll font/glyph rasterization FFI bindings.
+  proc CreateCompatibleDC(hdc: HDC): HDC {.trustedUnsafe, stdcall, dynlib: "gdi32", importc: "CreateCompatibleDC", raises: [].}
+  proc DeleteDC(hdc: HDC): BOOL {.trustedUnsafe, stdcall, dynlib: "gdi32", importc: "DeleteDC", raises: [].}
+  proc SelectObject(hdc: HDC, h: HGDIOBJ): HGDIOBJ {.trustedUnsafe, stdcall, dynlib: "gdi32", importc: "SelectObject", raises: [].}
+  proc DeleteObject(ho: HGDIOBJ): BOOL {.trustedUnsafe, stdcall, dynlib: "gdi32", importc: "DeleteObject", raises: [].}
   proc CreateFontW(
     cHeight, cWidth, cEscapement, cOrientation, cWeight: int32,
     bItalic, bUnderline, bStrikeOut, iCharSet, iOutPrecision,
     iClipPrecision, iQuality, iPitchAndFamily: int32,
     pszFaceName: WideCString
-  ): HFONT {.stdcall, dynlib: "gdi32", importc: "CreateFontW", raises: [].}
-  proc GetTextMetricsW(hdc: HDC, lptm: ptr TEXTMETRICW): BOOL {.stdcall, dynlib: "gdi32", importc: "GetTextMetricsW", raises: [].}
-  proc GetKerningPairsW(hdc: HDC, nPairs: DWORD, lpKernPair: ptr KERNINGPAIR): DWORD {.stdcall, dynlib: "gdi32", importc: "GetKerningPairsW", raises: [].}
-  proc GetGlyphIndicesW(hdc: HDC, lpstr: ptr WORD, c: int32, pgi: ptr WORD, fl: DWORD): DWORD {.stdcall, dynlib: "gdi32", importc: "GetGlyphIndicesW", raises: [].}
+  ): HFONT {.trustedUnsafe, stdcall, dynlib: "gdi32", importc: "CreateFontW", raises: [].}
+  proc GetTextMetricsW(hdc: HDC, lptm: ptr TEXTMETRICW): BOOL {.trustedUnsafe, stdcall, dynlib: "gdi32", importc: "GetTextMetricsW", raises: [].}
+  proc GetKerningPairsW(hdc: HDC, nPairs: DWORD, lpKernPair: ptr KERNINGPAIR): DWORD {.trustedUnsafe, stdcall, dynlib: "gdi32", importc: "GetKerningPairsW", raises: [].}
+  proc GetGlyphIndicesW(hdc: HDC, lpstr: ptr WORD, c: int32, pgi: ptr WORD, fl: DWORD): DWORD {.trustedUnsafe, stdcall, dynlib: "gdi32", importc: "GetGlyphIndicesW", raises: [].}
   proc GetGlyphOutlineW(
     hdc: HDC, uChar: UINT, fuFormat: UINT, lpgm: ptr GLYPHMETRICS,
     cjBuffer: DWORD, pvBuffer: pointer, lpmat2: ptr MAT2
-  ): DWORD {.stdcall, dynlib: "gdi32", importc: "GetGlyphOutlineW", raises: [].}
+  ): DWORD {.trustedUnsafe, stdcall, dynlib: "gdi32", importc: "GetGlyphOutlineW", raises: [].}
 
-  proc fontHasGlyph(hdc: HDC, cp: uint32): bool {.inline, raises: [].} =
+  # Safe: queries GDI glyph index using stack-local ch16/gIdx pointers.
+  proc fontHasGlyph(hdc: HDC, cp: uint32): bool {.trustedUnsafe, inline, raises: [].} =
     if cp > 0xFFFF'u32:
       return true # Let GetGlyphOutlineW check/skip surrogate outside BMP
     var ch16 = uint16(cp)
@@ -399,11 +401,8 @@ proc evictLruAndRepack(atlas: var FontAtlas, neededW, neededH: int): Result[void
       let nx = atlas.curX
       let ny = atlas.curY
       for r in 0 ..< sh:
-        copyMem(
-          addr newPixels[(ny + r) * atlas.width + nx],
-          addr atlas.pixels[(oldY + r) * atlas.width + oldX],
-          sw
-        )
+        for c in 0 ..< sw:
+          newPixels[(ny + r) * atlas.width + nx + c] = atlas.pixels[(oldY + r) * atlas.width + oldX + c]
 
       s.x = uint16(nx)
       s.y = uint16(ny)
@@ -652,6 +651,7 @@ proc initFallbackAtlas(atlas: var FontAtlas, fontSize: float32) {.raises: [].} =
 # =============================================================================
 
 when defined(windows):
+  # Safe: Win32 GDI glyph outline query using valid HDC and sized tempBuf.
   proc queryGdiGlyph(
     hdc: HDC,
     fonts: openArray[HFONT],
@@ -659,7 +659,7 @@ when defined(windows):
     tempBuf: var seq[uint8],
     outGm: var GLYPHMETRICS,
     outReqSize: var uint32
-  ): bool {.raises: [].} =
+  ): bool {.trustedUnsafe, raises: [].} =
     var mat: MAT2
     mat.eM11.value = 1
     mat.eM22.value = 1
@@ -693,7 +693,8 @@ when defined(windows):
 
     false
 
-proc ensureGlyph*(atlas: var FontAtlas, cp: uint32): Result[GlyphInfo, string] {.raises: [].} =
+# Safe: Win32 GDI DC/HFONT handles are nil-checked and released before return.
+proc ensureGlyph*(atlas: var FontAtlas, cp: uint32): Result[GlyphInfo, string] {.trustedUnsafe, raises: [].} =
   ## Ensures `cp` is resident in the atlas, dynamically rasterizing it (via GDI on Windows)
   ## and evicting LRU entries if the atlas is full.
   let existingIdx = atlas.cpToSlot.getOrDefault(cp, -1)
@@ -775,13 +776,14 @@ proc ensureGlyph*(atlas: var FontAtlas, cp: uint32): Result[GlyphInfo, string] {
       isGray64 = false, pinned = false, allowEvict = true
     )
 
+# Safe: Win32 GDI DC/HFONT handles are nil-checked and released before return.
 proc initFontAtlas*(
   fontName: string = "Segoe UI",
   fontSize: float32 = 32.0f,
   dpiScale: float32 = 1.0f,
   atlasWidth: int = 1024,
   atlasHeight: int = 1024
-): FontAtlas {.raises: [].} =
+): FontAtlas {.trustedUnsafe, raises: [].} =
   initAtlasBase(result, fontName, fontSize, dpiScale, atlasWidth, atlasHeight)
 
   when defined(windows):

@@ -8,7 +8,7 @@
 ## - dropdown: DropdownControl, Dropdown, bindDropdown, overlay rendering
 ## - tooltip: TooltipControl, Tooltip, overlay rendering
 
-import corex/slab
+import corex/[slab, result]
 import algx/swissmap
 import ./layout
 import ./gpu/font_atlas
@@ -32,7 +32,8 @@ export tooltip
 # Unified Event Dispatching & Overlay Rendering
 # =============================================================================
 
-proc handleControlMouseDown*(tree: var UiTree, px, py: float32): bool {.raises: [].} =
+# Safe: treePtr is a non-owning pointer to caller-owned UiTree valid for the synchronous dispatch.
+proc handleControlMouseDown*(tree: var UiTree, px, py: float32): bool {.trustedUnsafe, raises: [].} =
   let reg = getRegistry()
   let treePtr = addr tree
 
@@ -52,7 +53,8 @@ proc handleControlMouseDown*(tree: var UiTree, px, py: float32): bool {.raises: 
 
   false
 
-proc handleControlMouseMove*(tree: var UiTree, px, py: float32): bool {.raises: [].} =
+# Safe: treePtr is a non-owning pointer to caller-owned UiTree valid for the synchronous dispatch.
+proc handleControlMouseMove*(tree: var UiTree, px, py: float32): bool {.trustedUnsafe, raises: [].} =
   let reg = getRegistry()
   let treePtr = addr tree
   var handled = false
@@ -77,7 +79,8 @@ proc handleControlMouseUp*(tree: var UiTree, px, py: float32): bool {.raises: []
       handled = true
   handled
 
-proc handleControlKeyDown*(tree: var UiTree, keyCode: uint32): bool {.raises: [].} =
+# Safe: treePtr is a non-owning pointer to caller-owned UiTree valid for the synchronous dispatch.
+proc handleControlKeyDown*(tree: var UiTree, keyCode: uint32): bool {.trustedUnsafe, raises: [].} =
   let reg = getRegistry()
   let treePtr = addr tree
 
@@ -107,12 +110,13 @@ proc handleControlKeyDown*(tree: var UiTree, keyCode: uint32): bool {.raises: []
 
   false
 
+# Safe: treePtr is a non-owning pointer to caller-owned UiTree valid for the synchronous overlay pass.
 proc renderControlOverlays*(
   tree: var UiTree,
   atlas: FontAtlas,
   screenW: float32 = 1920.0f,
   screenH: float32 = 1080.0f
-) {.raises: [].} =
+) {.trustedUnsafe, raises: [].} =
   let reg = getRegistry()
   let treePtr = addr tree
   let startIdx = tree.drawInstances.len
@@ -129,12 +133,13 @@ proc renderControlOverlays*(
   if tree.dpiScale > 0.1f and abs(tree.dpiScale - 1.0f) >= 1e-4f:
     scaleDrawInstancesForDpi(tree.drawInstances, tree.dpiScale, startIdx)
 
+# Safe: returns pointer to tree.drawInstances[0] when non-empty for Vulkan upload; tree outlives the frame.
 proc buildDrawInstancesWithOverlays*(
   tree: var UiTree,
   atlas: FontAtlas,
   screenW: float32 = 1920.0f,
   screenH: float32 = 1080.0f
-): ptr UiDrawInstance {.raises: [].} =
+): ptr UiDrawInstance {.trustedUnsafe, raises: [].} =
   discard tree.buildDrawInstances(atlas)
   renderControlOverlays(tree, atlas, screenW, screenH)
   if tree.drawInstances.len > 0:

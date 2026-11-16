@@ -7,7 +7,7 @@
 ## - In-memory fallback buffer for headless/non-Windows environments.
 ## - Zero memory leaks under ARC/ORC.
 
-import ../corex/unicode
+import ../corex/[unicode, result]
 export unicode
 
 when defined(windows):
@@ -15,18 +15,19 @@ when defined(windows):
     CF_UNICODETEXT* = 13'u32
     GMEM_MOVEABLE* = 0x0002'u32
 
-  proc OpenClipboard(hWndNewOwner: pointer): int32 {.stdcall, dynlib: "user32", importc: "OpenClipboard", raises: [].}
-  proc CloseClipboard(): int32 {.stdcall, dynlib: "user32", importc: "CloseClipboard", raises: [].}
-  proc EmptyClipboard(): int32 {.stdcall, dynlib: "user32", importc: "EmptyClipboard", raises: [].}
-  proc GetClipboardData(uFormat: uint32): pointer {.stdcall, dynlib: "user32", importc: "GetClipboardData", raises: [].}
-  proc SetClipboardData(uFormat: uint32, hMem: pointer): pointer {.stdcall, dynlib: "user32", importc: "SetClipboardData", raises: [].}
-  proc IsClipboardFormatAvailable(uFormat: uint32): int32 {.stdcall, dynlib: "user32", importc: "IsClipboardFormatAvailable", raises: [].}
+  # Safe: standard Win32 user32/kernel32 clipboard and global memory FFI bindings.
+  proc OpenClipboard(hWndNewOwner: pointer): int32 {.trustedUnsafe, stdcall, dynlib: "user32", importc: "OpenClipboard", raises: [].}
+  proc CloseClipboard(): int32 {.trustedUnsafe, stdcall, dynlib: "user32", importc: "CloseClipboard", raises: [].}
+  proc EmptyClipboard(): int32 {.trustedUnsafe, stdcall, dynlib: "user32", importc: "EmptyClipboard", raises: [].}
+  proc GetClipboardData(uFormat: uint32): pointer {.trustedUnsafe, stdcall, dynlib: "user32", importc: "GetClipboardData", raises: [].}
+  proc SetClipboardData(uFormat: uint32, hMem: pointer): pointer {.trustedUnsafe, stdcall, dynlib: "user32", importc: "SetClipboardData", raises: [].}
+  proc IsClipboardFormatAvailable(uFormat: uint32): int32 {.trustedUnsafe, stdcall, dynlib: "user32", importc: "IsClipboardFormatAvailable", raises: [].}
 
-  proc GlobalAlloc(uFlags: uint32, dwBytes: uint): pointer {.stdcall, dynlib: "kernel32", importc: "GlobalAlloc", raises: [].}
-  proc GlobalLock(hMem: pointer): pointer {.stdcall, dynlib: "kernel32", importc: "GlobalLock", raises: [].}
-  proc GlobalUnlock(hMem: pointer): int32 {.stdcall, dynlib: "kernel32", importc: "GlobalUnlock", raises: [].}
-  proc GlobalFree(hMem: pointer): pointer {.stdcall, dynlib: "kernel32", importc: "GlobalFree", raises: [].}
-  proc Sleep(dwMilliseconds: uint32) {.stdcall, dynlib: "kernel32", importc: "Sleep", raises: [].}
+  proc GlobalAlloc(uFlags: uint32, dwBytes: uint): pointer {.trustedUnsafe, stdcall, dynlib: "kernel32", importc: "GlobalAlloc", raises: [].}
+  proc GlobalLock(hMem: pointer): pointer {.trustedUnsafe, stdcall, dynlib: "kernel32", importc: "GlobalLock", raises: [].}
+  proc GlobalUnlock(hMem: pointer): int32 {.trustedUnsafe, stdcall, dynlib: "kernel32", importc: "GlobalUnlock", raises: [].}
+  proc GlobalFree(hMem: pointer): pointer {.trustedUnsafe, stdcall, dynlib: "kernel32", importc: "GlobalFree", raises: [].}
+  proc Sleep(dwMilliseconds: uint32) {.trustedUnsafe, stdcall, dynlib: "kernel32", importc: "Sleep", raises: [].}
 
 # =============================================================================
 # Context-Scoped & Thread-Local Fallback Buffer (No Unsynchronized Globals)
@@ -82,7 +83,8 @@ proc utf8ToUtf16*(s: string): seq[uint16] {.raises: [].} =
       result.add(lowSurrogate)
   result.add(0'u16)
 
-proc utf16ToUtf8*(pWide: ptr UncheckedArray[uint16]): string {.raises: [].} =
+# Safe: pWide is nil-checked and points to a null-terminated Win32 CF_UNICODETEXT buffer locked via GlobalLock.
+proc utf16ToUtf8*(pWide: ptr UncheckedArray[uint16]): string {.trustedUnsafe, raises: [].} =
   ## Converts a null-terminated UTF-16 buffer to a UTF-8 string.
   if pWide == nil:
     return ""
@@ -131,28 +133,30 @@ proc setClipboardText*(ctx: var ClipboardContext, text: string): bool {.raises: 
 
     let u16 = utf8ToUtf16(text)
     let bytesCount = uint(u16.len * sizeof(uint16))
-    let hMem = GlobalAlloc(GMEM_MOVEABLE, bytesCount)
-    if hMem == nil:
+    # Safe: Win32 GlobalAlloc/GlobalLock/copyMem/SetClipboardData with nil checks and GlobalFree on failure.
+    block trustedUnsafe:
+      let hMem = GlobalAlloc(GMEM_MOVEABLE, bytesCount)
+      if hMem == nil:
+        discard CloseClipboard()
+        return false
+
+      let pMem = GlobalLock(hMem)
+      if pMem == nil:
+        discard GlobalFree(hMem)
+        discard CloseClipboard()
+        return false
+
+      copyMem(pMem, unsafeAddr u16[0], int(bytesCount))
+      discard GlobalUnlock(hMem)
+
+      let hResult = SetClipboardData(CF_UNICODETEXT, hMem)
+      if hResult == nil:
+        discard GlobalFree(hMem)
+        discard CloseClipboard()
+        return false
+
       discard CloseClipboard()
-      return false
-
-    let pMem = GlobalLock(hMem)
-    if pMem == nil:
-      discard GlobalFree(hMem)
-      discard CloseClipboard()
-      return false
-
-    copyMem(pMem, unsafeAddr u16[0], int(bytesCount))
-    discard GlobalUnlock(hMem)
-
-    let hResult = SetClipboardData(CF_UNICODETEXT, hMem)
-    if hResult == nil:
-      discard GlobalFree(hMem)
-      discard CloseClipboard()
-      return false
-
-    discard CloseClipboard()
-    return true
+      return true
   else:
     return true
 
@@ -175,19 +179,22 @@ proc getClipboardText*(ctx: var ClipboardContext): string {.raises: [].} =
       discard CloseClipboard()
       return ""
 
-    let hData = GetClipboardData(CF_UNICODETEXT)
-    if hData == nil:
-      discard CloseClipboard()
-      return ""
+    # Safe: Win32 GetClipboardData/GlobalLock/GlobalUnlock with nil checks while clipboard is open.
+    var converted = ""
+    block trustedUnsafe:
+      let hData = GetClipboardData(CF_UNICODETEXT)
+      if hData == nil:
+        discard CloseClipboard()
+        return ""
 
-    let pData = GlobalLock(hData)
-    if pData == nil:
-      discard CloseClipboard()
-      return ""
+      let pData = GlobalLock(hData)
+      if pData == nil:
+        discard CloseClipboard()
+        return ""
 
-    let converted = utf16ToUtf8(cast[ptr UncheckedArray[uint16]](pData))
-    discard GlobalUnlock(hData)
-    discard CloseClipboard()
+      converted = utf16ToUtf8(cast[ptr UncheckedArray[uint16]](pData))
+      discard GlobalUnlock(hData)
+      discard CloseClipboard()
 
     ctx.fallbackBuffer = converted
     return converted

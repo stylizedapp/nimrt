@@ -7,20 +7,21 @@
 ## - First-class components: Box, VStack, HStack, Text, Button, TextInput, VirtualList.
 
 import std/macros
-import corex/signals
-import corex/slab
+import corex/[signals, slab, result]
 import ./layout
 
 # =============================================================================
 # Reactive Bindings for UiNode
 # =============================================================================
 
+# Safe: tree/rt are non-owning pointers to caller-owned UiTree and ReactiveRuntime
+# that outlive the reactive effect closures; guarded by `tree != nil`.
 proc bindText*(
   tree: ptr UiTree,
   rt: ptr ReactiveRuntime,
   id: SlabId,
   computeFn: proc(): string {.closure, gcsafe, raises: [].}
-): EffectId {.discardable, raises: [].} =
+): EffectId {.trustedUnsafe, discardable, raises: [].} =
   rt.createEffect(proc() =
     let val = computeFn()
     if tree != nil and tree.nodes.contains(id):
@@ -29,12 +30,13 @@ proc bindText*(
       tree.isDirty = true
   )
 
+# Safe: tree/rt outlive the reactive effect closure; guarded by `tree != nil`.
 proc bindBg*(
   tree: ptr UiTree,
   rt: ptr ReactiveRuntime,
   id: SlabId,
   computeFn: proc(): uint32 {.closure, gcsafe, raises: [].}
-): EffectId {.discardable, raises: [].} =
+): EffectId {.trustedUnsafe, discardable, raises: [].} =
   rt.createEffect(proc() =
     let col = computeFn()
     if tree != nil and tree.nodes.contains(id):
@@ -42,12 +44,13 @@ proc bindBg*(
       tree.isDirty = true # Color change only triggers redraw, 0 layout cost!
   )
 
+# Safe: tree/rt outlive the reactive effect and onInput closures; guarded by `tree != nil`.
 proc bindInput*(
   tree: ptr UiTree,
   rt: ptr ReactiveRuntime,
   id: SlabId,
   sig: Signal[string]
-) {.raises: [].} =
+) {.trustedUnsafe, raises: [].} =
   # 1. Signal -> Text input node
   discard rt.createEffect(proc() =
     let val = sig.get()
@@ -65,14 +68,17 @@ proc bindInput*(
   # 2. Text input node -> Signal
   if tree != nil and tree.nodes.contains(id):
     tree.nodes[id].onInput = proc(text: string) {.gcsafe, raises: [].} =
-      sig.set(text)
+      var copy = newStringOfCap(text.len)
+      copy.add(text)
+      sig.set(copy)
 
+# Safe: tree/rt outlive the reactive effect closure; guarded by `tree != nil`.
 proc bindVirtualCount*(
   tree: ptr UiTree,
   rt: ptr ReactiveRuntime,
   id: SlabId,
   sig: Signal[int]
-) {.raises: [].} =
+) {.trustedUnsafe, raises: [].} =
   discard rt.createEffect(proc() =
     let c = sig.get()
     if tree != nil and tree.nodes.contains(id):
@@ -102,7 +108,7 @@ proc Box*(
   justifyContent: JustifyContent = jcStart
 ): SlabId {.raises: [].} =
   let id = tree.createNode(nkBox)
-  let n = addr tree.nodes[id]
+  template n: untyped = tree.nodes[id]
   n.widthMode = width
   n.heightMode = height
   n.padding = [padding, padding, padding, padding]
@@ -162,7 +168,7 @@ proc Text*(
   padding: float32 = 0.0f
 ): SlabId {.raises: [].} =
   let id = tree.createNode(nkText)
-  let n = addr tree.nodes[id]
+  template n: untyped = tree.nodes[id]
   n.text = text
   n.fontSize = size
   n.textColor = color
@@ -187,7 +193,7 @@ proc Button*(
   onClick: proc() {.closure, gcsafe, raises: [].} = nil
 ): SlabId {.raises: [].} =
   let id = tree.createNode(nkButton)
-  let n = addr tree.nodes[id]
+  template n: untyped = tree.nodes[id]
   n.text = label
   n.fontSize = size
   n.bgColor = bg
@@ -219,7 +225,7 @@ proc TextInput*(
   onInput: proc(s: string) {.closure, gcsafe, raises: [].} = nil
 ): SlabId {.raises: [].} =
   let id = tree.createNode(nkTextInput)
-  let n = addr tree.nodes[id]
+  template n: untyped = tree.nodes[id]
   n.placeholder = placeholder
   n.text = text
   n.fontSize = size
@@ -248,7 +254,7 @@ proc VirtualList*(
   onSelect: proc(idx: int) {.closure, gcsafe, raises: [].} = nil
 ): SlabId {.raises: [].} =
   let id = tree.createNode(nkVirtualList)
-  let n = addr tree.nodes[id]
+  template n: untyped = tree.nodes[id]
   n.virtualCount = count
   n.itemHeight = itemHeight
   n.widthMode = width

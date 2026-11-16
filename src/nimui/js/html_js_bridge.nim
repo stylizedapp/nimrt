@@ -66,7 +66,8 @@ proc resolveTextSlab*(tree: var UiTree, slab: SlabId, createIfMissing: bool): Sl
     return txtSlab
   SlabId(-1'i32)
 
-proc getElementText*(core: ptr HtmlJsCore, id: string): string {.raises: [].} =
+# Safe: core/treePtr are nil- and active-checked before deref; owned by HtmlJsSession.
+proc getElementText*(core: ptr HtmlJsCore, id: string): string {.trustedUnsafe, raises: [].} =
   if core.isNil or core.treePtr.isNil or core.bindingsPtr.isNil:
     return ""
   let opt = core.bindingsPtr[].getNodeById(id)
@@ -81,7 +82,8 @@ proc getElementText*(core: ptr HtmlJsCore, id: string): string {.raises: [].} =
 proc getElementText*(s: HtmlJsSession, id: string): string {.raises: [].} =
   getElementText(s.core, id)
 
-proc setElementText*(core: ptr HtmlJsCore, id, txt: string) {.raises: [].} =
+# Safe: core/treePtr are nil- and active-checked before deref; owned by HtmlJsSession.
+proc setElementText*(core: ptr HtmlJsCore, id, txt: string) {.trustedUnsafe, raises: [].} =
   if core.isNil or core.treePtr.isNil or core.bindingsPtr.isNil:
     return
   let opt = core.bindingsPtr[].getNodeById(id)
@@ -101,7 +103,8 @@ proc setElementText*(core: ptr HtmlJsCore, id, txt: string) {.raises: [].} =
 proc setElementText*(s: HtmlJsSession, id, txt: string) {.raises: [].} =
   setElementText(s.core, id, txt)
 
-proc setElementStyleProp(core: ptr HtmlJsCore, id, prop, val: string) {.raises: [].} =
+# Safe: core/treePtr are nil- and active-checked before deref; owned by HtmlJsSession.
+proc setElementStyleProp(core: ptr HtmlJsCore, id, prop, val: string) {.trustedUnsafe, raises: [].} =
   if core.isNil or core.treePtr.isNil or core.bindingsPtr.isNil:
     return
   let opt = core.bindingsPtr[].getNodeById(id)
@@ -174,7 +177,8 @@ proc setElementStyleProp(core: ptr HtmlJsCore, id, prop, val: string) {.raises: 
   else:
     discard
 
-proc getElementStyleProp(core: ptr HtmlJsCore, id, prop: string): string {.raises: [].} =
+# Safe: core/treePtr are nil- and active-checked before deref; owned by HtmlJsSession.
+proc getElementStyleProp(core: ptr HtmlJsCore, id, prop: string): string {.trustedUnsafe, raises: [].} =
   if core.isNil or core.treePtr.isNil or core.bindingsPtr.isNil:
     return ""
   let opt = core.bindingsPtr[].getNodeById(id)
@@ -189,7 +193,8 @@ proc getElementStyleProp(core: ptr HtmlJsCore, id, prop: string): string {.raise
   else:
     ""
 
-proc attachJsListener(core: ptr HtmlJsCore, id, evName: string, cbId: int32) {.raises: [].} =
+# Safe: core/treePtr are nil- and active-checked before deref; owned by HtmlJsSession.
+proc attachJsListener(core: ptr HtmlJsCore, id, evName: string, cbId: int32) {.trustedUnsafe, raises: [].} =
   if core.isNil or core.treePtr.isNil or core.bindingsPtr.isNil:
     return
   let opt = core.bindingsPtr[].getNodeById(id)
@@ -236,7 +241,8 @@ proc parseInt32Safe(s: string): int32 {.raises: [].} =
     inc idx
   if neg: -acc else: acc
 
-proc makeHostDispatcher(core: ptr HtmlJsCore): JsHostDispatchProc {.raises: [].} =
+# Safe: core is nil- and active-checked inside the returned QuickJS host dispatcher closure.
+proc makeHostDispatcher(core: ptr HtmlJsCore): JsHostDispatchProc {.trustedUnsafe, raises: [].} =
   result = proc(op: int32, a0, a1, a2: string, errMsg: var string): string {.closure, gcsafe, raises: [].} =
     if core.isNil or not core.active:
       return ""
@@ -326,13 +332,14 @@ proc makeHostDispatcher(core: ptr HtmlJsCore): JsHostDispatchProc {.raises: [].}
     else:
       return ""
 
+# Safe: allocates owned HtmlJsCore storing non-owning pointers to caller-owned tree/rt/bindings.
 proc initHtmlJsSession*(
   alloc: Allocator,
   tree: var UiTree,
   rt: var ReactiveRuntime,
   bindings: var HtmlBindingRegistry,
   cfg: QuickJsConfig = defaultQuickJsConfig()
-): Result[HtmlJsSession, string] {.raises: [].} =
+): Result[HtmlJsSession, string] {.trustedUnsafe, raises: [].} =
   var engRes = initQuickJsEngine(alloc, cfg)
   if engRes.isErr():
     return err[HtmlJsSession, string](engRes.error())
@@ -359,7 +366,8 @@ proc initHtmlJsSession*(
   corePtr.engine.setHostHandler(makeHostDispatcher(corePtr))
   ok[HtmlJsSession, string](HtmlJsSession(core: corePtr))
 
-proc destroy*(s: var HtmlJsSession) {.raises: [].} =
+# Safe: marks core inactive and destroys owned QuickJsEngine and HtmlJsCore via its allocator.
+proc destroy*(s: var HtmlJsSession) {.trustedUnsafe, raises: [].} =
   if s.core.isNil:
     return
   let alloc = s.core.alloc
@@ -372,16 +380,18 @@ proc destroy*(s: var HtmlJsSession) {.raises: [].} =
   alloc.destroy(s.core)
   s.core = nil
 
-proc registerNimFunc*(s: var HtmlJsSession, name: string, fn: NimJsHostProc) {.raises: [].} =
+# Safe: s.core is nil-checked before deref; owned by HtmlJsSession.
+proc registerNimFunc*(s: var HtmlJsSession, name: string, fn: NimJsHostProc) {.trustedUnsafe, raises: [].} =
   if not s.core.isNil:
     s.core.nimFuncs.put(name, fn)
 
+# Safe: s.core is nil- and active-checked before deref; owned by HtmlJsSession.
 proc executeScript*(
   s: var HtmlJsSession,
   code: string,
   filename: string = "<script>",
   capsStr: string = ""
-): Result[string, string] {.raises: [].} =
+): Result[string, string] {.trustedUnsafe, raises: [].} =
   if s.core.isNil or not s.core.active:
     return err[string, string]("HtmlJsSession is not active")
 
@@ -409,12 +419,13 @@ proc executeScript*(
   # Restore union or script caps for runtime callbacks registered by the script
   ok[string, string](evalRes.get())
 
+# Safe: s.core, treePtr, rtPtr, bindingsPtr are nil- and active-checked; owned by caller/session.
 proc mountHtmlWithJs*(
   s: var HtmlJsSession,
   html: string,
   extraCss: string = "",
   parentId: SlabId = SlabId(-1'i32)
-): Result[SlabId, string] {.raises: [].} =
+): Result[SlabId, string] {.trustedUnsafe, raises: [].} =
   if s.core.isNil or not s.core.active:
     return err[SlabId, string]("HtmlJsSession is not active")
 
@@ -445,20 +456,24 @@ proc mountHtmlWithJs*(
 
   mountRes
 
-proc tick*(s: var HtmlJsSession, dtMs: int): Result[int, string] {.raises: [].} =
+# Safe: s.core is nil- and active-checked before deref; owned by HtmlJsSession.
+proc tick*(s: var HtmlJsSession, dtMs: int): Result[int, string] {.trustedUnsafe, raises: [].} =
   if s.core.isNil or not s.core.active:
     return ok[int, string](0)
   s.core.engine.tickTimers(dtMs)
 
-proc hasActiveTimers*(s: HtmlJsSession): bool {.inline, raises: [].} =
+# Safe: s.core is nil- and active-checked before deref; owned by HtmlJsSession.
+proc hasActiveTimers*(s: HtmlJsSession): bool {.trustedUnsafe, inline, raises: [].} =
   if s.core.isNil or not s.core.active:
     return false
   s.core.engine.hasActiveTimers()
 
-proc consoleLogs*(s: HtmlJsSession): seq[string] {.raises: [].} =
+# Safe: s.core is nil-checked before deref; owned by HtmlJsSession.
+proc consoleLogs*(s: HtmlJsSession): seq[string] {.trustedUnsafe, raises: [].} =
   if s.core.isNil: return @[]
   s.core.consoleLogs
 
-proc lastJsError*(s: HtmlJsSession): string {.raises: [].} =
+# Safe: s.core is nil-checked before deref; owned by HtmlJsSession.
+proc lastJsError*(s: HtmlJsSession): string {.trustedUnsafe, raises: [].} =
   if s.core.isNil: return ""
   s.core.lastJsError

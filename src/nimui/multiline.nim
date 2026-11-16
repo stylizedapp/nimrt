@@ -12,14 +12,15 @@
 ## - Follows NimUI patterns: zero runtime memory leaks, monochrome design tokens, ARC/ORC compliance.
 
 import corex/unicode
-import corex/slab
+import corex/[slab, result]
 import ./gpu/font_atlas
 import ./gpu/vulkan_backend
 import ./layout
 import ./clipboard
 
 when defined(windows):
-  proc GetKeyState(nVirtKey: int32): int16 {.stdcall, dynlib: "user32", importc: "GetKeyState", raises: [].}
+  # Safe: standard Win32 user32.dll GetKeyState query by virtual key code, no pointers.
+  proc GetKeyState(nVirtKey: int32): int16 {.trustedUnsafe, stdcall, dynlib: "user32", importc: "GetKeyState", raises: [].}
 
 # =============================================================================
 # Monochrome Design Tokens
@@ -545,13 +546,13 @@ proc pasteFromClipboard*(ta: var TextArea): bool {.raises: [].} =
 
 proc isControlKeyDown(): bool {.inline, raises: [].} =
   when defined(windows):
-    (GetKeyState(0x11'i32) and cast[int16](0x8000'u16)) != 0
+    GetKeyState(0x11'i32) < 0
   else:
     false
 
 proc isShiftKeyDown(): bool {.inline, raises: [].} =
   when defined(windows):
-    (GetKeyState(0x10'i32) and cast[int16](0x8000'u16)) != 0
+    GetKeyState(0x10'i32) < 0
   else:
     false
 
@@ -857,7 +858,7 @@ proc TextAreaNode*(
   onInput: proc(s: string) {.closure, gcsafe, raises: [].} = nil
 ): SlabId {.raises: [].} =
   let id = tree.createNode(nkBox)
-  let n = addr tree.nodes[id]
+  template n: untyped = tree.nodes[id]
   n.text = text
   n.fontSize = size
   n.widthMode = width
@@ -877,7 +878,7 @@ proc syncWithNode*(ta: var TextArea, tree: UiTree, nodeId: SlabId, atlas: FontAt
   ## Automatically syncs TextArea bounds, focus state, and line height from a UiTree layout node.
   if not tree.nodes.contains(nodeId):
     return
-  let n = addr tree.nodes[nodeId]
+  template n: untyped = tree.nodes[nodeId]
   ta.bounds = (
     x: n.computedRect.x + n.padding[3],
     y: n.computedRect.y + n.padding[0],
