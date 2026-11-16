@@ -715,7 +715,7 @@ proc reset*(b: ptr Barrier) {.inline.} =
 
 type
   WaitGroup* = object
-    counter: int
+    counter: Atomic[int]
     lock: SysLock
     cond: CondVar
 
@@ -723,12 +723,12 @@ proc `=copy`*(dest: var WaitGroup, src: WaitGroup) {.
   error: "WaitGroup is a thread coordination primitive and cannot be copied; pass by pointer or var reference".}
 
 proc initWaitGroup*(): WaitGroup =
-  result.counter = 0
+  result.counter.store(0, moRelaxed)
   initSysLock(result.lock)
   initCondVar(result.cond)
 
 proc initWaitGroup*(wg: var WaitGroup) =
-  wg.counter = 0
+  wg.counter.store(0, moRelaxed)
   initSysLock(wg.lock)
   initCondVar(wg.cond)
 
@@ -736,11 +736,12 @@ proc add*(wg: var WaitGroup, delta: int = 1) =
   ## Increments or decrements the WaitGroup counter by delta.
   ## Raises Defect if the counter becomes negative.
   acquire(wg.lock)
-  wg.counter += delta
-  if wg.counter < 0:
+  let next = wg.counter.load(moRelaxed) + delta
+  wg.counter.store(next, moRelease)
+  if next < 0:
     release(wg.lock)
     raise newException(Defect, "negative WaitGroup counter")
-  if wg.counter == 0:
+  if next == 0:
     wakeAll(wg.cond)
   release(wg.lock)
 
@@ -755,7 +756,7 @@ proc done*(wg: ptr WaitGroup) {.inline.} =
 
 proc wait*(wg: var WaitGroup) =
   acquire(wg.lock)
-  while wg.counter > 0:
+  while wg.counter.load(moRelaxed) > 0:
     waitCondVar(wg.cond, wg.lock)
   release(wg.lock)
 
@@ -763,13 +764,13 @@ proc wait*(wg: ptr WaitGroup) {.inline.} =
   wait(wg[])
 
 proc value*(wg: WaitGroup): int {.inline.} =
-  wg.counter
+  load(unsafeAddr wg.counter, moAcquire)
 
 proc value*(wg: var WaitGroup): int {.inline.} =
-  wg.counter
+  wg.counter.load(moAcquire)
 
 proc value*(wg: ptr WaitGroup): int {.inline.} =
-  wg[].counter
+  wg[].counter.load(moAcquire)
 
 # =============================================================================
 # Feature 32: `SpscQueue[T; Cap: static int]` (Lock-Free SPSC Circular Queue)
