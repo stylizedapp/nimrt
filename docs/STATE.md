@@ -74,16 +74,18 @@
 
 ---
 
-## Актуальные результаты бенчмарков (M6 / AlgX)
+## Актуальные результаты бенчмарков CoreX / AlgX vs Rust (`--mm:orc`, idle machine)
 
-Запуск: `nim c -d:danger --opt:speed --mm:orc --threads:on -r benchmarks/nim_full_suite.nim` (2 прогрева, 11 замеров) и `benchmarks/nim_ultra_showcase.nim`.
+Запуск: `nimble bench` (`benchmarks/run_benchmarks.ps1`: 2 прогрева + 11 замеров на простаивающем AMD Ryzen 3 3200U 2C/4T; Nim 2.2.12 `-d:danger --mm:orc -march=native -O3 -flto` MinGW GCC vs Rust 1.96.0 `lto=fat`, `target-cpu=native` MSVC). Подробнее: [`docs/BENCHMARK_SHOWCASE.md`](BENCHMARK_SHOWCASE.md) и [`benchmarks/showcase.html`](../benchmarks/showcase.html).
 
-| Бенчмарк | Параметры | Latency (Min / Med / Mean / Max) | Пропускная способность |
-|---|---|---|---|
-| **UltraSort** | 10M `int64`, 4 потока, 160MB буфер | Min: **112.07 ms** / Med: **180.41 ms** / Mean: 186.96 ms / Max: 330.43 ms | **89.23 M elem/s** (~713.8 MB/s), showcase: 140.96 ms |
-| **FastMap** | SplitMix64, 3M ops (1M insert + 1M hit + 1M miss), 2M слотов | Min: **237.11 ms** / Med: **335.90 ms** / Mean: 343.28 ms / Max: 571.46 ms | **12.65 M ops/s** (~79.0 ns/op) |
-| **ZeroPack POD** | 2M `VoxelPacket` x 32B = 64MB roundtrip pack + unpack | Min: **39.64 ms** / Med: **46.81 ms** / Mean: 48.45 ms / Max: 58.34 ms | **1.61 GB/s** (50.45 M pkt/s), 64,000,004 байт сверены |
-| **SimdScan 8-Way** | 25M `int64` = 400MB `dotProduct` + ветвление `countGreater` | Min: **107.88 ms** / Med: **188.36 ms** / Mean: 221.52 ms / Max: 388.09 ms | **231.74 M elem/s** (~3.71 GB/s memory bandwidth) |
+| Бенчмарк | Реализация | Min (ms) | Med (ms) | Mean (ms) | Max (ms) | Примечание |
+|---|---|---|---|---|---|---|
+| **UltraSort** (10M `int64`, 4T) | **Nim** (`algx/ultrasort`)<br>**Rust** (`ultra_sort_rust`) | **69.06**<br>75.31 | **71.43**<br>88.60 | **71.75**<br>88.26 | **76.76**<br>104.71 | Nim быстрее ~1.24× по медиане |
+| **HashMap** (3M ops, `SplitMix64`) | **Rust** (`RustFastMap / hashbrown`)<br>**Nim** (`FastMap`, 16B SSE2)<br>**Rust** (`std::HashMap`) | **115.53**<br>153.54<br>175.37 | **134.20**<br>168.02<br>219.03 | **135.10**<br>168.74<br>225.78 | **162.21**<br>196.63<br>299.91 | `FastMap` SSE2 ~1.30× быстрее `std::HashMap`; `hashbrown` ~1.25× быстрее `FastMap` |
+| **ZeroPack POD** (2M × 32B = 64MB) | **Nim** (`ZeroPack`)<br>**Rust** (`Vec` + `copy_nonoverlapping`) | **12.52**<br>38.63 | **13.69**<br>54.73 | **13.47**<br>50.80 | **13.96**<br>60.78 | Эффект аллокатора (Nim кэширует блоки; MSVC CRT `VirtualAlloc`/`VirtualFree` + page faults) |
+| **SimdScan 8-Way** (25M `int64`, 1T) | **Nim** (`algx/simdscan`)<br>**Rust** (`8-Way unsafe`) | **38.66**<br>40.80 | **39.78**<br>43.20 | **40.10**<br>43.71 | **43.85**<br>47.98 | Паритет с небольшим перевесом Nim |
+
+> Оговорки: замеры выполнены на одной 2-ядерной машине за 11 прогонов; сравниваются разные тулчейны (MinGW GCC vs Rust MSVC).
 
 ---
 
@@ -115,9 +117,15 @@
    - `src/nimui/gpu/vulkan_backend.nim` & `window.nim`: обработка `VK_ERROR_DEVICE_LOST`, опциональный `-d:nimuiValidation`, пропуск рендера при свёрнутом окне (`0×0`), `WM_DPICHANGED`, базовая `WM_IME_COMPOSITION`, `clipboard.nim` переведён на `threadvar`.
    - `src/nimui/controls.nim` разделён на `src/nimui/controls/{common,checkbox,radio,slider,dropdown,tooltip}.nim`.
    - `src/nimui/html_css.nim` разделён на `src/nimui/html/{types,parser,cascade,compiler}.nim`; расширены CSS3/HTML5, нестандартные цвета темы вынесены в opt-in `parseThemeColor`, добавлен 100k-фаззер `tests/test_fuzz_html_css.nim`.
-3. **Инфраструктура, документация и бенчмарки:**
-   - Добавлены `LICENSE` (MIT), `CHANGELOG.md`, `CONTRIBUTING.md`, `.github/workflows/ci.yml` (Windows CI + strict warnings), `nimble test_all` / `build_quickjs` / `build_shaders`.
-   - `benchmarks/run_benchmarks.ps1` переведён на `--mm:orc`; в `README.md`, `docs/STATE.md`, `docs/DECISIONS.md`, `docs/MANIFEST.md`, `docs/PROJECT.md` и `docs/BENCHMARK_SHOWCASE.md` приведены честные формулировки безопасности, учёта утечек, ограничений и метрик M14.
+3. **Инфраструктура, документация, релизные бинарники и бенчмарки:**
+   - Добавлены `LICENSE` (MIT), `CHANGELOG.md`, `CONTRIBUTING.md`, `.github/workflows/ci.yml` (Windows CI + strict warnings), `nimble test_all` / `build_quickjs` / `build_shaders` / `build_release`.
+   - Завершена сборка релизных бинарников `nimble build_release` (`PASS`, exit 0):
+     - `bin/html_desktop.exe` (`2,001,876 B`)
+     - `bin/wiztree.exe` (`475,844 B`)
+     - `bin/widget_gallery.exe` (`668,014 B`)
+     - `bin/nim_safe.exe` (`8,620,064 B`)
+   - Пройдены строгие проверки `nim check --warningAsError[UnusedImport]:on --hintAsError[XDeclaredButNotUsed]:on` на `src/corex.nim`, `src/algx.nim`, `src/nimui.nim` (`exit 0`) и `nim doc --project` для `src/algx.nim` и `src/nimui.nim`.
+   - Выполнен итоговый симметричный замер `nimble bench` под `--mm:orc` на простаивающей машине (`Warmup = 2`, `Runs = 11`); результаты и методологические оговорки синхронизированы в `README.md`, `docs/STATE.md`, `docs/BENCHMARK_SHOWCASE.md`, `benchmarks/generate_showcase.py` и `benchmarks/showcase.html`.
    - **Историческая заметка (`apps/nimui_demo`, M14 `runHeadlessBenchmark`):** в исходной M14-версии Raycast Spotlight (до замены на Singularity Lab в `dc90d16`) `0.020 ms` означало CPU-время `buildDrawInstances`, а `68 KB` — память после `EmptyWorkingSet()` без Vulkan. В текущем `apps/nimui_demo` (`Singularity Lab`) используется интерактивный цикл Vulkan 1.1+ и headless-скриншоты `--screenshot`.
 
 ---

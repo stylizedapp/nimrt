@@ -86,6 +86,13 @@ nim/
 ### 4. `apps/nimui_demo` — Singularity Lab
 Релятивистская N-body симуляция аккреционного диска черной дыры Керра с гибридным HUD-интерфейсом на базе `html_css`.
 
+### Скриншоты (Headless Preview)
+
+| `apps/widget_gallery` (Виджеты, SDF и Кириллица) | `apps/nimui_demo` (Singularity Lab) |
+| :---: | :---: |
+| ![Widget Gallery Preview](apps/widget_gallery/widget_gallery_preview.png) | ![Singularity Lab Preview](apps/nimui_demo/singularity_lab_preview.png) |
+| [`apps/widget_gallery/widget_gallery_preview.png`](apps/widget_gallery/widget_gallery_preview.png) | [`apps/nimui_demo/singularity_lab_preview.png`](apps/nimui_demo/singularity_lab_preview.png) |
+
 ---
 
 ## Быстрый старт
@@ -155,8 +162,24 @@ nim c -r tests/test_fuzz_mft.nim
 nim c -r tests/test_fuzz_html_css.nim
 
 # Бенчмарки против Rust (генерирует benchmarks/showcase.html)
+nimble bench
 nimble showcase_html
 ```
+
+---
+
+## Бенчмарки CoreX + AlgX против Rust (`--mm:orc`)
+
+Симметричное сравнение (`Warmup = 2`, `Runs = 11`, простаивающая машина AMD Ryzen 3 3200U 2C/4T, Windows x64): **Nim 2.2.12** (`-d:danger --mm:orc -march=native -O3 -flto`, MinGW GCC `11.1.0`) против **Rust 1.96.0** (`lto=fat`, `target-cpu=native`, MSVC / LLVM `22.1.2`).
+
+| Дисциплина | Реализация | Min (мс) | Median (мс) | Mean (мс) | Max (мс) |
+| :--- | :--- | :---: | :---: | :---: | :---: |
+| **UltraSort** (10M `int64`, 4T) | **Nim** (`algx/ultrasort`)<br>**Rust** (`ultra_sort_rust`) | **69.06**<br>75.31 | **71.43**<br>88.60 | **71.75**<br>88.26 | **76.76**<br>104.71 |
+| **HashMap** (3M ops, `SplitMix64`) | **Rust** (`RustFastMap / hashbrown`)<br>**Nim** (`FastMap`, 16B SSE2)<br>**Rust** (`std::HashMap`) | **115.53**<br>153.54<br>175.37 | **134.20**<br>168.02<br>219.03 | **135.10**<br>168.74<br>225.78 | **162.21**<br>196.63<br>299.91 |
+| **ZeroPack POD** (2M × 32B = 64MB) | **Nim** (`ZeroPack`)<br>**Rust** (`Vec` + `copy_nonoverlapping`) | **12.52**<br>38.63 | **13.69**<br>54.73 | **13.47**<br>50.80 | **13.96**<br>60.78 |
+| **SimdScan 8-Way** (25M `int64`, 1T) | **Nim** (`algx/simdscan`)<br>**Rust** (`8-Way unsafe`) | **38.66**<br>40.80 | **39.78**<br>43.20 | **40.10**<br>43.71 | **43.85**<br>47.98 |
+
+> **Методологические оговорки:** (1) все замеры выполнены на одной 2-ядерной машине за 11 прогонов без межмашинных доверительных интервалов; (2) сравниваются разные тулчейны (MinGW GCC vs Rust MSVC); (3) преимущество Nim в `ZeroPack POD` обусловлено эффектом аллокатора (Nim переиспользует блоки 64 МБ, тогда как временный `Vec` в MSVC CRT на каждой итерации вызывает `VirtualAlloc`/`VirtualFree` и soft page faults); (4) `FastMap` (16B SSE2) опережает `std::HashMap` в **~1.30× по медиане**, но уступает `hashbrown` (**~1.25×** в пользу `hashbrown`). Подробности — в [`docs/BENCHMARK_SHOWCASE.md`](docs/BENCHMARK_SHOWCASE.md) и [`benchmarks/showcase.html`](benchmarks/showcase.html).
 
 ---
 
