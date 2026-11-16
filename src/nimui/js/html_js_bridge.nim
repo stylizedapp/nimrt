@@ -428,18 +428,7 @@ proc mountHtmlWithJs*(
 
   let embeddedSheet = parseCssSheet(doc.embeddedCss)
   let extraSheet = parseCssSheet(extraCss)
-  var combined = CssStylesheet(rules: @[])
-  var order = 0
-  for r in embeddedSheet.rules:
-    var cr = r
-    cr.order = order
-    inc order
-    combined.rules.add(cr)
-  for r in extraSheet.rules:
-    var cr = r
-    cr.order = order
-    inc order
-    combined.rules.add(cr)
+  let combined = mergeStylesheets(embeddedSheet, extraSheet)
 
   let mountRes = mountHtml(
     s.core.treePtr[],

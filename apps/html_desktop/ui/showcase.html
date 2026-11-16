@@ -14,6 +14,14 @@
       line-height: 1.25;
     }
 
+    :root {
+      --midnight: #111116;
+      --indigo: #4F46E5;
+      --emerald: #10B981;
+      --amber: #F59E0B;
+      --rose: #F43F5E;
+    }
+
     html, body {
       width: 100%;
       height: 100%;
@@ -38,7 +46,7 @@
       justify-content: space-between;
       width: 100%;
       padding: 10px 16px;
-      background-color: midnight;
+      background-color: var(--midnight);
       border: 1px solid #242636;
       border-radius: 10px;
       gap: 16px;
@@ -88,7 +96,7 @@
 
     button.nav-btn.active {
       background-color: #312E81;
-      border: 1px solid indigo;
+      border: 1px solid var(--indigo);
       color: white;
     }
 
@@ -111,7 +119,7 @@
     .ram-pill {
       padding: 5px 10px;
       background-color: rgba(16, 185, 129, 0.15);
-      border: 1px solid emerald;
+      border: 1px solid var(--emerald);
       border-radius: 6px;
       color: #34D399;
       font-size: 11px;
@@ -381,7 +389,7 @@
 
     .btn.emerald-btn {
       background-color: #065F46;
-      border-color: emerald;
+      border-color: var(--emerald);
     }
 
     .btn.emerald-btn:hover {
@@ -390,7 +398,7 @@
 
     .btn.amber-btn {
       background-color: #78350F;
-      border-color: amber;
+      border-color: var(--amber);
     }
 
     .btn.amber-btn:hover {
@@ -433,7 +441,7 @@
 
     .sdf-tile.rose-tile {
       background-color: rgba(244, 63, 94, 0.16);
-      border: 1px solid rose;
+      border: 1px solid var(--rose);
       border-radius: 8px;
     }
 
@@ -726,11 +734,11 @@
           <div class="sdf-grid">
             <div class="sdf-tile amber-tile">
               <strong class="tile-title">SDF Radius 14px</strong>
-              <span class="tile-sub">rgba(245,158,11,0.16) • 1px amber</span>
+              <span class="tile-sub">rgba(245,158,11,0.16) • 1px var(--amber)</span>
             </div>
             <div class="sdf-tile rose-tile">
-              <strong class="tile-title">Named Rose Color</strong>
-              <span class="tile-sub">rgba(244,63,94,0.16) • border: rose</span>
+              <strong class="tile-title">CSS var(--rose) Color</strong>
+              <span class="tile-sub">rgba(244,63,94,0.16) • border: var(--rose)</span>
             </div>
           </div>
 

@@ -125,9 +125,15 @@ proc testCssCascadeAndColors() =
     doAssert parseCssColor("#11223380").getOr(0'u32) == 0x11223380'u32
     doAssert parseCssColor("rgb(10, 20, 30)").getOr(0'u32) == 0x0A141EFF'u32
     doAssert parseCssColor("rgba(255, 0, 128, 0.5)").getOr(0'u32) == 0xFF008080'u32
-    doAssert parseCssColor("obsidian").getOr(0'u32) == 0x0A0A0CFF'u32
+    doAssert parseCssColor("hsl(120, 100%, 50%)").getOr(0'u32) == 0x00FF00FF'u32
     doAssert parseCssColor("transparent").getOr(0'u32) == 0x00000000'u32
     doAssert parseCssColor("not-a-color").isNone()
+    # Non-standard theme color names must NOT resolve in standard CSS resolver
+    for nonStd in ["slate", "indigo", "emerald", "rose", "amber", "obsidian", "midnight"]:
+      doAssert parseCssColor(nonStd).isNone(), "Standard resolver must reject non-standard color: " & nonStd
+    # Opt-in theme resolver still supports them
+    doAssert parseThemeColor("obsidian").getOr(0'u32) == 0x0A0A0CFF'u32
+    doAssert parseThemeColor("indigo").getOr(0'u32) == 0x4F46E5FF'u32
 
     let html = """
       <div id="root" class="shell">
@@ -213,7 +219,7 @@ proc testMountAndFlexboxLayout(atlas: FontAtlas) =
           height: 120px;
           padding: 10px 20px;
           gap: 10px;
-          background: obsidian;
+          background: #0A0A0C;
         }
         #left-pane {
           flex: 1;
@@ -357,7 +363,7 @@ proc testRasterizerAndLeakStress(atlas: FontAtlas) =
           width: 220px;
           height: 110px;
           padding: 16px;
-          background: obsidian;
+          background: #0A0A0C;
           flex-direction: column;
           gap: 10px;
         }
@@ -427,6 +433,195 @@ proc testRasterizerAndLeakStress(atlas: FontAtlas) =
       rt.destroy()
     echo "  [PASS] 5.2 500-cycle HTML/CSS/Reactive lifecycle leaked 0 bytes."
 
+# =============================================================================
+# 6.1 Extended CSS3 Properties, Custom Vars, @media, :focus/:disabled & HTML Tags
+# =============================================================================
+
+proc testExtendedCssAndHtmlTags(atlas: FontAtlas) =
+  echo "\n================================================================="
+  echo ">>> [SUITE 6] EXTENDED CSS3 PROPERTIES, @MEDIA & HTML TAGS <<<"
+  echo "================================================================="
+
+  testWithLeakCheck("6.1 var(--x), linear-gradient, box-shadow, opacity, @media, :focus, :disabled"):
+    let html = """
+      <html>
+        <head>
+          <style>
+            :root {
+              --BrandColor: #4F46E5;
+              --surface: #0A0A0C;
+            }
+            .box {
+              background: linear-gradient(135deg, #4F46E5 0%, #10B981 100%);
+              box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+              opacity: 0.5;
+              font-weight: bold;
+              font-family: "Inter", sans-serif;
+              line-height: 1.5;
+              cursor: pointer;
+              text-overflow: ellipsis;
+              white-space: nowrap;
+              position: relative;
+              z-index: 42;
+              flex-wrap: wrap;
+              flex-shrink: 0;
+              flex-basis: 120px;
+              align-self: center;
+              row-gap: 12px;
+              column-gap: 20px;
+              transition: background-color 150ms ease-in-out;
+              color: var(--BrandColor);
+              border: 1px solid var(--missing, #10B981);
+            }
+            input:focus {
+              border-color: #38BDF8;
+              background-color: #1E293B;
+            }
+            button:disabled {
+              background-color: #334155;
+              color: #94A3B8;
+            }
+            @media (min-width: 800px) and (prefers-color-scheme: dark) {
+              .responsive { width: 320px; }
+            }
+            @media (max-width: 400px) {
+              .responsive { width: 100px; }
+            }
+          </style>
+        </head>
+        <body>
+          <div id="bx" class="box responsive">Card</div>
+          <input id="inp" type="text" value="hi" />
+          <button id="dis-btn" disabled data-click="nope">Locked</button>
+        </body>
+      </html>
+    """
+    let docRes = parseHtmlDoc(html)
+    doAssert docRes.isOk()
+    let doc = docRes.get()
+    let sheet = parseCssSheet(doc.embeddedCss, CssMediaContext(viewportWidth: 1200.0f, viewportHeight: 800.0f, prefersDark: true))
+
+    let rootIdx = doc.findById("bx").get()
+    let htmlIdx = doc.nodes[0].children[0]
+    let bodyIdx = doc.nodes[htmlIdx].children[^1]
+    let rootBase = computeNodeStyle(doc, htmlIdx, sheet, defaultRootStyle())
+    let bodyBase = computeNodeStyle(doc, bodyIdx, sheet, rootBase)
+    let bxStyle = computeNodeStyle(doc, rootIdx, sheet, bodyBase)
+
+    doAssert bxStyle.fgColor == 0x4F46E5FF'u32, "var(--BrandColor) case-sensitive lookup failed"
+    doAssert bxStyle.borderColor == 0x10B981FF'u32, "var(--missing, fallback) failed"
+    doAssert bxStyle.bgGradient.active and bxStyle.bgGradient.stops.len == 2
+    doAssert bxStyle.boxShadows.len == 1 and approxEq(bxStyle.boxShadows[0].blur, 12.0f)
+    doAssert approxEq(bxStyle.opacity, 0.5f)
+    doAssert bxStyle.fontWeight == 700
+    doAssert bxStyle.fontFamily == "\"Inter\", sans-serif"
+    doAssert approxEq(bxStyle.lineHeight, 1.5f)
+    doAssert bxStyle.cursor == "pointer"
+    doAssert bxStyle.textOverflow == "ellipsis"
+    doAssert bxStyle.whiteSpace == "nowrap"
+    doAssert bxStyle.position == cpRelative
+    doAssert bxStyle.zIndexSet and bxStyle.zIndex == 42
+    doAssert bxStyle.flexWrap == cfwWrap
+    doAssert approxEq(bxStyle.flexShrink, 0.0f)
+    doAssert bxStyle.flexBasis.kind == cskPx and approxEq(bxStyle.flexBasis.value, 120.0f)
+    doAssert bxStyle.alignSelf == casCenter
+    doAssert approxEq(bxStyle.rowGap, 12.0f) and approxEq(bxStyle.columnGap, 20.0f)
+    doAssert bxStyle.width.kind == cskPx and approxEq(bxStyle.width.value, 320.0f), "@media min-width failed"
+
+    let inpStyle = computeNodeStyle(doc, doc.findById("inp").get(), sheet, bodyBase)
+    doAssert inpStyle.borderFocusColor == 0x38BDF8FF'u32
+    doAssert inpStyle.bgFocusColor == 0x1E293BFF'u32
+
+    let disStyle = computeNodeStyle(doc, doc.findById("dis-btn").get(), sheet, bodyBase)
+    doAssert disStyle.bgColor == 0x334155FF'u32
+    doAssert disStyle.fgColor == 0x94A3B8FF'u32
+
+    var tree = initUiTree(testAlloc)
+    defer: tree.destroy()
+    var rt = initReactiveRuntime(testAlloc)
+    defer: rt.destroy()
+    var bindings = initHtmlBindingRegistry()
+    defer: bindings.destroy()
+    var clickedDisabled = false
+    bindings.onClick("nope", proc() {.closure, gcsafe, raises: [].} =
+      {.cast(gcsafe).}:
+        clickedDisabled = true
+    )
+    doAssert mountHtml(tree, addr rt, doc, sheet, bindings).isOk()
+    let disSlab = bindings.getNodeById("dis-btn").get()
+    doAssert tree.nodes[disSlab].onClick.isNil, "Disabled button must not attach onClick"
+    let bxSlab = bindings.getNodeById("bx").get()
+    doAssert (tree.nodes[bxSlab].textColor and 0xFF'u32) == 128'u32, "Opacity 0.5 must modulate alpha"
+    echo "  [PASS] 6.1 Extended CSS3 properties, var(), @media, :focus, :disabled & opacity verified."
+
+  testWithLeakCheck("6.2 Margin, Min/Max Constraints & Missing HTML Tags (table/list/select/textarea/img/svg/br/hr)"):
+    var tree = initUiTree(testAlloc)
+    defer: tree.destroy()
+    var rt = initReactiveRuntime(testAlloc)
+    defer: rt.destroy()
+    var bindings = initHtmlBindingRegistry()
+    defer: bindings.destroy()
+
+    let html = """
+      <style>
+        #wrap { width: 500px; height: 500px; padding: 10px; display: flex; flex-direction: column; row-gap: 6px; }
+        #margined { width: 100px; height: 30px; margin: 10px 20px; background: #2563EB; }
+        #clamped { width: 100%; max-width: 240px; min-height: 40px; height: 20px; background: #10B981; }
+      </style>
+      <div id="wrap">
+        <div id="margined">Box</div>
+        <div id="clamped">Clamped</div>
+        <hr id="divider" />
+        <br />
+        <img id="pic" width="80" height="40" alt="Logo" />
+        <svg id="vec" viewBox="0 0 32 32"><circle cx="16" cy="16" r="10" /><path d="M0 0 L10 10" /></svg>
+        <ul id="ulist"><li>One</li><li>Two</li></ul>
+        <ol id="olist"><li>First</li><li>Second</li></ol>
+        <table id="tbl">
+          <thead><tr><th>Key</th><th>Val</th></tr></thead>
+          <tbody><tr><td>Mode</td><td>Fast</td></tr></tbody>
+        </table>
+        <select id="sel">
+          <option value="a">Alpha</option>
+          <option value="b" selected>Beta</option>
+        </select>
+        <textarea id="ta" rows="3" cols="20" placeholder="Notes">Hello &amp; Nim</textarea>
+      </div>
+    """
+    let mRes = mountHtmlString(tree, addr rt, html, "", bindings)
+    doAssert mRes.isOk(), mRes.error()
+    tree.layoutTree(800.0f, 600.0f, atlas)
+
+    let mSlab = bindings.getNodeById("margined").get()
+    let mr = tree.nodes[mSlab].computedRect
+    # wrap padding left=10 + margin-left=20 => x = 30
+    doAssert approxEq(mr.x, 30.0f), "Expected margined x=30, got " & $mr.x
+    doAssert approxEq(mr.w, 100.0f)
+
+    let cSlab = bindings.getNodeById("clamped").get()
+    let cr = tree.nodes[cSlab].computedRect
+    doAssert approxEq(cr.w, 240.0f), "Expected max-width clamp 240, got " & $cr.w
+    doAssert approxEq(cr.h, 40.0f), "Expected min-height clamp 40, got " & $cr.h
+
+    let vecSlab = bindings.getNodeById("vec").get()
+    let vr = tree.nodes[vecSlab].computedRect
+    doAssert approxEq(vr.w, 32.0f) and approxEq(vr.h, 32.0f)
+    doAssert tree.nodes[vecSlab].children.len == 0
+
+    let selSlab = bindings.getNodeById("sel").get()
+    doAssert tree.nodes[selSlab].kind == nkButton
+    doAssert tree.nodes[selSlab].text == "Beta ▾"
+    tree.nodes[selSlab].onClick()
+    doAssert tree.nodes[selSlab].text == "Alpha ▾"
+
+    let taSlab = bindings.getNodeById("ta").get()
+    doAssert tree.nodes[taSlab].kind == nkTextInput
+    doAssert tree.nodes[taSlab].text == "Hello & Nim"
+
+    # Zero-JS inside <svg> must still be rejected
+    doAssert parseHtmlDoc("<svg><script>evil()</script></svg>").isErr()
+    echo "  [PASS] 6.2 Margin, min/max constraints & HTML5 tags verified."
+
 proc main() =
   echo "================================================================="
   echo ">>> STARTING PURE-NIM HTML5/CSS3 ENGINE TEST SUITE <<<"
@@ -437,6 +632,7 @@ proc main() =
   testMountAndFlexboxLayout(atlas)
   testPureNimReactivity(atlas)
   testRasterizerAndLeakStress(atlas)
+  testExtendedCssAndHtmlTags(atlas)
   echo "\n================================================================="
   echo ">>> [SUCCESS] ALL HTML5/CSS3 TESTS PASSED WITH 0 LEAKS! <<<"
   echo "================================================================="
