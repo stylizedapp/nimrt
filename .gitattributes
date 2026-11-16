@@ -1,0 +1,18 @@
+# Normalize line endings across platforms
+* text=auto eol=lf
+
+# Windows scripts and batch files use CRLF
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary files
+*.png binary
+*.spv binary
+*.ico binary
+*.ttf binary
+*.otf binary
+*.woff2 binary
+
+# Vendored QuickJS sources
+src/nimui/js/vendor/** linguist-vendored
