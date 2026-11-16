@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <title>NimUI Pomodoro Debug Timer (1–3s) • Nim + QuickJS</title>
+  <style>
+    * {
+      color: #F8FAFC;
+    }
+
+    body {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      width: 100%;
+      height: 100%;
+      background-color: #090A0F;
+      padding: 28px;
+      gap: 18px;
+    }
+
+    .topbar {
+      display: flex;
+      flex-direction: row;
+      justify-content: space-between;
+      align-items: center;
+      width: 780px;
+      padding: 14px 20px;
+      background-color: #11131C;
+      border: 1px solid #262A3D;
+      border-radius: 12px;
+    }
+
+    .brand {
+      font-size: 16px;
+      color: #E2E8F0;
+    }
+
+    .pill {
+      padding: 6px 12px;
+      background-color: #1E1B4B;
+      border: 1px solid #4F46E5;
+      border-radius: 8px;
+      font-size: 12px;
+      color: #C7D2FE;
+    }
+
+    .card {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      width: 780px;
+      padding: 32px;
+      gap: 18px;
+      background-color: #11131C;
+      border: 2px solid #312E81;
+      border-radius: 18px;
+    }
+
+    .phase-badge {
+      padding: 6px 16px;
+      background-color: #312E81;
+      border: 1px solid #6366F1;
+      border-radius: 999px;
+      font-size: 13px;
+      color: #E0E7FF;
+    }
+
+    .timer-display {
+      padding: 18px 42px;
+      background-color: #0B0D14;
+      border: 1px solid #1E293B;
+      border-radius: 14px;
+      font-size: 56px;
+      color: #F8FAFC;
+      text-align: center;
+    }
+
+    .status-line {
+      font-size: 14px;
+      color: #94A3B8;
+      text-align: center;
+    }
+
+    .row {
+      display: flex;
+      flex-direction: row;
+      justify-content: center;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .btn {
+      padding: 10px 18px;
+      background-color: #1E293B;
+      border: 1px solid #334155;
+      border-radius: 10px;
+      font-size: 13px;
+      color: #F8FAFC;
+    }
+
+    .btn:hover {
+      background-color: #334155;
+      border-color: #64748B;
+    }
+
+    .btn:active {
+      background-color: #0F172A;
+    }
+
+    .btn-primary {
+      background-color: #4F46E5;
+      border-color: #6366F1;
+    }
+
+    .btn-primary:hover {
+      background-color: #6366F1;
+      border-color: #818CF8;
+    }
+
+    .btn-warn {
+      background-color: #78350F;
+      border-color: #F59E0B;
+    }
+
+    .btn-warn:hover {
+      background-color: #92400E;
+    }
+
+    .btn-nim {
+      background-color: #064E3B;
+      border-color: #10B981;
+    }
+
+    .btn-nim:hover {
+      background-color: #065F46;
+    }
+
+    .footer-card {
+      display: flex;
+      flex-direction: row;
+      justify-content: space-between;
+      align-items: center;
+      width: 780px;
+      padding: 14px 20px;
+      background-color: #11131C;
+      border: 1px solid #262A3D;
+      border-radius: 12px;
+      gap: 12px;
+    }
+
+    .meta-text {
+      font-size: 13px;
+      color: #94A3B8;
+    }
+
+    .cycles-badge {
+      padding: 6px 14px;
+      background-color: #172554;
+      border: 1px solid #3B82F6;
+      border-radius: 8px;
+      font-size: 13px;
+      color: #BFDBFE;
+    }
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <span class="brand">NimUI Pomodoro Lab (1–3s Debug Mode)</span>
+    <span id="nim-bridge-pill" class="pill" data-text="nim-pomo-sync">Nim Bridge: Ready</span>
+  </div>
+
+  <div id="pomo-card" class="card">
+    <div id="pomo-phase" class="phase-badge">FOCUS • 3.0s</div>
+    <div id="pomo-time" class="timer-display">00:03.0</div>
+    <p id="pomo-status" class="status-line">Готов к запуску (QuickJS + Rust/Zig/Python Safety Checks)</p>
+
+    <div class="row">
+      <button id="btn-start" class="btn btn-primary">Старт</button>
+      <button id="btn-pause" class="btn btn-warn">Пауза</button>
+      <button id="btn-reset" class="btn">Сброс</button>
+      <button id="btn-nim-ping" class="btn btn-nim" data-click="nim-ping">Nim Ping</button>
+    </div>
+
+    <div class="row">
+      <button id="btn-preset-1s" class="btn">1 сек (Быстрый)</button>
+      <button id="btn-preset-2s" class="btn">2 сек (Средний)</button>
+      <button id="btn-preset-3s" class="btn">3 сек (Помодоро)</button>
+    </div>
+  </div>
+
+  <div class="footer-card">
+    <span class="meta-text">Логика таймера: QuickJS (strict, no var, ===, caps) • Биндинг: Nim Signal</span>
+    <span id="pomo-cycles" class="cycles-badge">Циклов: 0</span>
+  </div>
+
+  <script data-caps="dom,timers,nim,console">
+    "use strict";
+
+    const hasNativeUi = typeof ui !== "undefined";
+    const hasNativeNim = typeof Nim !== "undefined";
+
+    const domUi = hasNativeUi ? ui : {
+      text: function(id, v) {
+        const el = document.getElementById(id);
+        if (!el) return "";
+        if (v === undefined) return el.textContent;
+        el.textContent = String(v);
+        return undefined;
+      },
+      style: function(id, prop, v) {
+        const el = document.getElementById(id);
+        if (el && el.style) {
+          el.style[prop] = v;
+        }
+      },
+      on: function(id, ev, fn) {
+        const el = document.getElementById(id);
+        if (el) {
+          el.addEventListener(ev, fn);
+        }
+      }
+    };
+
+    const nimBridge = hasNativeNim ? Nim : {
+      _sigs: { "nim-pomo-sync": "Nim Bridge: Ready (Browser Mode)" },
+      call: function(name, a1, a2) {
+        if (name === "onPomodoroEvent") {
+          const msg = "Nim Sync [" + String(a1) + "]: " + String(a2);
+          nimBridge._sigs["nim-pomo-sync"] = msg;
+          domUi.text("nim-bridge-pill", msg);
+          return msg;
+        }
+        return "";
+      },
+      get: function(sig) {
+        return nimBridge._sigs[sig] || "";
+      },
+      set: function(sig, val) {
+        nimBridge._sigs[sig] = String(val);
+        domUi.text("nim-bridge-pill", String(val));
+      }
+    };
+
+    let durationMs = 3000;
+    let remainingMs = 3000;
+    let timerId = 0;
+    let running = false;
+    let cycles = 0;
+
+    function formatMs(ms) {
+      const clamped = ms < 0 ? 0 : ms;
+      const tenthsTotal = Math.floor((clamped + 50) / 100);
+      const secs = Math.floor(tenthsTotal / 10);
+      const tenths = tenthsTotal % 10;
+      const secStr = secs < 10 ? "0" + String(secs) : String(secs);
+      return "00:" + secStr + "." + String(tenths);
+    }
+
+    function renderTimer() {
+      domUi.text("pomo-time", formatMs(remainingMs));
+      domUi.text("pomo-cycles", "Циклов: " + String(cycles));
+    }
+
+    function stopInterval() {
+      if (timerId !== 0) {
+        clearInterval(timerId);
+        timerId = 0;
+      }
+      running = false;
+    }
+
+    function selectPreset(ms, label) {
+      stopInterval();
+      durationMs = ms;
+      remainingMs = ms;
+      domUi.text("pomo-phase", "FOCUS • " + label);
+      domUi.style("pomo-phase", "backgroundColor", "#312E81");
+      domUi.style("pomo-phase", "borderColor", "#6366F1");
+      domUi.style("pomo-card", "borderColor", "#312E81");
+      domUi.text("pomo-status", "Выбран пресет " + label + " — нажмите Старт");
+      renderTimer();
+      nimBridge.call("onPomodoroEvent", "preset", label);
+    }
+
+    function onTick() {
+      if (!running) {
+        return;
+      }
+      remainingMs -= 100;
+      if (remainingMs <= 0) {
+        remainingMs = 0;
+        stopInterval();
+        cycles += 1;
+        domUi.text("pomo-phase", "DONE • ПЕРЕРЫВ");
+        domUi.style("pomo-phase", "backgroundColor", "#064E3B");
+        domUi.style("pomo-phase", "borderColor", "#10B981");
+        domUi.style("pomo-card", "borderColor", "#10B981");
+        domUi.text("pomo-status", "Цикл #" + String(cycles) + " завершён! Таймер сработал.");
+        renderTimer();
+        nimBridge.call("onPomodoroEvent", "completed", "cycle=" + String(cycles));
+        console.log("Pomodoro cycle completed:", cycles);
+        return;
+      }
+      renderTimer();
+    }
+
+    function startTimer() {
+      if (running) {
+        return;
+      }
+      if (remainingMs <= 0) {
+        remainingMs = durationMs;
+      }
+      running = true;
+      domUi.text("pomo-phase", "RUNNING • " + formatMs(durationMs));
+      domUi.style("pomo-phase", "backgroundColor", "#4F46E5");
+      domUi.style("pomo-phase", "borderColor", "#818CF8");
+      domUi.style("pomo-card", "borderColor", "#4F46E5");
+      domUi.text("pomo-status", "Таймер активен...");
+      timerId = setInterval(onTick, 100);
+      nimBridge.call("onPomodoroEvent", "start", formatMs(remainingMs));
+    }
+
+    function pauseTimer() {
+      if (!running) {
+        return;
+      }
+      stopInterval();
+      domUi.text("pomo-phase", "PAUSED");
+      domUi.style("pomo-phase", "backgroundColor", "#78350F");
+      domUi.style("pomo-phase", "borderColor", "#F59E0B");
+      domUi.style("pomo-card", "borderColor", "#F59E0B");
+      domUi.text("pomo-status", "Пауза на " + formatMs(remainingMs));
+      nimBridge.call("onPomodoroEvent", "pause", formatMs(remainingMs));
+    }
+
+    function resetTimer() {
+      stopInterval();
+      remainingMs = durationMs;
+      domUi.text("pomo-phase", "FOCUS • " + String(durationMs / 1000) + ".0s");
+      domUi.style("pomo-phase", "backgroundColor", "#312E81");
+      domUi.style("pomo-phase", "borderColor", "#6366F1");
+      domUi.style("pomo-card", "borderColor", "#312E81");
+      domUi.text("pomo-status", "Сброс таймера выполнен");
+      renderTimer();
+      nimBridge.call("onPomodoroEvent", "reset", formatMs(remainingMs));
+    }
+
+    domUi.on("btn-start", "click", startTimer);
+    domUi.on("btn-pause", "click", pauseTimer);
+    domUi.on("btn-reset", "click", resetTimer);
+    domUi.on("btn-preset-1s", "click", function() { selectPreset(1000, "1.0s"); });
+    domUi.on("btn-preset-2s", "click", function() { selectPreset(2000, "2.0s"); });
+    domUi.on("btn-preset-3s", "click", function() { selectPreset(3000, "3.0s"); });
+
+    if (!hasNativeNim) {
+      domUi.on("btn-nim-ping", "click", function() {
+        nimBridge.set("nim-pomo-sync", "Nim Ping (Browser Preview)");
+      });
+    }
+
+    renderTimer();
+    console.log("Pomodoro QuickJS initialized with durationMs =", durationMs);
+  </script>
+</body>
+</html>

@@ -17,6 +17,9 @@ import nimui/clipboard
 import nimui/multiline
 import nimui/rasterizer
 import nimui/html_css
+import nimui/js/js_validator
+import nimui/js/js_engine
+import nimui/js/html_js_bridge
 import corex/signals
 import corex/result
 import corex/slab
@@ -32,6 +35,9 @@ export clipboard
 export multiline
 export rasterizer
 export html_css
+export js_validator
+export js_engine
+export html_js_bridge
 export signals
 export result
 export slab

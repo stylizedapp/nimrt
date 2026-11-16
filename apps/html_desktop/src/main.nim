@@ -10,7 +10,7 @@
 ##   deterministic Software SDF PNGs via --headless-test / --screenshot
 ## =============================================================================
 
-import std/[os, strutils]
+import std/[os, strutils, monotimes, times]
 import corex
 import corex/unicode
 import corex/signals
@@ -38,6 +38,9 @@ type
     tree: UiTree
     rt: ReactiveRuntime
     bindings: HtmlBindingRegistry
+    jsSession: HtmlJsSession
+    allowJs: bool
+    nimPingCount: int
 
     htmlPath: string
     domNodesCount: int
@@ -65,10 +68,15 @@ type
     appNameSig: Signal[string]
     winTitleSig: Signal[string]
     ipcUrlSig: Signal[string]
+    nimPomoSyncSig: Signal[string]
 
 proc defaultShowcaseHtmlPath(): string =
   let srcDir = currentSourcePath().parentDir()
   normalizedPath(srcDir.parentDir() / "ui" / "showcase.html")
+
+proc defaultPomodoroHtmlPath(): string =
+  let srcDir = currentSourcePath().parentDir()
+  normalizedPath(srcDir.parentDir() / "ui" / "pomodoro.html")
 
 proc formatSummary(app: HtmlDesktopApp): string {.raises: [].} =
   app.appName & " • " & app.winTitle & " • " & app.ipcUrl
@@ -220,9 +228,18 @@ proc registerShowcaseBindings(app: HtmlDesktopApp) {.raises: [].} =
   app.bindings.bindTextSignal("active-profile-pill", app.activeProfilePillSig)
   app.bindings.bindTextSignal("log-latest", app.logLatestSig)
   app.bindings.bindTextSignal("footer-status", app.footerStatusSig)
+  app.bindings.bindTextSignal("nim-pomo-sync", app.nimPomoSyncSig)
+
+  app.bindings.onClick("nim-ping", proc() {.closure, gcsafe, raises: [].} =
+    {.cast(gcsafe).}:
+      inc app.nimPingCount
+      if app.nimPomoSyncSig.runtime != nil:
+        app.nimPomoSyncSig.set("Nim Ping #" & $app.nimPingCount & " (Pure-Nim Handler)")
+  )
 
 proc loadHtmlSource(app: HtmlDesktopApp, rawHtml: string) =
   resetControls()
+  app.jsSession.destroy()
   app.bindings.destroy()
   app.tree.destroy()
   app.rt.destroy()
@@ -245,48 +262,76 @@ proc loadHtmlSource(app: HtmlDesktopApp, rawHtml: string) =
   app.activeProfilePillSig = app.rt.createSignal("")
   app.logLatestSig = app.rt.createSignal("")
   app.footerStatusSig = app.rt.createSignal("")
+  app.nimPomoSyncSig = app.rt.createSignal("Nim Bridge: Ready")
 
   app.registerShowcaseBindings()
 
-  let parsed = parseHtmlDoc(rawHtml)
-  if parsed.isOk():
-    let doc = parsed.get()
-    let sheet = parseCssSheet(doc.embeddedCss)
-    app.domNodesCount = doc.nodes.len
-    app.cssRulesCount = sheet.rules.len
-
-    let mountRes = mountHtml(app.tree, addr app.rt, doc, sheet, app.bindings)
-    if mountRes.isErr():
-      echo "[ERROR] Failed to mount HTML: ", mountRes.error()
+  if app.allowJs:
+    let sessRes = initHtmlJsSession(app.alloc, app.tree, app.rt, app.bindings)
+    if sessRes.isOk():
+      app.jsSession = sessRes.get()
+      app.jsSession.registerNimFunc("onPomodoroEvent", proc(a1, a2: string): string {.closure, gcsafe, raises: [].} =
+        {.cast(gcsafe).}:
+          let msg = "Nim Sync [" & a1 & "]: " & a2
+          if app.nimPomoSyncSig.runtime != nil:
+            app.nimPomoSyncSig.set(msg)
+          msg
+      )
+      let mountRes = app.jsSession.mountHtmlWithJs(rawHtml)
+      if mountRes.isErr():
+        let errMsg = mountRes.error()
+        echo "[ERROR] JS/HTML Philosophy Rejection: ", errMsg
+        let fallbackErrHtml = """
+          <div style="display: flex; flex-direction: column; padding: 32px; gap: 14px; background-color: #1A0E12; border: 2px solid #F43F5E; border-radius: 12px; width: 100%; height: 100%;">
+            <h1 style="color: #FB7185; font-size: 22px;">QuickJS Philosophy / Policy Rejection</h1>
+            <p style="color: #F8FAFC; font-size: 14px;">""" & errMsg & """</p>
+          </div>
+        """
+        discard mountHtmlString(app.tree, addr app.rt, fallbackErrHtml, "", app.bindings)
     else:
-      # Sync app mirror fields with seeded HTML <input value="..."> signals if present
-      if app.appNameSig.get().len > 0:
-        app.appName = app.appNameSig.get()
-      if app.winTitleSig.get().len > 0:
-        app.winTitle = app.winTitleSig.get()
-      if app.ipcUrlSig.get().len > 0:
-        app.ipcUrl = app.ipcUrlSig.get()
-      app.kpiDomSig.set($app.domNodesCount & " узлов • " & $app.cssRulesCount & " правил")
+      echo "[ERROR] Failed to init QuickJS session: ", sessRes.error()
   else:
-    let errMsg = parsed.error()
-    let fallbackErrHtml = """
-      <div style="display: flex; flex-direction: column; padding: 32px; gap: 14px; background-color: #1A0E12; border: 2px solid #F43F5E; border-radius: 12px; width: 100%; height: 100%;">
-        <h1 style="color: #FB7185; font-size: 22px;">Zero-JS Policy Rejection — Небезопасный HTML файл отклонён</h1>
-        <p style="color: #F8FAFC; font-size: 14px;">""" & errMsg & """</p>
-        <p style="color: #94A3B8; font-size: 13px;">Движок NimUI блокирует теги &lt;script&gt;, inline-обработчики on* и javascript: URI на этапе разбора DOM до выделения UI-узлов.</p>
-      </div>
-    """
-    discard mountHtmlString(app.tree, addr app.rt, fallbackErrHtml, "", app.bindings)
+    let parsed = parseHtmlDoc(rawHtml)
+    if parsed.isOk():
+      let doc = parsed.get()
+      let sheet = parseCssSheet(doc.embeddedCss)
+      app.domNodesCount = doc.nodes.len
+      app.cssRulesCount = sheet.rules.len
+
+      let mountRes = mountHtml(app.tree, addr app.rt, doc, sheet, app.bindings)
+      if mountRes.isErr():
+        echo "[ERROR] Failed to mount HTML: ", mountRes.error()
+      else:
+        # Sync app mirror fields with seeded HTML <input value="..."> signals if present
+        if app.appNameSig.get().len > 0:
+          app.appName = app.appNameSig.get()
+        if app.winTitleSig.get().len > 0:
+          app.winTitle = app.winTitleSig.get()
+        if app.ipcUrlSig.get().len > 0:
+          app.ipcUrl = app.ipcUrlSig.get()
+        app.kpiDomSig.set($app.domNodesCount & " узлов • " & $app.cssRulesCount & " правил")
+    else:
+      let errMsg = parsed.error()
+      let fallbackErrHtml = """
+        <div style="display: flex; flex-direction: column; padding: 32px; gap: 14px; background-color: #1A0E12; border: 2px solid #F43F5E; border-radius: 12px; width: 100%; height: 100%;">
+          <h1 style="color: #FB7185; font-size: 22px;">Zero-JS Policy Rejection — Небезопасный HTML файл отклонён</h1>
+          <p style="color: #F8FAFC; font-size: 14px;">""" & errMsg & """</p>
+          <p style="color: #94A3B8; font-size: 13px;">Движок NimUI блокирует теги &lt;script&gt;, inline-обработчики on* и javascript: URI на этапе разбора DOM до выделения UI-узлов.</p>
+        </div>
+      """
+      discard mountHtmlString(app.tree, addr app.rt, fallbackErrHtml, "", app.bindings)
 
   app.tree.layoutTree(float32(DesktopWidth), float32(DesktopHeight), app.fontAtlas)
 
-proc newHtmlDesktopApp(alloc: Allocator, atlas: FontAtlas, htmlPath: string): HtmlDesktopApp =
+proc newHtmlDesktopApp(alloc: Allocator, atlas: FontAtlas, htmlPath: string, allowJs: bool = false): HtmlDesktopApp =
   result = HtmlDesktopApp(
     alloc: alloc,
     fontAtlas: atlas,
     tree: initUiTree(alloc),
     rt: initReactiveRuntime(alloc),
     bindings: initHtmlBindingRegistry(),
+    allowJs: allowJs,
+    nimPingCount: 0,
     htmlPath: htmlPath,
     domNodesCount: 0,
     cssRulesCount: 0,
@@ -303,6 +348,7 @@ proc newHtmlDesktopApp(alloc: Allocator, atlas: FontAtlas, htmlPath: string): Ht
 
 proc destroyDesktopApp(app: HtmlDesktopApp) =
   resetControls()
+  app.jsSession.destroy()
   app.bindings.destroy()
   app.tree.destroy()
   app.rt.destroy()
@@ -398,7 +444,81 @@ proc runHeadlessVerification(htmlPath, screenshotInitial, screenshotInteractive:
 
   echo "  [PASS] HTML5/CSS3 Desktop Runner verified (DOM nodes & 0-leak ORC audit)."
 
-proc runInteractiveWindow(htmlPath: string) =
+proc runPomodoroVerification(htmlPath, screenshotInitial, screenshotCompleted: string) =
+  echo "================================================================="
+  echo ">>> POMODORO 1-3s HYBRID NIM + QUICKJS HEADLESS VERIFICATION <<<"
+  echo "================================================================="
+  doAssert fileExists(htmlPath), "Pomodoro HTML not found: " & htmlPath
+  let rawHtml = readFile(htmlPath)
+  let atlas = initFontAtlas("Segoe UI", 32.0f)
+
+  testWithLeakCheck("Pomodoro 1-3s Hybrid Nim + QuickJS Timer & Zero-Leak Audit"):
+    let app = HtmlDesktopApp(
+      alloc: testAlloc,
+      fontAtlas: atlas,
+      tree: initUiTree(testAlloc),
+      rt: initReactiveRuntime(testAlloc),
+      bindings: initHtmlBindingRegistry(),
+      allowJs: true,
+      nimPingCount: 0,
+      htmlPath: htmlPath,
+      activeNavIdx: 0,
+      loadFactor: 1,
+      inspectClicks: 0,
+      profileName: "Pomodoro",
+      appName: "NimUI Pomodoro",
+      winTitle: "Pomodoro Debug",
+      ipcUrl: "ipc://nimui/pomodoro"
+    )
+    defer: app.destroyDesktopApp()
+
+    app.loadHtmlSource(rawHtml)
+    doAssert app.jsSession.getElementText("pomo-time") == "00:03.0",
+      "Expected initial 00:03.0, got " & app.jsSession.getElementText("pomo-time")
+
+    discard app.tree.buildDrawInstances(atlas)
+    if screenshotInitial.len > 0:
+      let pDir = screenshotInitial.parentDir()
+      if pDir.len > 0 and not dirExists(pDir):
+        createDir(pDir)
+      var fbInit = initSoftwareFramebuffer(DesktopWidth, DesktopHeight, ColBgClear)
+      fbInit.renderInstancesToBuffer(app.tree.drawInstances, atlas, clearColor = ColBgClear)
+      doAssert fbInit.savePng(screenshotInitial), "Failed saving initial pomodoro screenshot"
+
+    # Switch to 1.0s debug preset and start
+    app.triggerById("btn-preset-1s")
+    doAssert app.jsSession.getElementText("pomo-time") == "00:01.0"
+    app.triggerById("btn-start")
+    doAssert app.jsSession.hasActiveTimers()
+
+    for step in 0 ..< 10:
+      let tickRes = app.jsSession.tick(100)
+      doAssert tickRes.isOk(), "QuickJS timer tick failed: " & tickRes.error()
+
+    doAssert app.jsSession.getElementText("pomo-time") == "00:00.0"
+    doAssert app.jsSession.getElementText("pomo-cycles") == "Циклов: 1"
+    doAssert app.jsSession.getElementText("pomo-phase") == "DONE • ПЕРЕРЫВ"
+    doAssert app.nimPomoSyncSig.get() == "Nim Sync [completed]: cycle=1",
+      "Unexpected Nim sync signal: " & app.nimPomoSyncSig.get()
+
+    # Also trigger Pure-Nim handler button on the same page
+    app.triggerById("btn-nim-ping")
+    doAssert app.nimPingCount == 1
+    doAssert app.nimPomoSyncSig.get() == "Nim Ping #1 (Pure-Nim Handler)"
+
+    app.tree.layoutTree(float32(DesktopWidth), float32(DesktopHeight), atlas)
+    discard app.tree.buildDrawInstances(atlas)
+    if screenshotCompleted.len > 0:
+      let pDir = screenshotCompleted.parentDir()
+      if pDir.len > 0 and not dirExists(pDir):
+        createDir(pDir)
+      var fbDone = initSoftwareFramebuffer(DesktopWidth, DesktopHeight, ColBgClear)
+      fbDone.renderInstancesToBuffer(app.tree.drawInstances, atlas, clearColor = ColBgClear)
+      doAssert fbDone.savePng(screenshotCompleted), "Failed saving completed pomodoro screenshot"
+
+  echo "  [PASS] Pomodoro 1-3s Hybrid Nim + QuickJS verified (0 leaks)."
+
+proc runInteractiveWindow(htmlPath: string, allowJs: bool) =
   if not fileExists(htmlPath):
     echo "[FATAL] HTML file does not exist: ", htmlPath
     return
@@ -410,11 +530,19 @@ proc runInteractiveWindow(htmlPath: string) =
     echo "[FATAL] Vulkan init failed: ", backendRes.error
     return
   var backend = backendRes.get()
-  let app = newHtmlDesktopApp(heapAllocator(), atlas, htmlPath)
+  let app = newHtmlDesktopApp(heapAllocator(), atlas, htmlPath, allowJs)
   var mouseX = 0.0f
   var mouseY = 0.0f
+  var lastTickTime = getMonoTime()
 
   while win.running:
+    let nowTime = getMonoTime()
+    let dtMs = int(inMilliseconds(nowTime - lastTickTime))
+    if dtMs > 0:
+      lastTickTime = nowTime
+      if app.allowJs and app.jsSession.hasActiveTimers():
+        discard app.jsSession.tick(dtMs)
+
     let events = win.pollEvents()
     for ev in events:
       case ev.kind
@@ -456,7 +584,10 @@ proc runInteractiveWindow(htmlPath: string) =
       app.tree.isDirty = true
 
     if not app.tree.isDirty and not app.tree.isLayoutDirty and win.running:
-      win.waitEvents(16)
+      if app.allowJs and app.jsSession.hasActiveTimers():
+        sleep(16)
+      else:
+        win.waitEvents(16)
 
   app.destroyDesktopApp()
   backend.destroy()
@@ -464,6 +595,8 @@ proc runInteractiveWindow(htmlPath: string) =
 proc main() =
   var htmlPath = defaultShowcaseHtmlPath()
   var headless = false
+  var pomodoroTest = false
+  var allowJs = false
   var screenshotInitial = ""
   var screenshotInteractive = ""
 
@@ -476,20 +609,35 @@ proc main() =
     elif args[i] == "--headless-test":
       headless = true
       inc i
+    elif args[i] == "--pomodoro":
+      htmlPath = defaultPomodoroHtmlPath()
+      allowJs = true
+      inc i
+    elif args[i] == "--pomodoro-test":
+      htmlPath = defaultPomodoroHtmlPath()
+      pomodoroTest = true
+      allowJs = true
+      inc i
+    elif args[i] == "--allow-js":
+      allowJs = true
+      inc i
     elif args[i] == "--screenshot" and i + 1 < args.len:
       screenshotInitial = args[i + 1]
-      headless = true
       inc(i, 2)
     elif args[i] == "--screenshot-interactive" and i + 1 < args.len:
       screenshotInteractive = args[i + 1]
-      headless = true
       inc(i, 2)
     else:
       inc i
 
-  if headless:
+  if htmlPath.endsWith("pomodoro.html"):
+    allowJs = true
+
+  if pomodoroTest:
+    runPomodoroVerification(htmlPath, screenshotInitial, screenshotInteractive)
+  elif headless or screenshotInitial.len > 0 or screenshotInteractive.len > 0:
     runHeadlessVerification(htmlPath, screenshotInitial, screenshotInteractive)
   else:
-    runInteractiveWindow(htmlPath)
+    runInteractiveWindow(htmlPath, allowJs)
 
 main()

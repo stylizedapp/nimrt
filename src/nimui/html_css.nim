@@ -34,9 +34,14 @@ type
     parent*: int
     children*: seq[int]
 
+  HtmlScriptBlock* = object
+    code*: string
+    caps*: string
+
   HtmlDoc* = object
     nodes*: seq[HtmlNode]
     embeddedCss*: string
+    scripts*: seq[HtmlScriptBlock]
 
   CssPseudoKind* = enum
     cpkNone
@@ -127,7 +132,7 @@ const
     "area", "base", "br", "col", "embed", "hr", "img",
     "input", "link", "meta", "param", "source", "track", "wbr"
   ]
-  HtmlSkipMountTags = ["head", "style", "meta", "link", "title"]
+  HtmlSkipMountTags = ["head", "style", "script", "meta", "link", "title"]
 
 # =============================================================================
 # Exception-Free ASCII, String & Number Helpers ({.raises: [].})
@@ -329,7 +334,7 @@ proc parseFloatSafe(s: string): Option[float32] {.raises: [].} =
 
   some(float32(sign * val))
 
-proc parseCssLength(s: string): Option[float32] {.raises: [].} =
+proc parseCssLength*(s: string): Option[float32] {.raises: [].} =
   let t = toLowerAscii(stripAscii(s))
   if t.len == 0:
     return none[float32]()
@@ -466,10 +471,11 @@ proc isJavascriptUrl(val: string): bool {.raises: [].} =
   let t = stripAscii(val)
   startsWithIgnoreCase(t, "javascript:")
 
-proc parseHtmlDoc*(html: string): Result[HtmlDoc, string] {.raises: [].} =
+proc parseHtmlDoc*(html: string, allowJs: bool = false): Result[HtmlDoc, string] {.raises: [].} =
   var doc = HtmlDoc(
     nodes: @[HtmlNode(kind: hnkDocument, parent: -1, children: @[])],
-    embeddedCss: ""
+    embeddedCss: "",
+    scripts: @[]
   )
   var stack: seq[int] = @[0]
   var pos = 0
@@ -506,7 +512,7 @@ proc parseHtmlDoc*(html: string): Result[HtmlDoc, string] {.raises: [].} =
         while idx < html.len and html[idx] != '>' and not isSpaceChar(html[idx]):
           inc idx
         let closeTag = toLowerAscii(html[nameStart ..< idx])
-        if closeTag == "script":
+        if closeTag == "script" and not allowJs:
           return resErr[HtmlDoc]("Zero-JS policy violation: <script> tag is forbidden")
         while idx < html.len and html[idx] != '>':
           inc idx
@@ -537,7 +543,7 @@ proc parseHtmlDoc*(html: string): Result[HtmlDoc, string] {.raises: [].} =
       while idx < html.len and not isSpaceChar(html[idx]) and html[idx] != '>' and html[idx] != '/':
         inc idx
       let tagName = toLowerAscii(html[tagStart ..< idx])
-      if tagName == "script":
+      if tagName == "script" and not allowJs:
         return resErr[HtmlDoc]("Zero-JS policy violation: <script> tag is forbidden")
 
       var node = HtmlNode(
@@ -616,6 +622,31 @@ proc parseHtmlDoc*(html: string): Result[HtmlDoc, string] {.raises: [].} =
       let nodeIdx = doc.nodes.len
       doc.nodes.add(node)
       doc.nodes[curParent].children.add(nodeIdx)
+
+      if tagName == "script":
+        if doc.nodes[nodeIdx].getAttr("src").isSome():
+          return resErr[HtmlDoc]("Zig-Explicitness violation: external <script src=...> is forbidden; use inline <script>")
+        var capsVal = ""
+        let capsOpt = doc.nodes[nodeIdx].getAttr("data-caps")
+        if capsOpt.isSome():
+          capsVal = capsOpt.get()
+        if not selfClosing:
+          let jsStart = pos
+          var jsEnd = pos
+          while jsEnd < html.len:
+            if html[jsEnd] == '<' and startsWithIgnoreCase(html, "</script", jsEnd):
+              break
+            inc jsEnd
+          let jsChunk = stripAscii(html[jsStart ..< jsEnd])
+          if jsChunk.len > 0:
+            doc.scripts.add(HtmlScriptBlock(code: jsChunk, caps: capsVal))
+          pos = jsEnd
+          if pos < html.len:
+            while pos < html.len and html[pos] != '>':
+              inc pos
+            if pos < html.len and html[pos] == '>':
+              inc pos
+        continue
 
       if tagName == "style" and not selfClosing:
         # Capture raw CSS until </style>
@@ -1614,7 +1645,7 @@ proc attachReactiveBindings(
         if rt != nil and fn != nil:
           bindText(addr tree, rt, textSlab, fn)
 
-proc propagateOnClickRecursive(tree: var UiTree, nodeId: SlabId, cb: HtmlClickProc) {.raises: [].} =
+proc propagateOnClickRecursive*(tree: var UiTree, nodeId: SlabId, cb: HtmlClickProc) {.raises: [].} =
   if cb.isNil or not tree.nodes.contains(nodeId):
     return
   let childCount = tree.nodes[nodeId].children.len

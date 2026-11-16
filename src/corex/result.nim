@@ -10,6 +10,9 @@
 
 import std/macros
 
+template trustedUnsafe*() {.pragma.}
+  ## Marks an audited low-level proc as explicitly permitted under `--mem-safe` / `--safe-mode`.
+
 type
   ResultDefect* = object of Defect
     ## Fatal assertion failure when unwrapping an Err Result or unwrapErr on an Ok Result.

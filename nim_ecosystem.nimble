@@ -45,11 +45,26 @@ task test_ui, "Run NimUI layout, widget, and Zero-JS HTML/CSS tests":
   exec "nim c -r tests/test_nimui_widgets.nim"
   exec "nim c -r tests/test_nimui_html_css.nim"
 
+task test_js, "Run NimUI + QuickJS hybrid engine, philosophy checks & Pomodoro tests":
+  exec "nim c -r tests/test_nimui_quickjs.nim"
+
 task test_showcase, "Run automated headless verification of all 4 showcase apps":
   exec "nim c -r tests/test_showcase_apps.nim"
 
 task html_desktop, "Run standalone HTML5/CSS3 Desktop Renderer (Tauri alternative)":
   exec "nim c -r apps/html_desktop/src/main.nim"
+
+task pomodoro, "Run interactive 1-3s Pomodoro Debug Timer (Nim + QuickJS + Vulkan SDF)":
+  exec "nim c -r apps/html_desktop/src/main.nim --pomodoro"
+
+task pomodoro_test, "Run headless verification of 1-3s Pomodoro Timer":
+  exec "nim c -r apps/html_desktop/src/main.nim --pomodoro-test"
+
+task build_compiler, "Build Hybrid Memory-Safe Nim Compiler (bin/nim_safe.exe)":
+  exec "nim c --skipParentCfg:on -d:release -o:bin/nim_safe.exe compiler/nim_safe.nim"
+
+task test_compiler, "Run Hybrid Memory-Safe Compiler (--mem-safe, --safe-mode, --check-safe-atf) suite":
+  exec "nim c -r tests/test_safe_compiler.nim"
 
 task studio, "Run NimUI HTML5/CSS3 Zero-JS Studio":
   exec "nim c -r apps/html_css_studio/src/main.nim"

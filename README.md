@@ -4,8 +4,8 @@
 
 Проект сочетает три инженерных принципа:
 - **Безопасность (как в Rust):** строгие типы ошибок `Result[T, E]` / `Option[T]`, контракт `{.raises: [].}`, детерминированная память `--mm:orc --threads:on --panics:on` и автоматический аудит утечек через `TrackingAllocator` (`0 bytes leaked`).
-- **Явность (как в Zig):** явная передача аллокаторов (`Allocator`, `Arena`, `Slab[T]`), отсутствие скрытых глобальных состояний, явный реестр привязок `HtmlBindingRegistry` без скрытого скриптинга и `eval`.
-- **Простота (как в Python):** лаконичный декларативный UI DSL на Nim и нативный **Zero-JS HTML5/CSS3** рендеринг поверх собственного **Vulkan 1.1+ Instanced SDF** движка.
+- **Явность (как в Zig):** явная передача аллокаторов (`Allocator`, `Arena`, `Slab[T]`), отсутствие скрытых глобальных состояний, явный реестр привязок `HtmlBindingRegistry` и явные разрешения возможностей `<script data-caps="...">` без скрытого `eval`.
+- **Простота (как в Python):** лаконичный декларативный UI DSL на Nim, нативный HTML5/CSS3 рендеринг поверх **Vulkan 1.1+ Instanced SDF**, а также опциональный гибридный слой **QuickJS** (`ui.*`, `Nim.*`) с проверками в духе философии проекта.
 
 ---
 
@@ -16,7 +16,8 @@ nim/
 ├── src/
 │   ├── corex.nim / corex/   # Базовый системный слой: память, типы, ОС, сигналы, Unicode
 │   ├── algx.nim  / algx/    # Алгоритмы и структуры данных (Radix Sort, SwissTable, SIMD)
-│   └── nimui.nim / nimui/   # UI-фреймворк, Flexbox-лейаут, виджеты, HTML5/CSS3 и Vulkan SDF
+│   └── nimui.nim / nimui/   # UI-фреймворк, Flexbox-лейаут, виджеты, HTML5/CSS3, QuickJS и Vulkan SDF
+├── compiler/                # Гибридный memory-safe компилятор (--mem-safe, --safe-mode, --check-safe-atf)
 ├── apps/
 │   ├── html_desktop/        # Замена Tauri/Electron: нативный рендер .html на Vulkan 1.1+
 │   ├── html_css_studio/     # 4-вкладочная студия HTML5/CSS3, Zero-JS Sandbox и 1M VirtualList
@@ -50,11 +51,17 @@ nim/
 - `zeropack.nim` — Zero-Copy POD-сериализация и потоковый JSON.
 - `simdscan.nim`, `heap.nim` — 8-канальная векторизованная аналитика массивов и кэш-дружественная куча.
 
-### 3. `src/nimui/` — Графический UI-движок и HTML5/CSS3 (Zero-JS)
+### 3. `src/nimui/` — Графический UI-движок, HTML5/CSS3 и QuickJS Hybrid
 - `layout.nim` — быстрый O(N) Flexbox-движок (`LayoutPool`, `UiTree`, `UiNode`) с кэшем измерения текста и поддержкой прокрутки (`clipChildren`).
 - `controls.nim`, `dsl.nim`, `multiline.nim`, `clipboard.nim` — декларативный DSL (`Box`, `VStack`, `HStack`, `Text`, `Button`, `TextInput`, `VirtualList` на 1 000 000+ строк) и нативные виджеты: `Checkbox`, `RadioGroup`, `Slider`, `Dropdown`, `Tooltip`, многострочный `TextArea`.
-- `html_css.nim` — встроенный парсер HTML5 и каскада CSS3, Zero-JS санитайзер и компилятор HTML-документов прямо в `UiTree` с реактивной привязкой к Nim через `HtmlBindingRegistry`.
+- `html_css.nim` — встроенный парсер HTML5 и каскада CSS3, Zero-JS санитайзер (`allowJs = false` по умолчанию) и компилятор HTML-документов прямо в `UiTree` с реактивной привязкой к Nim через `HtmlBindingRegistry`.
+- `js/js_validator.nim`, `js/js_engine.nim`, `js/html_js_bridge.nim`, `js/qjs_bridge.c` — встроенный движок **QuickJS**, маршрутизирующий всю память через `corex/allocators.Allocator` (`0 bytes leaked`), со статическими/рантайм-проверками философии проекта (Rust: запрет `var`, `==`/`!=`, `eval`/`Function`/`with`/`__proto__`, лимит памяти, стека и шагов; Zig: явные `data-caps="dom,timers,nim,console"`; Python: `ui.*` и `Nim.*` API), позволяющий писать логику как на Nim, так и на JavaScript.
 - `gpu/vulkan_backend.nim`, `gpu/font_atlas.nim`, `gpu/shaders.nim`, `rasterizer.nim`, `window.nim` — аппаратный бэкенд **Vulkan 1.1+ (Instanced SDF)** за минимальное число Draw Call, LRU-атлас глифов (GDI/ClearType с фолбэком) и детерминированный **CPU Software Rasterizer** для headless-тестов и экспорта PNG.
+
+### 4. `compiler/` — Гибридный Memory-Safe компилятор (`bin/nim_safe.exe`)
+- `nim_safe.nim`, `safety_config.nim` — обёртка поверх компилятора Nim 2.2.12 с флагами `--mem-safe`, `--safe-mode`, `--check-safe-atf` и `--atf-report:<path>`, принудительно включающая `--mm:orc`, `--threads:on`, `--threadAnalysis:on`, `--panics:on`, runtime checks и `strictFuncs`.
+- `mem_safe_pass.nim` — AST/семантический проход безопасности: запрещает `cast` (`[MEM-SAFE-001]`), сырые `ptr`/`pointer` (`[MEM-SAFE-002]`), сырые `alloc`/`dealloc`/`copyMem` (`[MEM-SAFE-003]`), `{.emit.}` (`[MEM-SAFE-004]`), мутабельные глобалы (`[MEM-SAFE-005]`), утечки стековых адресов (`[MEM-SAFE-006]`), выполняет borrow checking через `varpartitions` и требует `{.raises: [].}` + `Result[T, E]` в `--safe-mode` (`[SAFE-MODE-001/002]`). Разрешает явно размеченный `{.trustedUnsafe.}` / `block trustedUnsafe:`.
+- `atf_c_checker.nim` — **After-Codegen-Finish (ATF)** верификатор сгенерированного C-кода (`--check-safe-atf`), проверяющий `.c` файлы до вызова GCC на запрещённые небезопасные вызовы CRT (`malloc`/`free`/`strcpy` и др., `[ATF-001]`), сырую арифметику указателей (`[ATF-002]`), корректность ORC-хуков (`[ATF-003]`), возврат адресов стека (`[ATF-004]`) и наличие проверок границ/переполнения (`[ATF-005]`).
 
 ---
 
@@ -89,11 +96,16 @@ nim/
 ### Запуск приложений через Nimble
 
 ```powershell
-# 1. Загрузить showcase.html в нативном окне Vulkan 1.1+ (замена Tauri)
+# 1. Загрузить showcase.html или отладочный Pomodoro таймер (1–3 сек, Nim + QuickJS)
 nimble html_desktop
+nimble pomodoro
 
-# Или открыть собственный Zero-JS .html файл:
+# Или открыть собственный .html файл (Zero-JS или с --allow-js):
 nim c -r apps/html_desktop/src/main.nim --file path/to/your_ui.html
+
+# Сборка и запуск гибридного memory-safe компилятора:
+nimble build_compiler
+bin/nim_safe.exe c -r --mem-safe --safe-mode --check-safe-atf tests/fixtures/safe_compiler/safe_valid.nim
 
 # 2. HTML5/CSS3 Zero-JS Studio (4 вкладки + VirtualList 1M)
 nimble studio
@@ -124,8 +136,12 @@ nim c -r apps/nimui_demo/src/main.nim --screenshot singularity.png
 # Базовые системные тесты CoreX / AlgX / MFT / Signals / IOCP
 nimble test
 
-# Полный набор тестов NimUI (Layout, Widgets, Zero-JS HTML5/CSS3)
+# Полный набор тестов NimUI (Layout, Widgets, Zero-JS HTML5/CSS3) и QuickJS
 nimble test_ui
+nimble test_js
+
+# Верификация гибридного memory-safe компилятора (--mem-safe, --safe-mode, --check-safe-atf)
+nimble test_compiler
 
 # Проверка всех 4 витринных приложений в headless-режиме + генерация скриншотов
 nimble test_showcase
