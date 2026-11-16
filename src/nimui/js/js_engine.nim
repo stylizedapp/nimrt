@@ -49,7 +49,6 @@ proc qjs_bridge_new(
 proc qjs_bridge_free(brt: QjsBridgeRuntimePtr) {.importc, cdecl.}
 proc qjs_bridge_set_host(brt: QjsBridgeRuntimePtr, hostCb: QjsHostCbFn, hostUserData: pointer) {.importc, cdecl.}
 proc qjs_bridge_reset_steps(brt: QjsBridgeRuntimePtr, maxSteps: uint64) {.importc, cdecl.}
-proc qjs_bridge_get_steps(brt: QjsBridgeRuntimePtr): uint64 {.importc, cdecl.}
 proc qjs_bridge_get_malloc_size(brt: QjsBridgeRuntimePtr): csize_t {.importc, cdecl.}
 proc qjs_bridge_get_malloc_count(brt: QjsBridgeRuntimePtr): csize_t {.importc, cdecl.}
 proc qjs_bridge_run_gc(brt: QjsBridgeRuntimePtr) {.importc, cdecl.}
@@ -59,16 +58,6 @@ proc qjs_bridge_eval(
   code: cstring,
   codeLen: csize_t,
   filename: cstring,
-  outBuf: cstring,
-  outCap: int32,
-  errBuf: cstring,
-  errCap: int32
-): int32 {.importc, cdecl.}
-
-proc qjs_bridge_call_global1(
-  brt: QjsBridgeRuntimePtr,
-  funcName: cstring,
-  arg0: cstring,
   outBuf: cstring,
   outCap: int32,
   errBuf: cstring,
