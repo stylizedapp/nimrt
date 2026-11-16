@@ -60,7 +60,7 @@ when defined(windows):
     hFile: HANDLE,
     lpBuffer: pointer,
     nNumberOfBytesToRead: uint32,
-    lpNumberOfBytesRead: ptr uint32,
+    lpNumberOfBytesRead: ptr culong,
     lpOverlapped: ptr OVERLAPPED
   ): BOOL {.importc: "ReadFile", header: "<windows.h>", stdcall.}
 
@@ -68,7 +68,7 @@ when defined(windows):
     hFile: HANDLE,
     lpBuffer: pointer,
     nNumberOfBytesToWrite: uint32,
-    lpNumberOfBytesWritten: ptr uint32,
+    lpNumberOfBytesWritten: ptr culong,
     lpOverlapped: ptr OVERLAPPED
   ): BOOL {.importc: "WriteFile", header: "<windows.h>", stdcall.}
 
@@ -223,7 +223,7 @@ when defined(windows):
     var entries: array[ReactorBatchSize, OVERLAPPED_ENTRY]
 
     while atomics.load(reactor.running, moAcquire):
-      var removed: uint32 = 0
+      var removed: culong = 0
       let okVal = winGetQueuedCompletionStatusEx(
         reactor.iocpHandle,
         cast[ptr OVERLAPPED_ENTRY](addr entries[0]),
@@ -531,7 +531,7 @@ when defined(windows):
     opCtx.callback = callback
     opCtx.userData = userData
 
-    var bytesRead: uint32 = 0
+    var bytesRead: culong = 0
     let okVal = winReadFile(
       handle,
       if buf.len > 0: cast[pointer](buf.data) else: nil,
@@ -619,7 +619,7 @@ when defined(windows):
     opCtx.callback = callback
     opCtx.userData = userData
 
-    var bytesWritten: uint32 = 0
+    var bytesWritten: culong = 0
     let okVal = winWriteFile(
       handle,
       if buf.len > 0: cast[pointer](buf.data) else: nil,

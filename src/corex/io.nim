@@ -59,7 +59,7 @@ when defined(windows):
     hFile: RawHandle,
     lpBuffer: pointer,
     nNumberOfBytesToRead: uint32,
-    lpNumberOfBytesRead: ptr uint32,
+    lpNumberOfBytesRead: ptr culong,
     lpOverlapped: pointer
   ): int32 {.importc: "ReadFile", header: "<windows.h>", stdcall.}
 
@@ -67,7 +67,7 @@ when defined(windows):
     hFile: RawHandle,
     lpBuffer: pointer,
     nNumberOfBytesToWrite: uint32,
-    lpNumberOfBytesWritten: ptr uint32,
+    lpNumberOfBytesWritten: ptr culong,
     lpOverlapped: pointer
   ): int32 {.importc: "WriteFile", header: "<windows.h>", stdcall.}
 
@@ -246,7 +246,7 @@ proc write*(f: var FileHandle, data: pointer, size: int): Result[int, IOError] =
   if not f.isOpen: return err[int, IOError](ioError("File is closed"))
   if size <= 0: return ok[int, IOError](0)
   when defined(windows):
-    var bytesWritten: uint32 = 0
+    var bytesWritten: culong = 0
     let res = winWriteFile(f.handle, data, uint32(size), addr bytesWritten, nil)
     if res == 0:
       return err[int, IOError](ioError("WriteFile failed: error " & $winGetLastError()))
@@ -268,7 +268,7 @@ proc read*(f: var FileHandle, buffer: pointer, size: int): Result[int, IOError] 
   if not f.isOpen: return err[int, IOError](ioError("File is closed"))
   if size <= 0: return ok[int, IOError](0)
   when defined(windows):
-    var bytesRead: uint32 = 0
+    var bytesRead: culong = 0
     let res = winReadFile(f.handle, buffer, uint32(size), addr bytesRead, nil)
     if res == 0:
       let errCode = winGetLastError()

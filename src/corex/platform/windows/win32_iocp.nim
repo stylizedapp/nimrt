@@ -94,7 +94,7 @@ proc winGetQueuedCompletionStatusEx*(
   completionPort: HANDLE,
   lpCompletionPortEntries: ptr OVERLAPPED_ENTRY,
   ulCount: uint32,
-  ulNumEntriesRemoved: ptr uint32,
+  ulNumEntriesRemoved: ptr culong,
   dwMilliseconds: uint32,
   fAlertable: BOOL
 ): BOOL {.importc: "GetQueuedCompletionStatusEx", header: "<windows.h>", stdcall.}
@@ -204,14 +204,16 @@ proc getQueuedCompletionStatusEx*(
   alertable: bool = false
 ): Result[void, int32] {.raises: [].} =
   ## Batch dequeues up to `count` completion entries in a single kernel transition.
+  var removed: culong = 0
   let okVal = winGetQueuedCompletionStatusEx(
     port,
     cast[ptr OVERLAPPED_ENTRY](entries),
     count,
-    addr numRemoved,
+    addr removed,
     timeoutMs,
     if alertable: 1'i32 else: 0'i32
   )
+  numRemoved = uint32(removed)
   if okVal == 0:
     return err[void, int32](int32(winGetLastError()))
   ok[void, int32]()
@@ -224,7 +226,7 @@ proc pollCompletions*(
   ## Convenience batch poller filling `entries`. Returns the count of removed entries.
   if entries.len <= 0:
     return ok[int, int32](0)
-  var removed: uint32 = 0
+  var removed: culong = 0
   let okVal = winGetQueuedCompletionStatusEx(
     port,
     addr entries[0],
