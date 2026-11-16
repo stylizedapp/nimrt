@@ -85,6 +85,8 @@ proc applyMemorySafeDefaults*(conf: ConfigRef) =
     defineSymbol(conf.symbols, "nimCheckSafeAtf")
     # Force full C codegen inspection when ATF auditing is active
     conf.globalOptions.incl optForceFullMake
+    # Ensure #line FX_n directives are emitted even when --stacktrace/--linetrace are off
+    conf.options.incl optLineDir
 
 proc processSafetySwitch*(switch, arg: string; info: TLineInfo; conf: ConfigRef): bool =
   let norm = switch.toLowerAscii().replace("_", "")

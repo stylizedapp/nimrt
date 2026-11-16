@@ -14,7 +14,7 @@
 ## - [ATF-004] Stack frame address escape (`return &local;`) in C functions
 ## - [ATF-005] Missing runtime safety guards (forbids `-d:danger` with ATF)
 
-import std/[os, strutils, sets, syncio]
+import std/[os, strutils, sets, syncio, tables]
 import options, msgs, lineinfos, pathutils
 import safety_config
 
@@ -117,6 +117,42 @@ proc scanFuncCallAt(line: string; idx: int; ident: string): bool =
     inc k
   k < line.len and line[k] == '('
 
+proc parseCLineDirective(
+  rawLine: string;
+  fxFiles: var Table[string, string];
+  nimFile: var string;
+  nimLine: var int
+) =
+  let trimmed = rawLine.strip()
+  if trimmed.startsWith("#define FX_"):
+    let rest = trimmed[8 ..< trimmed.len].strip()
+    let sp = rest.find(' ')
+    if sp > 0:
+      let key = rest[0 ..< sp].strip()
+      let q1 = rest.find('"', sp + 1)
+      if q1 >= 0:
+        let q2 = rest.find('"', q1 + 1)
+        if q2 > q1:
+          fxFiles[key] = rest[q1 + 1 ..< q2].replace("\\\\", "\\")
+  elif trimmed.startsWith("#line "):
+    let rest = trimmed[6 ..< trimmed.len].strip()
+    let sp = rest.find(' ')
+    if sp > 0:
+      try:
+        nimLine = parseInt(rest[0 ..< sp].strip())
+      except ValueError:
+        discard
+      let target = rest[sp + 1 ..< rest.len].strip()
+      if target.startsWith("FX_"):
+        if target in fxFiles:
+          nimFile = fxFiles[target]
+      elif target.startsWith("\""):
+        let q2 = target.find('"', 1)
+        if q2 > 1:
+          let pathStr = target[1 ..< q2].replace("\\\\", "\\")
+          if pathStr != "generated_not_to_break_here":
+            nimFile = pathStr
+
 proc parseNimMarker(rawLine: string; nimFile: var string; nimLine: var int) =
   let trimmed = rawLine.strip()
   let lfPos = trimmed.find("nimlf_(")
@@ -152,15 +188,18 @@ proc auditSingleCFile(
   gSafety.stats.cLinesAudited += lines.len
 
   var inBlockComment = false
+  var fxFiles = initTable[string, string]()
   var curNimFile = cPath
   var curNimLine = 0
   var curFuncName = ""
+  var pendingFuncHeader = ""
   var inOrcHook = false
-  var orcHookBraceDepth = 0
+  var braceDepth = 0
   var inNimCopyHelper = false
 
   for idx, rawLine in lines:
     let cLineNo = idx + 1
+    parseCLineDirective(rawLine, fxFiles, curNimFile, curNimLine)
     parseNimMarker(rawLine, curNimFile, curNimLine)
 
     var trustedLine = false
@@ -172,94 +211,110 @@ proc auditSingleCFile(
     if trimmed.startsWith("#"):
       continue
 
-    # Track C function boundaries & ORC lifecycle hooks
-    if trimmed.contains("nimCopyMem") and trimmed.contains("static N_INLINE"):
-      inNimCopyHelper = true
-    elif trimmed.contains("nimZeroMem") and trimmed.contains("static N_INLINE"):
-      inNimCopyHelper = true
+    # Track C function boundaries & ORC lifecycle hooks (handles `{` on same or next line,
+    # and ignores forward declarations ending in `;`).
+    if braceDepth == 0:
+      if '{' in clean:
+        let header =
+          if pendingFuncHeader.len > 0: pendingFuncHeader & " " & trimmed
+          else: trimmed
+        pendingFuncHeader = ""
+        if header.contains("(") and
+           not header.startsWith("if") and not header.startsWith("while") and
+           not header.startsWith("for") and not header.startsWith("switch") and
+           not header.startsWith("else") and not header.startsWith("typedef") and
+           not header.startsWith("struct") and not header.startsWith("enum"):
+          curFuncName = header
+          if (header.contains("nimCopyMem") or header.contains("nimZeroMem")) and
+             (header.contains("static N_INLINE") or header.contains("N_INLINE")):
+            inNimCopyHelper = true
+          if header.contains("eqdestroy_") or header.contains("eqsink_") or header.contains("eqcopy_"):
+            inOrcHook = true
+      elif trimmed.endsWith(";"):
+        # Forward declaration or global variable declaration; never a function body.
+        pendingFuncHeader = ""
+      else:
+        if pendingFuncHeader.len > 0:
+          pendingFuncHeader.add(" " & trimmed)
+        elif trimmed.contains("(") and
+             not trimmed.startsWith("typedef") and
+             not trimmed.startsWith("struct") and
+             not trimmed.startsWith("enum"):
+          pendingFuncHeader = trimmed
 
-    if curFuncName.len == 0 and trimmed.contains("(") and trimmed.endsWith("{") and
-       not trimmed.startsWith("if") and not trimmed.startsWith("while") and
-       not trimmed.startsWith("for") and not trimmed.startsWith("switch"):
-      curFuncName = trimmed
-      if trimmed.contains("eqdestroy_") or trimmed.contains("eqsink_") or trimmed.contains("eqcopy_"):
-        inOrcHook = true
-        orcHookBraceDepth = 0
+    if not trustedLine:
+      let normNim = curNimFile.replace('\\', '/')
+      let isStdlibLoc = normNim.startsWith(conf.libpath.string.replace('\\', '/')) or
+                        (not gSafety.strictMode and (normNim.contains("/src/corex/") or normNim.contains("/src/algx/")))
+
+      # [ATF-001] Always banned CRT unsafe calls
+      for i in 0 ..< clean.len:
+        if isIdentStartC(clean[i]):
+          var endPos = i + 1
+          while endPos < clean.len and isIdentContC(clean[endPos]):
+            inc endPos
+          if i == 0 or not isIdentContC(clean[i - 1]):
+            let tok = clean[i ..< endPos]
+            if tok in AlwaysBannedCCalls and scanFuncCallAt(clean, i, tok):
+              if not isStdlibLoc:
+                let ruleCode = if inOrcHook: "ATF-003" else: "ATF-001"
+                violations.add(AtfViolation(
+                  rule: ruleCode,
+                  cFile: cPath,
+                  cLine: cLineNo,
+                  nimFile: curNimFile,
+                  nimLine: curNimLine,
+                  message: "Unsafe C call '" & tok & "()' detected in generated C (" &
+                           cPath.extractFilename() & ":" & $cLineNo & ")"
+                ))
+            elif tok in RawCopyCCalls and scanFuncCallAt(clean, i, tok):
+              if not inNimCopyHelper and not isStdlibLoc:
+                violations.add(AtfViolation(
+                  rule: "ATF-001",
+                  cFile: cPath,
+                  cLine: cLineNo,
+                  nimFile: curNimFile,
+                  nimLine: curNimLine,
+                  message: "Direct raw memory copy '" & tok & "()' outside Nim copy helper in " &
+                           cPath.extractFilename() & ":" & $cLineNo
+                ))
+
+      # [ATF-002] Raw C pointer arithmetic / unsafe raw cast via inline emit
+      if not isStdlibLoc and not inNimCopyHelper:
+        if trimmed.contains("*(int*)") or trimmed.contains("*(char*)") or
+           trimmed.contains("*(void**)") or trimmed.contains("((void**)"):
+          violations.add(AtfViolation(
+            rule: "ATF-002",
+            cFile: cPath,
+            cLine: cLineNo,
+            nimFile: curNimFile,
+            nimLine: curNimLine,
+            message: "Unchecked raw C pointer dereference/cast in generated C (" &
+                     cPath.extractFilename() & ":" & $cLineNo & ")"
+          ))
+
+      # [ATF-004] Stack frame address escape in C (`return &...;`)
+      if not isStdlibLoc:
+        if trimmed.startsWith("return &") or trimmed.startsWith("return (&"):
+          violations.add(AtfViolation(
+            rule: "ATF-004",
+            cFile: cPath,
+            cLine: cLineNo,
+            nimFile: curNimFile,
+            nimLine: curNimLine,
+            message: "Potential stack address escape ('return &...') in generated C (" &
+                     cPath.extractFilename() & ":" & $cLineNo & ")"
+          ))
 
     for ch in clean:
-      if ch == '{': inc orcHookBraceDepth
+      if ch == '{': inc braceDepth
       elif ch == '}':
-        dec orcHookBraceDepth
-        if orcHookBraceDepth <= 0:
+        if braceDepth > 0: dec braceDepth
+        if braceDepth == 0:
           inOrcHook = false
           inNimCopyHelper = false
           curFuncName = ""
-
-    if trustedLine:
-      continue
-
-    let normNim = curNimFile.replace('\\', '/')
-    let isStdlibLoc = normNim.startsWith(conf.libpath.string.replace('\\', '/')) or
-                      (not gSafety.strictMode and (normNim.contains("/src/corex/") or normNim.contains("/src/algx/")))
-
-    # [ATF-001] Always banned CRT unsafe calls
-    for i in 0 ..< clean.len:
-      if isIdentStartC(clean[i]):
-        var endPos = i + 1
-        while endPos < clean.len and isIdentContC(clean[endPos]):
-          inc endPos
-        if i == 0 or not isIdentContC(clean[i - 1]):
-          let tok = clean[i ..< endPos]
-          if tok in AlwaysBannedCCalls and scanFuncCallAt(clean, i, tok):
-            if not isStdlibLoc:
-              let ruleCode = if inOrcHook: "ATF-003" else: "ATF-001"
-              violations.add(AtfViolation(
-                rule: ruleCode,
-                cFile: cPath,
-                cLine: cLineNo,
-                nimFile: curNimFile,
-                nimLine: curNimLine,
-                message: "Unsafe C call '" & tok & "()' detected in generated C (" &
-                         cPath.extractFilename() & ":" & $cLineNo & ")"
-              ))
-          elif tok in RawCopyCCalls and scanFuncCallAt(clean, i, tok):
-            if not inNimCopyHelper and not isStdlibLoc:
-              violations.add(AtfViolation(
-                rule: "ATF-001",
-                cFile: cPath,
-                cLine: cLineNo,
-                nimFile: curNimFile,
-                nimLine: curNimLine,
-                message: "Direct raw memory copy '" & tok & "()' outside Nim copy helper in " &
-                         cPath.extractFilename() & ":" & $cLineNo
-              ))
-
-    # [ATF-002] Raw C pointer arithmetic / unsafe raw cast via inline emit
-    if not isStdlibLoc and not inNimCopyHelper:
-      if trimmed.contains("*(int*)") or trimmed.contains("*(char*)") or
-         trimmed.contains("*(void**)") or trimmed.contains("((void**)"):
-        violations.add(AtfViolation(
-          rule: "ATF-002",
-          cFile: cPath,
-          cLine: cLineNo,
-          nimFile: curNimFile,
-          nimLine: curNimLine,
-          message: "Unchecked raw C pointer dereference/cast in generated C (" &
-                   cPath.extractFilename() & ":" & $cLineNo & ")"
-        ))
-
-    # [ATF-004] Stack frame address escape in C (`return &...;`)
-    if not isStdlibLoc:
-      if trimmed.startsWith("return &") or trimmed.startsWith("return (&"):
-        violations.add(AtfViolation(
-          rule: "ATF-004",
-          cFile: cPath,
-          cLine: cLineNo,
-          nimFile: curNimFile,
-          nimLine: curNimLine,
-          message: "Potential stack address escape ('return &...') in generated C (" &
-                   cPath.extractFilename() & ":" & $cLineNo & ")"
-        ))
+          pendingFuncHeader = ""
 
 proc writeAtfReport(path: string; violations: seq[AtfViolation]) =
   if path.len == 0:
