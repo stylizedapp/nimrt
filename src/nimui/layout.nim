@@ -166,7 +166,7 @@ proc initUiTree*(alloc: Allocator = defaultHeapAllocator()): UiTree {.raises: []
 
 proc destroy*(tree: var UiTree) {.raises: [].} =
   tree.nodes.deinit()
-  tree.drawInstances.setLen(0)
+  reset(tree.drawInstances)
   tree.arena.deinit()
 
 # =============================================================================

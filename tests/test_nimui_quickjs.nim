@@ -215,68 +215,70 @@ proc testPomodoroEndToEndAndStress(atlas: FontAtlas) =
   let rawHtml = readFile(pomoPath)
 
   testWithLeakCheck("4.1 Pomodoro 3s Countdown, Pause, Reset & 1s Sprint"):
-    var tree = initUiTree(testAlloc)
-    defer: tree.destroy()
-    var rt = initReactiveRuntime(testAlloc)
-    defer: rt.destroy()
-    var bindings = initHtmlBindingRegistry()
-    defer: bindings.destroy()
+    proc runPomodoroTest(alloc: Allocator, atlas: FontAtlas, htmlSrc: string) =
+      var tree = initUiTree(alloc)
+      defer: tree.destroy()
+      var rt = initReactiveRuntime(alloc)
+      defer: rt.destroy()
+      var bindings = initHtmlBindingRegistry()
+      defer: bindings.destroy()
 
-    let syncSig = rt.createSignal("Nim Bridge: Ready")
-    bindings.bindTextSignal("nim-pomo-sync", syncSig)
-    var eventsSeen: seq[string] = @[]
+      let syncSig = rt.createSignal("Nim Bridge: Ready")
+      bindings.bindTextSignal("nim-pomo-sync", syncSig)
+      var eventsSeen: seq[string] = @[]
 
-    var sessRes = initHtmlJsSession(testAlloc, tree, rt, bindings)
-    doAssert sessRes.isOk()
-    var sess = sessRes.get()
-    defer: sess.destroy()
+      var sessRes = initHtmlJsSession(alloc, tree, rt, bindings)
+      doAssert sessRes.isOk()
+      var sess = sessRes.get()
+      defer: sess.destroy()
 
-    sess.registerNimFunc("onPomodoroEvent", proc(a1, a2: string): string {.closure, gcsafe, raises: [].} =
-      {.cast(gcsafe).}:
-        eventsSeen.add(a1 & ":" & a2)
-        let msg = "Nim Sync [" & a1 & "]: " & a2
-        syncSig.set(msg)
-        msg
-    )
+      sess.registerNimFunc("onPomodoroEvent", proc(a1, a2: string): string {.closure, gcsafe, raises: [].} =
+        {.cast(gcsafe).}:
+          eventsSeen.add(a1 & ":" & a2)
+          let msg = "Nim Sync [" & a1 & "]: " & a2
+          syncSig.set(msg)
+          msg
+      )
 
-    let mRes = sess.mountHtmlWithJs(rawHtml)
-    doAssert mRes.isOk(), "Pomodoro mount failed: " & mRes.error()
-    tree.layoutTree(1440.0f, 900.0f, atlas)
+      let mRes = sess.mountHtmlWithJs(htmlSrc)
+      doAssert mRes.isOk(), "Pomodoro mount failed: " & mRes.error()
+      tree.layoutTree(1440.0f, 900.0f, atlas)
 
-    doAssert sess.getElementText("pomo-time") == "00:03.0"
-    doAssert sess.getElementText("pomo-cycles") == "Циклов: 0"
+      doAssert sess.getElementText("pomo-time") == "00:03.0"
+      doAssert sess.getElementText("pomo-cycles") == "Циклов: 0"
 
-    # Start 3s timer, step 1000ms -> 00:02.0, pause -> verify paused at 00:02.0
-    tree.nodes[bindings.getNodeById("btn-start").get()].onClick()
-    for _ in 0 ..< 10:
-      doAssert sess.tick(100).isOk()
-    doAssert sess.getElementText("pomo-time") == "00:02.0"
+      # Start 3s timer, step 1000ms -> 00:02.0, pause -> verify paused at 00:02.0
+      tree.nodes[bindings.getNodeById("btn-start").get()].onClick()
+      for _ in 0 ..< 10:
+        doAssert sess.tick(100).isOk()
+      doAssert sess.getElementText("pomo-time") == "00:02.0"
 
-    tree.nodes[bindings.getNodeById("btn-pause").get()].onClick()
-    doAssert not sess.hasActiveTimers()
-    doAssert sess.getElementText("pomo-phase") == "PAUSED"
-    # Ticking while paused must not advance time
-    for _ in 0 ..< 5:
-      doAssert sess.tick(100).isOk()
-    doAssert sess.getElementText("pomo-time") == "00:02.0"
+      tree.nodes[bindings.getNodeById("btn-pause").get()].onClick()
+      doAssert not sess.hasActiveTimers()
+      doAssert sess.getElementText("pomo-phase") == "PAUSED"
+      # Ticking while paused must not advance time
+      for _ in 0 ..< 5:
+        doAssert sess.tick(100).isOk()
+      doAssert sess.getElementText("pomo-time") == "00:02.0"
 
-    # Resume and finish remaining 2000ms
-    tree.nodes[bindings.getNodeById("btn-start").get()].onClick()
-    for _ in 0 ..< 20:
-      doAssert sess.tick(100).isOk()
-    doAssert sess.getElementText("pomo-time") == "00:00.0"
-    doAssert sess.getElementText("pomo-cycles") == "Циклов: 1"
-    doAssert sess.getElementText("pomo-phase") == "DONE • ПЕРЕРЫВ"
-    doAssert not sess.hasActiveTimers()
+      # Resume and finish remaining 2000ms
+      tree.nodes[bindings.getNodeById("btn-start").get()].onClick()
+      for _ in 0 ..< 20:
+        doAssert sess.tick(100).isOk()
+      doAssert sess.getElementText("pomo-time") == "00:00.0"
+      doAssert sess.getElementText("pomo-cycles") == "Циклов: 1"
+      doAssert sess.getElementText("pomo-phase") == "DONE • ПЕРЕРЫВ"
+      doAssert not sess.hasActiveTimers()
 
-    # Reset and switch to 2s preset, then complete cycle #2
-    tree.nodes[bindings.getNodeById("btn-preset-2s").get()].onClick()
-    doAssert sess.getElementText("pomo-time") == "00:02.0"
-    tree.nodes[bindings.getNodeById("btn-start").get()].onClick()
-    for _ in 0 ..< 20:
-      doAssert sess.tick(100).isOk()
-    doAssert sess.getElementText("pomo-cycles") == "Циклов: 2"
-    doAssert eventsSeen.len >= 4
+      # Reset and switch to 2s preset, then complete cycle #2
+      tree.nodes[bindings.getNodeById("btn-preset-2s").get()].onClick()
+      doAssert sess.getElementText("pomo-time") == "00:02.0"
+      tree.nodes[bindings.getNodeById("btn-start").get()].onClick()
+      for _ in 0 ..< 20:
+        doAssert sess.tick(100).isOk()
+      doAssert sess.getElementText("pomo-cycles") == "Циклов: 2"
+      doAssert eventsSeen.len >= 4
+    runPomodoroTest(testAlloc, atlas, rawHtml)
     echo "  [PASS] 4.1 Pomodoro 3s/2s/pause/reset workflow verified."
 
   testWithLeakCheck("4.2 30-Cycle QuickJS + HTML Mount/Tick/Destroy Zero-Leak Stress Audit"):

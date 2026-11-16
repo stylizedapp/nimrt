@@ -578,60 +578,62 @@ proc testHitTestingAndStateTransitions(atlas: FontAtlas) =
     echo "  [PASS] 2.3 Pressed state and onClick trigger/cancel verified."
 
   testWithLeakCheck("2.4 Focus State Transitions & Keyboard Input (handleChar, handleKeyDown)"):
-    var tree = initUiTree(testAlloc)
-    defer: tree.destroy()
+    proc runFocusInputTest(alloc: Allocator) =
+      var tree = initUiTree(alloc)
+      defer: tree.destroy()
 
-    let root = tree.createNode(nkBox)
-    tree.rootId = root
-    tree.nodes[root].computedRect = (0.0f, 0.0f, 400.0f, 400.0f)
-    tree.nodes[root].clipRect = [0'u16, 0'u16, 400'u16, 400'u16]
+      let root = tree.createNode(nkBox)
+      tree.rootId = root
+      tree.nodes[root].computedRect = (0.0f, 0.0f, 400.0f, 400.0f)
+      tree.nodes[root].clipRect = [0'u16, 0'u16, 400'u16, 400'u16]
 
-    var input1Text = ""
-    let input1 = tree.createNode(nkTextInput)
-    tree.nodes[input1].computedRect = (10.0f, 10.0f, 150.0f, 30.0f)
-    tree.nodes[input1].clipRect = [0'u16, 0'u16, 400'u16, 400'u16]
-    tree.nodes[input1].onInput = proc(s: string) = input1Text = s
-    tree.addChild(root, input1)
+      var input1Text = ""
+      let input1 = tree.createNode(nkTextInput)
+      tree.nodes[input1].computedRect = (10.0f, 10.0f, 150.0f, 30.0f)
+      tree.nodes[input1].clipRect = [0'u16, 0'u16, 400'u16, 400'u16]
+      tree.nodes[input1].onInput = proc(s: string) = input1Text = s
+      tree.addChild(root, input1)
 
-    var input2Text = ""
-    let input2 = tree.createNode(nkTextInput)
-    tree.nodes[input2].computedRect = (10.0f, 50.0f, 150.0f, 30.0f)
-    tree.nodes[input2].clipRect = [0'u16, 0'u16, 400'u16, 400'u16]
-    tree.nodes[input2].onInput = proc(s: string) = input2Text = s
-    tree.addChild(root, input2)
+      var input2Text = ""
+      let input2 = tree.createNode(nkTextInput)
+      tree.nodes[input2].computedRect = (10.0f, 50.0f, 150.0f, 30.0f)
+      tree.nodes[input2].clipRect = [0'u16, 0'u16, 400'u16, 400'u16]
+      tree.nodes[input2].onInput = proc(s: string) = input2Text = s
+      tree.addChild(root, input2)
 
-    # Click on Input1 -> gains focus
-    tree.handleMouseDown(20.0f, 20.0f)
-    tree.handleMouseUp(20.0f, 20.0f)
-    doAssert tree.focusedNode == input1
-    doAssert tree.nodes[input1].isFocused
-    doAssert not tree.nodes[input2].isFocused
+      # Click on Input1 -> gains focus
+      tree.handleMouseDown(20.0f, 20.0f)
+      tree.handleMouseUp(20.0f, 20.0f)
+      doAssert tree.focusedNode == input1
+      doAssert tree.nodes[input1].isFocused
+      doAssert not tree.nodes[input2].isFocused
 
-    # Type "Hello"
-    for ch in "Hello":
-      tree.handleChar(Rune(ch))
-    doAssert tree.nodes[input1].text == "Hello"
-    doAssert input1Text == "Hello"
-    doAssert tree.nodes[input2].text == ""
+      # Type "Hello"
+      for ch in "Hello":
+        tree.handleChar(Rune(ch))
+      doAssert tree.nodes[input1].text == "Hello"
+      doAssert input1Text == "Hello"
+      doAssert tree.nodes[input2].text == ""
 
-    # Backspace once (VK_BACK = 0x08)
-    tree.handleKeyDown(0x08'u32)
-    doAssert tree.nodes[input1].text == "Hell"
-    doAssert input1Text == "Hell"
+      # Backspace once (VK_BACK = 0x08)
+      tree.handleKeyDown(0x08'u32)
+      doAssert tree.nodes[input1].text == "Hell"
+      doAssert input1Text == "Hell"
 
-    # Switch focus to Input2
-    tree.handleMouseDown(20.0f, 60.0f)
-    tree.handleMouseUp(20.0f, 60.0f)
-    doAssert tree.focusedNode == input2
-    doAssert not tree.nodes[input1].isFocused
-    doAssert tree.nodes[input2].isFocused
+      # Switch focus to Input2
+      tree.handleMouseDown(20.0f, 60.0f)
+      tree.handleMouseUp(20.0f, 60.0f)
+      doAssert tree.focusedNode == input2
+      doAssert not tree.nodes[input1].isFocused
+      doAssert tree.nodes[input2].isFocused
 
-    # Type "Nim" on Input2
-    for ch in "Nim":
-      tree.handleChar(Rune(ch))
-    doAssert tree.nodes[input2].text == "Nim"
-    doAssert input2Text == "Nim"
-    doAssert tree.nodes[input1].text == "Hell" # Untouched
+      # Type "Nim" on Input2
+      for ch in "Nim":
+        tree.handleChar(Rune(ch))
+      doAssert tree.nodes[input2].text == "Nim"
+      doAssert input2Text == "Nim"
+      doAssert tree.nodes[input1].text == "Hell" # Untouched
+    runFocusInputTest(testAlloc)
     echo "  [PASS] 2.4 Focus transitions and keyboard typing/backspace verified."
 
   testWithLeakCheck("2.5 Hardware/Shader Clipping Bounds Rejection"):
@@ -1064,8 +1066,10 @@ proc testRichInputAndRasterizer(atlas: FontAtlas) =
 
   testWithLeakCheck("6.1 Rich nkTextInput Editing, Navigation, Selection & Clipboard"):
     setClipboardForceFallback(true)
-    defer: setClipboardForceFallback(false)
     clearClipboardFallback()
+    defer:
+      clearClipboardFallback()
+      setClipboardForceFallback(false)
 
     var tree = initUiTree(testAlloc)
     defer: tree.destroy()

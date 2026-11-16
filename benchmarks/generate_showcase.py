@@ -1,18 +1,17 @@
 #!/usr/bin/env python3
 """
-Р“РµРЅРµСЂР°С‚РѕСЂ РёРЅС‚РµСЂР°РєС‚РёРІРЅРѕР№ С‚РµРјРЅРѕР№ HTML-РІРёС‚СЂРёРЅС‹: Nim (CoreX/AlgX) vs Rust.
-Р’С‹С…РѕРґРЅРѕР№ С„Р°Р№Р»: showcase.html (Р°РІС‚РѕРЅРѕРјРЅС‹Р№, Р±РµР· РёРЅС‚РµСЂРЅРµС‚Р°).
+Генератор интерактивной темной HTML-витрины: Nim (CoreX/AlgX, --mm:orc) vs Rust.
+Выходной файл: showcase.html (автономный, без интернета).
 """
 
 from pathlib import Path
-import json
 
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="ru">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Nim CoreX vs Rust Showcase</title>
+  <title>Nim CoreX vs Rust Showcase (--mm:orc)</title>
   <style>
     :root {
       --bg: #090a0f;
@@ -22,6 +21,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       --muted: #8b949e;
       --accent-nim: #f3b544;
       --accent-rust: #f74c00;
+      --accent-hashbrown: #ff7b54;
       --success: #2ea043;
       --code-bg: #0d1117;
       --font-mono: 'JetBrains Mono', 'Fira Code', 'SF Mono', Consolas, monospace;
@@ -36,12 +36,14 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       line-height: 1.5;
     }
     .container { max-width: 1200px; margin: 0 auto; display: flex; flex-direction: column; gap: 28px; }
-    
+
     /* Header */
     header {
       display: flex;
       justify-content: space-between;
       align-items: flex-end;
+      flex-wrap: wrap;
+      gap: 12px;
       border-bottom: 1px solid var(--card-border);
       padding-bottom: 20px;
     }
@@ -73,8 +75,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     .kpi-val-nim { color: var(--accent-nim); }
     .kpi-val-rust { color: var(--accent-rust); }
     .kpi-diff { font-size: 13px; color: var(--success); font-weight: 500; }
+    .kpi-note { font-size: 13px; color: var(--muted); font-weight: 500; }
 
-    /* Chart Section */
+    /* Chart & Table Section */
     .panel {
       background: var(--card);
       border: 1px solid var(--card-border);
@@ -88,13 +91,18 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       display: flex;
       justify-content: space-between;
       align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
     }
-    .chart-container { display: flex; flex-direction: column; gap: 14px; }
-    .chart-row { display: flex; flex-direction: column; gap: 6px; }
-    .chart-label { display: flex; justify-content: space-between; font-size: 13px; font-family: var(--font-mono); }
+    .chart-container { display: flex; flex-direction: column; gap: 18px; }
+    .chart-group { display: flex; flex-direction: column; gap: 8px; padding-bottom: 14px; border-bottom: 1px solid #181c27; }
+    .chart-group:last-child { border-bottom: none; padding-bottom: 0; }
+    .chart-group-title { font-size: 13px; font-weight: 600; color: var(--text); }
+    .chart-row { display: flex; flex-direction: column; gap: 5px; }
+    .chart-label { display: flex; justify-content: space-between; font-size: 12.5px; font-family: var(--font-mono); color: var(--muted); }
     .chart-bar-bg {
       background: #181c27;
-      height: 26px;
+      height: 24px;
       border-radius: 6px;
       overflow: hidden;
       display: flex;
@@ -108,10 +116,21 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       font-weight: 600;
       font-family: var(--font-mono);
       color: #000;
+      white-space: nowrap;
       transition: width 0.8s cubic-bezier(0.16, 1, 0.3, 1);
     }
     .bar-nim { background: var(--accent-nim); }
     .bar-rust { background: var(--accent-rust); color: #fff; }
+    .bar-hashbrown { background: var(--accent-hashbrown); color: #fff; }
+
+    /* Table */
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--card-border); }
+    th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.4px; }
+    td.num, th.num { text-align: right; font-family: var(--font-mono); }
+    .win { color: var(--accent-nim); font-weight: 600; }
+    .win-rust { color: var(--accent-rust); font-weight: 600; }
 
     /* Code Comparison Side-by-Side */
     .code-grid {
@@ -156,94 +175,228 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     <header>
       <div>
         <h1>Differential Performance &amp; Ergonomics Suite</h1>
-        <p style="color: var(--muted); font-size: 14px; margin-top: 4px;">РЎРѕСЂС‚РёСЂРѕРІРєР° 10,000,000 СЌР»РµРјРµРЅС‚РѕРІ int64 (80 MB) РІ РѕРїРµСЂР°С‚РёРІРЅРѕР№ РїР°РјСЏС‚Рё вЂ” --mm:orc</p>
+        <p style="color: var(--muted); font-size: 14px; margin-top: 4px;">Симметричный стенд Nim 2.2.12 (--mm:orc -march=native -O3 -flto) vs Rust 1.96.0 (LTO=fat, native) • Warmup=2, Runs=11</p>
       </div>
-      <div class="badge">AMD Ryzen 3 3200U (2C/4T) вЂў MinGW GCC 11.1 vs Rust MSVC вЂў LTO on</div>
+      <div class="badge">AMD Ryzen 3 3200U (2C/4T) • MinGW GCC 11.1 vs Rust MSVC • Idle Machine</div>
     </header>
 
     <div class="kpi-grid">
       <div class="kpi-card">
-        <div class="kpi-title">Min Sort Time (Nim, замер --mm:arc)</div>
-        <div class="kpi-value kpi-val-nim">~77 ms</div>
-        <div class="kpi-diff">РџР°СЂРёС‚РµС‚ СЃ Rust (~78 ms) РЅР° РѕРґРЅРѕРј СЃС‚РµРЅРґРµ (Warmup=2, Runs=11)</div>
+        <div class="kpi-title">UltraSort 10M int64 (Nim --mm:orc)</div>
+        <div class="kpi-value kpi-val-nim">69.06 ms</div>
+        <div class="kpi-diff">med 71.43 ms vs Rust 88.60 ms (~1.24× быстрее по медиане)</div>
       </div>
       <div class="kpi-card">
-        <div class="kpi-title">Binary Footprint</div>
-        <div class="kpi-value">131 KB</div>
-        <div class="kpi-diff">РќР° ~21% РєРѕРјРїР°РєС‚РЅРµРµ Rust (166 KB) РїСЂРё -flto -s</div>
+        <div class="kpi-title">FastMap 16B SSE2 (3M ops)</div>
+        <div class="kpi-value kpi-val-nim">168.02 ms</div>
+        <div class="kpi-note">~1.30× быстрее std::HashMap (219.03 ms), но ~1.25× позади hashbrown (134.20 ms)</div>
       </div>
       <div class="kpi-card">
-        <div class="kpi-title">Algorithm LOC</div>
-        <div class="kpi-value">307 СЃС‚СЂРѕРє</div>
-        <div class="kpi-diff">РќР° ~30% РјРµРЅСЊС€Рµ Rust (442 СЃС‚СЂРѕРєРё РІ rust_ultra_showcase.rs)</div>
+        <div class="kpi-title">ZeroPack POD 64 MB (Nim)</div>
+        <div class="kpi-value kpi-val-nim">13.69 ms</div>
+        <div class="kpi-diff">med 13.69 vs Rust 54.73 ms (эффект кэширования блоков аллокатором)</div>
       </div>
       <div class="kpi-card">
         <div class="kpi-title">Call-Site Unsafe</div>
         <div class="kpi-value" style="color: var(--success);">0</div>
-        <div class="kpi-diff">РќРёР·РєРѕСѓСЂРѕРІРЅРµРІС‹Р№ РєРѕРґ (cast/ptr/checks:off) РёР·РѕР»РёСЂРѕРІР°РЅ РІ algx</div>
+        <div class="kpi-diff">Низкоуровневый код (cast/ptr/checks:off) изолирован в algx</div>
       </div>
     </div>
 
     <div class="panel">
       <div class="panel-header">
-        <span>РџСЂРёРјРµС‡Р°РЅРёРµ Рє РјРµС‚РѕРґРёРєРµ Р·Р°РјРµСЂРѕРІ (Single-Machine Caveat)</span>
-        <span style="font-size: 13px; color: var(--muted); font-family: var(--font-mono);">Windows 10/11 x64</span>
+        <span>Методика и честные оговорки (Single-Machine Caveat)</span>
+        <span style="font-size: 13px; color: var(--muted); font-family: var(--font-mono);">Windows 10/11 x64 • Warmup=2, Runs=11</span>
       </div>
-      <p style="color: var(--muted); font-size: 13.5px; line-height: 1.6;">
-        Р’СЃРµ СЃСЂР°РІРЅРµРЅРёСЏ РІС‹РїРѕР»РЅРµРЅС‹ РЅР° РѕРґРЅРѕР№ РјР°С€РёРЅРµ (AMD Ryzen 3 3200U, 2 СЏРґСЂР° / 4 РїРѕС‚РѕРєР°, ~6 Р“Р‘ РћР—РЈ).
-        Nim РєРѕРјРїРёР»РёСЂСѓРµС‚СЃСЏ С‡РµСЂРµР· MinGW-W64 GCC 11.1.0 (<code>--mm:orc</code>), Rust вЂ” С‡РµСЂРµР· <code>x86_64-pc-windows-msvc</code> (LLVM 22.1.2).
-        РР·-Р·Р° 2 С„РёР·РёС‡РµСЃРєРёС… СЏРґРµСЂ Р°Р±СЃРѕР»СЋС‚РЅС‹Рµ РјРёР»Р»РёСЃРµРєСѓРЅРґС‹ С‡СѓРІСЃС‚РІРёС‚РµР»СЊРЅС‹ Рє С„РѕРЅРѕРІРѕР№ РЅР°РіСЂСѓР·РєРµ РћРЎ; РґРѕРІРµСЂРёС‚РµР»СЊРЅС‹Рµ РёРЅС‚РµСЂРІР°Р»С‹ РїРѕ РјРЅРѕР¶РµСЃС‚РІРµРЅРЅС‹Рј РјР°С€РёРЅР°Рј РЅРµ СЃС‚СЂРѕРёР»РёСЃСЊ.
-        РџРѕРґСЂРѕР±РЅР°СЏ С‚Р°Р±Р»РёС†Р° РїРѕ РІСЃРµРј 4 РґРёСЃС†РёРїР»РёРЅР°Рј (РІРєР»СЋС‡Р°СЏ РѕС‚СЃС‚Р°РІР°РЅРёРµ СЃРєР°Р»СЏСЂРЅРѕРіРѕ <code>FastMap</code> РѕС‚ <code>hashbrown</code> СЃ 16-Р±Р°Р№С‚РЅС‹Рј SSE2) РїСЂРёРІРµРґРµРЅР° РІ <code>docs/BENCHMARK_SHOWCASE.md</code>.
+      <p style="color: var(--muted); font-size: 13.5px; line-height: 1.65;">
+        Все замеры выполнены на одной простаивающей машине (AMD Ryzen 3 3200U, 2 ядра / 4 потока, ~6 ГБ ОЗУ, схема питания High Performance) за 11 измеренных прогонов после 2 прогревочных; доверительные интервалы по множеству машин не строились.
+        Nim собирается через <code>x86_64-w64-mingw32</code> GCC 11.1.0 (<code>-d:danger --mm:orc -march=native -O3 -flto</code>), Rust — через <code>x86_64-pc-windows-msvc</code> (LLVM 22.1.2, <code>lto=fat</code>).
+        В дисциплине <strong>ZeroPack POD (64 МБ)</strong> разница (13.69 ms vs 54.73 ms med) в значительной степени обусловлена аллокатором: Rust <code>Vec</code> на каждой итерации вызывает <code>VirtualAlloc</code>/<code>VirtualFree</code> в MSVC CRT с soft page faults ядра, тогда как аллокатор Nim переиспользует крупные блоки.
+        В хэш-таблице <strong>FastMap (16B SSE2)</strong> уверенно обгоняет <code>std::HashMap + SplitMix64</code> (~1.30× по медиане), но <code>hashbrown</code> (<code>RustFastMap</code>) быстрее на ~1.25×.
       </p>
     </div>
 
     <div class="panel">
       <div class="panel-header">
-        <span>Р’СЂРµРјСЏ РІС‹РїРѕР»РЅРµРЅРёСЏ (РјРµРЅСЊС€Рµ вЂ” Р»СѓС‡С€Рµ, symmetric suite min)</span>
-        <span style="font-size: 13px; color: var(--muted); font-family: var(--font-mono);">10M int64 (4 РїРѕС‚РѕРєР°)</span>
+        <span>Сравнение медианы по 4 дисциплинам (меньше — лучше, ms)</span>
+        <span style="font-size: 13px; color: var(--muted); font-family: var(--font-mono);">--mm:orc • Median (11 runs)</span>
       </div>
       <div class="chart-container">
-        <div class="chart-row">
-          <div class="chart-label"><span>Nim algx/ultrasort (Hybrid MSD Radix + L1 Insertion)</span><span>76.98 ms</span></div>
-          <div class="chart-bar-bg"><div class="chart-bar bar-nim" style="width: 16.4%;">76.98 ms</div></div>
+        <div class="chart-group">
+          <div class="chart-group-title">1. UltraSort (10M int64, 4 потока)</div>
+          <div class="chart-row">
+            <div class="chart-label"><span>Nim algx/ultrasort (min 69.06 / med 71.43 / mean 71.75 / max 76.76)</span><span>71.43 ms</span></div>
+            <div class="chart-bar-bg"><div class="chart-bar bar-nim" style="width: 31.6%;">71.43 ms</div></div>
+          </div>
+          <div class="chart-row">
+            <div class="chart-label"><span>Rust ultra_sort_rust (min 75.31 / med 88.60 / mean 88.26 / max 104.71)</span><span>88.60 ms</span></div>
+            <div class="chart-bar-bg"><div class="chart-bar bar-rust" style="width: 39.2%;">88.60 ms</div></div>
+          </div>
         </div>
-        <div class="chart-row">
-          <div class="chart-label"><span>Rust Ultra (std::thread + Barrier + L1 MSD Radix)</span><span>78.07 ms</span></div>
-          <div class="chart-bar-bg"><div class="chart-bar bar-rust" style="width: 16.6%;">78.07 ms</div></div>
+
+        <div class="chart-group">
+          <div class="chart-group-title">2. Хэш-таблица: 3M ops (SplitMix64, 2^21 слотов)</div>
+          <div class="chart-row">
+            <div class="chart-label"><span>RustFastMap (hashbrown) (min 115.53 / med 134.20 / mean 135.10 / max 162.21)</span><span>134.20 ms</span></div>
+            <div class="chart-bar-bg"><div class="chart-bar bar-hashbrown" style="width: 59.4%;">134.20 ms</div></div>
+          </div>
+          <div class="chart-row">
+            <div class="chart-label"><span>Nim algx/swissmap FastMap 16B SSE2 (min 153.54 / med 168.02 / mean 168.74 / max 196.63)</span><span>168.02 ms</span></div>
+            <div class="chart-bar-bg"><div class="chart-bar bar-nim" style="width: 74.4%;">168.02 ms</div></div>
+          </div>
+          <div class="chart-row">
+            <div class="chart-label"><span>Rust std::HashMap + SplitMix64 (min 175.37 / med 219.03 / mean 225.78 / max 299.91)</span><span>219.03 ms</span></div>
+            <div class="chart-bar-bg"><div class="chart-bar bar-rust" style="width: 97.0%;">219.03 ms</div></div>
+          </div>
         </div>
-        <div class="chart-row">
-          <div class="chart-label"><span>Rust std::slice::sort_unstable (PDQSort, 1T baseline)</span><span>469.00 ms</span></div>
-          <div class="chart-bar-bg"><div class="chart-bar" style="background: #444c56; color: #fff; width: 100%;">469.00 ms</div></div>
+
+        <div class="chart-group">
+          <div class="chart-group-title">3. ZeroPack POD (2M × 32B = 64 MB, эффект аллокатора)</div>
+          <div class="chart-row">
+            <div class="chart-label"><span>Nim ZeroPack (min 12.52 / med 13.69 / mean 13.47 / max 13.96)</span><span>13.69 ms</span></div>
+            <div class="chart-bar-bg"><div class="chart-bar bar-nim" style="width: 6.1%;">13.69 ms</div></div>
+          </div>
+          <div class="chart-row">
+            <div class="chart-label"><span>Rust Vec + copy_nonoverlapping (min 38.63 / med 54.73 / mean 50.80 / max 60.78)</span><span>54.73 ms</span></div>
+            <div class="chart-bar-bg"><div class="chart-bar bar-rust" style="width: 24.2%;">54.73 ms</div></div>
+          </div>
+        </div>
+
+        <div class="chart-group">
+          <div class="chart-group-title">4. SimdScan 8-Way (25M int64, 1 поток)</div>
+          <div class="chart-row">
+            <div class="chart-label"><span>Nim algx/simdscan (min 38.66 / med 39.78 / mean 40.10 / max 43.85)</span><span>39.78 ms</span></div>
+            <div class="chart-bar-bg"><div class="chart-bar bar-nim" style="width: 17.6%;">39.78 ms</div></div>
+          </div>
+          <div class="chart-row">
+            <div class="chart-label"><span>Rust 8-Way unsafe (min 40.80 / med 43.20 / mean 43.71 / max 47.98)</span><span>43.20 ms</span></div>
+            <div class="chart-bar-bg"><div class="chart-bar bar-rust" style="width: 19.1%;">43.20 ms</div></div>
+          </div>
         </div>
       </div>
     </div>
 
     <div class="panel">
       <div class="panel-header">
-        <span>Side-by-Side: Р Р°Р·РІРµСЂС‚РєР° СЃСѓРїРµСЂСЃРєР°Р»СЏСЂРЅРѕРіРѕ 4-way РїРѕРґСЃС‡РµС‚Р° РіРёСЃС‚РѕРіСЂР°РјРјС‹</span>
+        <span>Полная таблица замеров (ms)</span>
+        <span style="font-size: 13px; color: var(--muted); font-family: var(--font-mono);">docs/BENCHMARK_SHOWCASE.md</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Дисциплина</th>
+              <th>Реализация</th>
+              <th class="num">Min</th>
+              <th class="num">Median</th>
+              <th class="num">Mean</th>
+              <th class="num">Max</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>UltraSort (10M i64, 4T)</td>
+              <td class="win">Nim 2.2.12 (algx/ultrasort)</td>
+              <td class="num win">69.06</td>
+              <td class="num win">71.43</td>
+              <td class="num win">71.75</td>
+              <td class="num win">76.76</td>
+            </tr>
+            <tr>
+              <td>UltraSort (10M i64, 4T)</td>
+              <td>Rust 1.96.0 (ultra_sort_rust)</td>
+              <td class="num">75.31</td>
+              <td class="num">88.60</td>
+              <td class="num">88.26</td>
+              <td class="num">104.71</td>
+            </tr>
+            <tr>
+              <td>HashMap (3M ops, SplitMix64)</td>
+              <td class="win-rust">Rust 1.96.0 (RustFastMap / hashbrown)</td>
+              <td class="num win-rust">115.53</td>
+              <td class="num win-rust">134.20</td>
+              <td class="num win-rust">135.10</td>
+              <td class="num win-rust">162.21</td>
+            </tr>
+            <tr>
+              <td>HashMap (3M ops, SplitMix64)</td>
+              <td>Nim 2.2.12 (FastMap 16B SSE2)</td>
+              <td class="num">153.54</td>
+              <td class="num">168.02</td>
+              <td class="num">168.74</td>
+              <td class="num">196.63</td>
+            </tr>
+            <tr>
+              <td>HashMap (3M ops, SplitMix64)</td>
+              <td>Rust 1.96.0 (std::HashMap)</td>
+              <td class="num">175.37</td>
+              <td class="num">219.03</td>
+              <td class="num">225.78</td>
+              <td class="num">299.91</td>
+            </tr>
+            <tr>
+              <td>ZeroPack POD (2M × 32B = 64MB)</td>
+              <td class="win">Nim 2.2.12 (ZeroPack)</td>
+              <td class="num win">12.52</td>
+              <td class="num win">13.69</td>
+              <td class="num win">13.47</td>
+              <td class="num win">13.96</td>
+            </tr>
+            <tr>
+              <td>ZeroPack POD (2M × 32B = 64MB)</td>
+              <td>Rust 1.96.0 (Vec + copy_nonoverlapping)</td>
+              <td class="num">38.63</td>
+              <td class="num">54.73</td>
+              <td class="num">50.80</td>
+              <td class="num">60.78</td>
+            </tr>
+            <tr>
+              <td>SimdScan 8-Way (25M i64, 1T)</td>
+              <td class="win">Nim 2.2.12 (algx/simdscan)</td>
+              <td class="num win">38.66</td>
+              <td class="num win">39.78</td>
+              <td class="num win">40.10</td>
+              <td class="num win">43.85</td>
+            </tr>
+            <tr>
+              <td>SimdScan 8-Way (25M i64, 1T)</td>
+              <td>Rust 1.96.0 (8-Way unsafe)</td>
+              <td class="num">40.80</td>
+              <td class="num">43.20</td>
+              <td class="num">43.71</td>
+              <td class="num">47.98</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <span>Side-by-Side: Развертка суперскалярного 4-way подсчета гистограммы</span>
       </div>
       <div class="code-grid">
         <div class="code-box">
           <div class="code-topbar">
-            <span style="color: var(--accent-nim);">Nim (ultrasort.nim) вЂ” Р§РёСЃС‚С‹Р№ AST С€Р°Р±Р»РѕРЅ</span>
-            <span class="badge">1 РІС‹Р·РѕРІ С€Р°Р±Р»РѕРЅР°</span>
+            <span style="color: var(--accent-nim);">Nim (ultrasort.nim) — Чистый AST шаблон</span>
+            <span class="badge">1 вызов шаблона</span>
           </div>
-          <pre><code><span class="cm"># РЁР°Р±Р»РѕРЅ РІСЂРµРјРµРЅРё РєРѕРјРїРёР»СЏС†РёРё СЂР°Р·РІРѕСЂР°С‡РёРІР°РµС‚ 4x С†РёРєР»
-# РїРѕРІРµСЂС… РІРЅСѓС‚СЂРµРЅРЅРµРіРѕ ptr UncheckedArray[int64] РІ algx</span>
+          <pre><code><span class="cm"># Шаблон времени компиляции разворачивает 4x цикл
+# поверх внутреннего ptr UncheckedArray[int64] в algx</span>
 
 <span class="fn">unrollHist4</span>(
-  sIdx, eIdx, 
-  st.hists[t], 
+  sIdx, eIdx,
+  st.hists[t],
   <span class="kw">int</span>((<span class="kw">cast</span>[<span class="kw">uint64</span>](dataPtr[it]) <span class="kw">shr</span> Shift1) <span class="kw">xor</span> SignFlip)
 )</code></pre>
         </div>
 
         <div class="code-box">
           <div class="code-topbar">
-            <span style="color: var(--accent-rust);">Rust (rust_ultra_showcase.rs) вЂ” Р СѓС‡РЅРѕР№ unsafe</span>
-            <span class="badge">Р‘РѕР№Р»РµСЂРїР»РµР№С‚ СѓРєР°Р·Р°С‚РµР»РµР№</span>
+            <span style="color: var(--accent-rust);">Rust (rust_ultra_showcase.rs) — Ручной unsafe</span>
+            <span class="badge">Бойлерплейт указателей</span>
           </div>
-          <pre><code><span class="cm">// РџСЂРёС…РѕРґРёС‚СЃСЏ РѕР±С…РѕРґРёС‚СЊ РїСЂРѕРІРµСЂРєРё РєРѕРјРїРёР»СЏС‚РѕСЂР°:</span>
+          <pre><code><span class="cm">// Приходится обходить проверки компилятора:</span>
 <span class="kw">let</span> data_addr = data.<span class="fn">as_mut_ptr</span>() <span class="kw">as</span> <span class="kw">usize</span>;
 <span class="kw">let</span> cur_ptr = (data_addr + s * <span class="num">8</span>) <span class="kw">as</span> *<span class="kw">const</span> <span class="kw">i64</span>;
 
@@ -251,7 +404,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   <span class="kw">let</span> v = *cur_ptr;
   <span class="kw">let</span> b = ((v <span class="kw">as</span> <span class="kw">u64</span> >> Shift1) ^ SignFlip) <span class="kw">as</span> <span class="kw">usize</span>;
   *my_hist.<span class="fn">get_unchecked_mut</span>(b) += <span class="num">1</span>;
-  <span class="cm">// ... РґСѓР±Р»РёСЂСѓРµС‚СЃСЏ 4 СЂР°Р·Р° РІСЂСѓС‡РЅСѓСЋ</span>
+  <span class="cm">// ... дублируется 4 раза вручную</span>
 }</code></pre>
         </div>
       </div>
@@ -261,10 +414,12 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 </html>
 """
 
+
 def main():
     output_path = Path(__file__).parent / "showcase.html"
     output_path.write_text(HTML_TEMPLATE, encoding="utf-8")
-    print(f"[OK] Р’РёС‚СЂРёРЅР° СѓСЃРїРµС€РЅРѕ СЃРіРµРЅРµСЂРёСЂРѕРІР°РЅР°: {output_path.resolve()}")
+    print(f"[OK] Витрина успешно сгенерирована: {output_path.resolve()}")
+
 
 if __name__ == "__main__":
     main()

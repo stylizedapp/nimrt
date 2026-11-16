@@ -30,12 +30,12 @@ proc initHtmlBindingRegistry*(): HtmlBindingRegistry {.raises: [].} =
   )
 
 proc destroy*(reg: var HtmlBindingRegistry) {.raises: [].} =
-  reg.clickHandlers.clear()
-  reg.inputHandlers.clear()
-  reg.textSignals.clear()
-  reg.textProcs.clear()
-  reg.inputSignals.clear()
-  reg.idToSlab.clear()
+  reset(reg.clickHandlers)
+  reset(reg.inputHandlers)
+  reset(reg.textSignals)
+  reset(reg.textProcs)
+  reset(reg.inputSignals)
+  reset(reg.idToSlab)
 
 proc onClick*(reg: var HtmlBindingRegistry, name: string, cb: HtmlClickProc) {.raises: [].} =
   reg.clickHandlers.put(name, cb)

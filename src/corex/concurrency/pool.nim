@@ -30,6 +30,12 @@ type
     pool: ptr ThreadPool
     workerId: int
 
+  TaskEnv = object
+    task: Task
+    pool: ptr ThreadPool
+    ownerThread: uint64
+    next: ptr TaskEnv
+
   ThreadPool* = object
     threads: seq[Thread[ptr WorkerArg]]
     workerArgs: ptr UncheckedArray[WorkerArg]
@@ -46,6 +52,8 @@ type
     isShutDown: bool
     threadsStarted: Atomic[bool]
     sleepingWorkers: Atomic[int]
+    retiredLock: SpinLock
+    retiredTasks: ptr TaskEnv
 
 proc `=copy`*(dest: var ThreadPool, src: ThreadPool) {.
   error: "ThreadPool cannot be copied; pass by pointer or var reference".}
@@ -56,6 +64,13 @@ proc `=destroy`*(pool: var ThreadPool) {.raises: [].}
 var tWorkerPool {.threadvar.}: pointer
 var tWorkerId {.threadvar.}: int
 var tRngState {.threadvar.}: uint64
+var gNextThreadId: Atomic[uint64]
+var tThreadId {.threadvar.}: uint64
+
+proc currentThreadToken(): uint64 {.inline.} =
+  if tThreadId == 0'u64:
+    tThreadId = atomics.fetchAdd(gNextThreadId, 1'u64, atomics.moRelaxed) + 1'u64
+  tThreadId
 
 proc currentWorkerId*(): int {.inline.} =
   ## Returns the 0-based worker thread ID if called within a ThreadPool worker, or -1 otherwise.
@@ -65,7 +80,7 @@ proc isWorkerOf*(pool: ptr ThreadPool): bool {.inline.} =
   tWorkerPool == cast[pointer](pool) and tWorkerId >= 0 and tWorkerId < pool.numWorkers
 
 proc effectiveWorkerCount*(pool: var ThreadPool): int {.inline.} =
-  if pool.threadsStarted.load(moAcquire) and pool.threads.len > 0:
+  if atomics.load(pool.threadsStarted, atomics.moAcquire) and pool.threads.len > 0:
     pool.threads.len
   elif pool.numWorkers > 0:
     pool.numWorkers
@@ -73,7 +88,7 @@ proc effectiveWorkerCount*(pool: var ThreadPool): int {.inline.} =
     max(1, countProcessors())
 
 proc isRunning*(pool: var ThreadPool): bool {.inline.} =
-  pool.running.load(moAcquire) and not pool.isShutDown
+  atomics.load(pool.running, atomics.moAcquire) and not pool.isShutDown
 
 proc nextRand(maxVal: int): int {.inline.} =
   if maxVal <= 1: return 0
@@ -92,16 +107,16 @@ proc allLocalDequesEmpty(pool: ptr ThreadPool): bool {.inline.} =
   return true
 
 proc allQueuesEmpty(pool: ptr ThreadPool): bool {.inline.} =
-  if pool.queueCount.load(moRelaxed) > 0:
+  if atomics.load(pool.queueCount, atomics.moRelaxed) > 0:
     return false
   return pool.allLocalDequesEmpty()
 
 proc popInjection*(pool: ptr ThreadPool, workerId: int, job: var Job): bool =
-  if pool.queueCount.load(moRelaxed) == 0:
+  if atomics.load(pool.queueCount, atomics.moRelaxed) == 0:
     return false
 
   acquire(pool.lock)
-  let count = pool.queueCount.load(moRelaxed)
+  let count = atomics.load(pool.queueCount, atomics.moRelaxed)
   if count > 0:
     job = pool.queue[pool.queueHead]
     pool.queue[pool.queueHead] = Job(fn: nil, arg: nil, cleanup: nil)
@@ -110,7 +125,7 @@ proc popInjection*(pool: ptr ThreadPool, workerId: int, job: var Job): bool =
     result = true
 
     if workerId >= 0 and workerId < pool.numWorkers and pool.deques != nil and pool.deques[workerId] != nil:
-      let rem = pool.queueCount.load(moRelaxed)
+      let rem = atomics.load(pool.queueCount, atomics.moRelaxed)
       let batch = min(rem, 15)
       for _ in 0 ..< batch:
         var bJob = pool.queue[pool.queueHead]
@@ -119,7 +134,7 @@ proc popInjection*(pool: ptr ThreadPool, workerId: int, job: var Job): bool =
         pool.queueCount.atomicDec(1)
         pool.deques[workerId].push(bJob)
 
-      if batch > 0 and pool.sleepingWorkers.load(moRelaxed) > 0:
+      if batch > 0 and atomics.load(pool.sleepingWorkers, atomics.moRelaxed) > 0:
         wakeOne(pool.condWork)
 
   release(pool.lock)
@@ -148,7 +163,7 @@ proc popLocalWork*(pool: ptr ThreadPool, job: var Job): bool {.inline.} =
   false
 
 proc wakeAllWorkers*(pool: var ThreadPool) {.inline.} =
-  if pool.sleepingWorkers.load(moRelaxed) > 0:
+  if atomics.load(pool.sleepingWorkers, atomics.moRelaxed) > 0:
     wakeAll(pool.condWork)
 
 proc workerProc(arg: ptr WorkerArg) {.thread.} =
@@ -173,7 +188,7 @@ proc workerProc(arg: ptr WorkerArg) {.thread.} =
         execute(job)
         continue
 
-      if not pool.running.load(moAcquire):
+      if not atomics.load(pool.running, atomics.moAcquire):
         if pool.allQueuesEmpty():
           break
 
@@ -201,12 +216,12 @@ proc workerProc(arg: ptr WorkerArg) {.thread.} =
         continue
 
       acquire(pool.lock)
-      if not pool.running.load(moAcquire):
+      if not atomics.load(pool.running, atomics.moAcquire):
         if pool.allQueuesEmpty():
           release(pool.lock)
           break
 
-      if pool.queueCount.load(moRelaxed) > 0:
+      if atomics.load(pool.queueCount, atomics.moRelaxed) > 0:
         job = pool.queue[pool.queueHead]
         pool.queue[pool.queueHead] = Job(fn: nil, arg: nil, cleanup: nil)
         pool.queueHead = (pool.queueHead + 1) mod pool.queueCap
@@ -219,7 +234,7 @@ proc workerProc(arg: ptr WorkerArg) {.thread.} =
         release(pool.lock)
         continue
 
-      if not pool.running.load(moAcquire):
+      if not atomics.load(pool.running, atomics.moAcquire):
         release(pool.lock)
         break
 
@@ -233,9 +248,11 @@ proc workerProc(arg: ptr WorkerArg) {.thread.} =
     tWorkerId = -1
 
 proc tryEnsureWorkers*(pool: var ThreadPool): Result[void, ConcurrencyError] =
-  if not pool.threadsStarted.load(moAcquire):
+  if not atomics.load(pool.running, atomics.moAcquire) or pool.isShutDown:
+    return err[void, ConcurrencyError](cePoolStopped)
+  if not atomics.load(pool.threadsStarted, atomics.moAcquire):
     acquire(pool.lock)
-    if not pool.threadsStarted.load(moRelaxed) and pool.running.load(moRelaxed) and not pool.isShutDown:
+    if not atomics.load(pool.threadsStarted, atomics.moRelaxed) and atomics.load(pool.running, atomics.moRelaxed) and not pool.isShutDown:
       let count = if pool.numWorkers > 0: pool.numWorkers else: max(1, countProcessors())
       pool.numWorkers = count
 
@@ -258,7 +275,7 @@ proc tryEnsureWorkers*(pool: var ThreadPool): Result[void, ConcurrencyError] =
           break
 
       if createFailed:
-        pool.running.store(false, moRelease)
+        atomics.store(pool.running, false, atomics.moRelease)
         wakeAll(pool.condWork)
         release(pool.lock)
         for i in 0 ..< startedCount:
@@ -266,7 +283,7 @@ proc tryEnsureWorkers*(pool: var ThreadPool): Result[void, ConcurrencyError] =
         pool.threads.setLen(0)
         return err[void, ConcurrencyError](ceThreadCreateFailed)
 
-      pool.threadsStarted.store(true, moRelease)
+      atomics.store(pool.threadsStarted, true, atomics.moRelease)
     release(pool.lock)
   ok[void, ConcurrencyError]()
 
@@ -282,14 +299,16 @@ proc initThreadPoolFields(pool: var ThreadPool, numThreads: int) {.raises: [].} 
   pool.queue = cast[ptr UncheckedArray[Job]](allocShared0(sizeof(Job) * InitialCapacity))
   pool.queueHead = 0
   pool.queueTail = 0
-  pool.queueCount.store(0, moRelaxed)
+  atomics.store(pool.queueCount, 0, atomics.moRelaxed)
   pool.numWorkers = count
   initSysLock(pool.lock)
   initCondVar(pool.condWork)
-  pool.running.store(true, moRelaxed)
+  atomics.store(pool.running, true, atomics.moRelaxed)
   pool.isShutDown = false
-  pool.threadsStarted.store(false, moRelaxed)
-  pool.sleepingWorkers.store(0, moRelaxed)
+  atomics.store(pool.threadsStarted, false, atomics.moRelaxed)
+  atomics.store(pool.sleepingWorkers, 0, atomics.moRelaxed)
+  initSpinLock(pool.retiredLock)
+  pool.retiredTasks = nil
 
 proc initThreadPool*(numThreads: int = 0): ThreadPool {.raises: [].} =
   ## Initializes a ThreadPool with the specified number of worker threads (default: CPU cores).
@@ -314,13 +333,13 @@ proc tryPushInjection*(pool: var ThreadPool, job: Job): Result[void, Concurrency
     return wRes
 
   acquire(pool.lock)
-  if not pool.running.load(moRelaxed) or pool.isShutDown:
+  if not atomics.load(pool.running, atomics.moRelaxed) or pool.isShutDown:
     release(pool.lock)
     if job.cleanup != nil and job.arg != nil:
       job.cleanup(job.arg)
     return err[void, ConcurrencyError](cePoolStopped)
 
-  if pool.queueCount.load(moRelaxed) == pool.queueCap:
+  if atomics.load(pool.queueCount, atomics.moRelaxed) == pool.queueCap:
     let oldCap = pool.queueCap
     let newCap = oldCap * 2
     let newQueue = cast[ptr UncheckedArray[Job]](allocShared0(sizeof(Job) * newCap))
@@ -359,12 +378,12 @@ proc trySubmitJob*(pool: var ThreadPool, job: Job): Result[void, ConcurrencyErro
     return wRes
   let poolPtr = cast[pointer](addr pool)
   if tWorkerPool == poolPtr and tWorkerId >= 0 and tWorkerId < pool.numWorkers:
-    if not pool.running.load(moAcquire) or pool.isShutDown:
+    if not atomics.load(pool.running, atomics.moAcquire) or pool.isShutDown:
       if job.cleanup != nil and job.arg != nil:
         job.cleanup(job.arg)
       return err[void, ConcurrencyError](cePoolStopped)
     pool.deques[tWorkerId].push(job)
-    if pool.sleepingWorkers.load(moRelaxed) > 0:
+    if atomics.load(pool.sleepingWorkers, atomics.moRelaxed) > 0:
       wakeOne(pool.condWork)
     return ok[void, ConcurrencyError]()
   pool.tryPushInjection(job)
@@ -388,30 +407,57 @@ type
   TNimTypeV2 = object
     destructor: pointer
     size: int
-    align: int
-    depth: int
-    display: pointer
+    align: int16
+    depth: int16
+    display: ptr uint32
     traceImpl: pointer
-    flags: uint32
+    typeInfoV1: pointer
+    flags: int
 
   RefHeader = object
     rc: int
     when defined(gcOrc):
       rootIdx: int
+    when defined(nimArcDebug) or defined(nimArcIds):
       refId: int
 
 proc sanitizeClosure(env: pointer) {.inline.} =
   when defined(gcOrc):
     if env != nil:
       let pDesc = cast[ptr ptr TNimTypeV2](env)[]
-      if pDesc != nil:
-        pDesc.flags = pDesc.flags or 1'u32 # acyclicFlag
+      if pDesc != nil and (pDesc.flags and 1) == 0:
+        pDesc.flags = pDesc.flags or 1 # acyclicFlag
       let cell = cast[ptr RefHeader](cast[int](env) - sizeof(RefHeader))
       if cell.rootIdx > 0:
         GC_runOrc()
 
-type TaskEnv = object
-  task: Task
+proc drainRetiredTasks(pool: var ThreadPool, onlyOwner: uint64) {.raises: [].} =
+  var head: ptr TaskEnv
+  withLock(pool.retiredLock):
+    head = pool.retiredTasks
+    pool.retiredTasks = nil
+  if head == nil:
+    return
+  var keepHead: ptr TaskEnv = nil
+  var keepTail: ptr TaskEnv = nil
+  var cur = head
+  while cur != nil:
+    let nxt = cur.next
+    cur.next = nil
+    if onlyOwner == 0'u64 or cur.ownerThread == onlyOwner:
+      reset(cur.task)
+      deallocShared(cur)
+    else:
+      if keepHead == nil:
+        keepHead = cur
+      else:
+        keepTail.next = cur
+      keepTail = cur
+    cur = nxt
+  if keepHead != nil:
+    withLock(pool.retiredLock):
+      keepTail.next = pool.retiredTasks
+      pool.retiredTasks = keepHead
 
 proc runTaskEnv(p: pointer) {.nimcall, gcsafe.} =
   let env = cast[ptr TaskEnv](p)
@@ -421,19 +467,31 @@ proc runTaskEnv(p: pointer) {.nimcall, gcsafe.} =
 proc freeTaskEnv(p: pointer) {.nimcall, gcsafe.} =
   let env = cast[ptr TaskEnv](p)
   if env != nil:
-    reset(env.task)
-    deallocShared(env)
+    if env.ownerThread == 0'u64 or env.ownerThread == currentThreadToken():
+      reset(env.task)
+      deallocShared(env)
+    else:
+      let pool = env.pool
+      withLock(pool.retiredLock):
+        env.next = pool.retiredTasks
+        pool.retiredTasks = env
 
 proc trySpawn*(pool: var ThreadPool, task: proc() {.gcsafe.}): Result[void, ConcurrencyError] =
   ## Submits a task closure for asynchronous execution, returning Result on stopped/failed pool.
+  let owner = currentThreadToken()
+  pool.drainRetiredTasks(owner)
   let wRes = pool.tryEnsureWorkers()
   if wRes.isErr:
     return wRes
   let env = cast[ptr TaskEnv](allocShared0(sizeof(TaskEnv)))
   env.task = task
+  env.pool = addr pool
   let raw = cast[ClosureRaw](task)
   if raw.env != nil:
     sanitizeClosure(raw.env)
+    env.ownerThread = owner
+  else:
+    env.ownerThread = 0'u64
   let job = Job(fn: runTaskEnv, arg: env, cleanup: freeTaskEnv)
   pool.trySubmitJob(job)
 
@@ -456,18 +514,18 @@ proc shutdown*(pool: var ThreadPool) {.raises: [].} =
     release(pool.lock)
     return
   pool.isShutDown = true
-  pool.running.store(false, moRelease)
+  atomics.store(pool.running, false, atomics.moRelease)
   wakeAll(pool.condWork)
   release(pool.lock)
 
-  if pool.threadsStarted.load(moAcquire) and pool.threads.len > 0:
+  if atomics.load(pool.threadsStarted, atomics.moAcquire) and pool.threads.len > 0:
     for i in 0 ..< pool.threads.len:
       joinThread(pool.threads[i])
     pool.threads.setLen(0)
 
   acquire(pool.lock)
   if pool.queue != nil:
-    while pool.queueCount.load(moRelaxed) > 0:
+    while atomics.load(pool.queueCount, atomics.moRelaxed) > 0:
       var job = pool.queue[pool.queueHead]
       pool.queueHead = (pool.queueHead + 1) mod pool.queueCap
       pool.queueCount.atomicDec(1)
@@ -493,6 +551,7 @@ proc shutdown*(pool: var ThreadPool) {.raises: [].} =
     pool.workerArgs = nil
 
   release(pool.lock)
+  pool.drainRetiredTasks(0'u64)
   deinitCondVar(pool.condWork)
   deinitSysLock(pool.lock)
 
@@ -500,13 +559,13 @@ proc shutdown*(pool: ptr ThreadPool) {.inline, raises: [].} =
   shutdown(pool[])
 
 proc `=destroy`*(pool: var ThreadPool) {.raises: [].} =
-  if pool.running.load(moRelaxed) and not pool.isShutDown:
+  if atomics.load(pool.running, atomics.moRelaxed) and not pool.isShutDown:
     pool.shutdown()
   else:
     if pool.queue != nil or pool.deques != nil or pool.workerArgs != nil:
       acquire(pool.lock)
       if pool.queue != nil:
-        while pool.queueCount.load(moRelaxed) > 0:
+        while atomics.load(pool.queueCount, atomics.moRelaxed) > 0:
           var job = pool.queue[pool.queueHead]
           pool.queueHead = (pool.queueHead + 1) mod pool.queueCap
           pool.queueCount.atomicDec(1)
@@ -529,6 +588,7 @@ proc `=destroy`*(pool: var ThreadPool) {.raises: [].} =
       release(pool.lock)
       deinitCondVar(pool.condWork)
       deinitSysLock(pool.lock)
+    pool.drainRetiredTasks(0'u64)
 
 # =============================================================================
 # Process-Wide Default ThreadPool Singleton (Explicit Ownership & Override API)
@@ -540,19 +600,19 @@ var gDefaultPoolLock: SpinLock
 
 proc hasDefaultPool*(): bool {.inline, raises: [].} =
   ## Returns true if a default ThreadPool (owned or overridden) is currently installed.
-  gDefaultPool.load(moAcquire) != nil
+  atomics.load(gDefaultPool, atomics.moAcquire) != nil
 
 proc getDefaultPool*(): ptr ThreadPool {.raises: [].} =
   ## Returns the process-wide shared default ThreadPool instance, initializing it lazily
   ## on first use unless an explicit pool was installed via `setDefaultPool`.
-  var p = cast[ptr ThreadPool](gDefaultPool.load(moAcquire))
+  var p = cast[ptr ThreadPool](atomics.load(gDefaultPool, atomics.moAcquire))
   if p == nil:
     withLock(gDefaultPoolLock):
-      p = cast[ptr ThreadPool](gDefaultPool.load(moAcquire))
+      p = cast[ptr ThreadPool](atomics.load(gDefaultPool, atomics.moAcquire))
       if p == nil:
         p = newThreadPool()
-        gDefaultPoolOwned.store(true, moRelaxed)
-        gDefaultPool.store(cast[pointer](p), moRelease)
+        atomics.store(gDefaultPoolOwned, true, atomics.moRelaxed)
+        atomics.store(gDefaultPool, cast[pointer](p), atomics.moRelease)
   return p
 
 proc setDefaultPool*(pool: ptr ThreadPool, takeOwnership: bool = false): ptr ThreadPool {.raises: [].} =
@@ -560,10 +620,10 @@ proc setDefaultPool*(pool: ptr ThreadPool, takeOwnership: bool = false): ptr Thr
   ## If an owned singleton pool was previously active, it is shut down and freed (returning `nil`).
   ## If a borrowed pool was previously installed (`takeOwnership = false`), returns it un-freed.
   withLock(gDefaultPoolLock):
-    let prev = cast[ptr ThreadPool](gDefaultPool.load(moAcquire))
-    let prevOwned = gDefaultPoolOwned.load(moRelaxed)
-    gDefaultPoolOwned.store(if pool != nil: takeOwnership else: false, moRelaxed)
-    gDefaultPool.store(cast[pointer](pool), moRelease)
+    let prev = cast[ptr ThreadPool](atomics.load(gDefaultPool, atomics.moAcquire))
+    let prevOwned = atomics.load(gDefaultPoolOwned, atomics.moRelaxed)
+    atomics.store(gDefaultPoolOwned, if pool != nil: takeOwnership else: false, atomics.moRelaxed)
+    atomics.store(gDefaultPool, cast[pointer](pool), atomics.moRelease)
     if prev != nil and prev != pool and prevOwned:
       prev.shutdown()
       deallocShared(prev)
@@ -576,13 +636,13 @@ proc spawn*(task: proc() {.gcsafe.}) {.inline.} =
 
 proc shutdownThreadPool*() {.raises: [].} =
   ## Shuts down and frees the owned default ThreadPool, or detaches a borrowed override.
-  if gDefaultPool.load(moAcquire) != nil:
+  if atomics.load(gDefaultPool, atomics.moAcquire) != nil:
     withLock(gDefaultPoolLock):
-      let p = cast[ptr ThreadPool](gDefaultPool.load(moAcquire))
-      let owned = gDefaultPoolOwned.load(moRelaxed)
+      let p = cast[ptr ThreadPool](atomics.load(gDefaultPool, atomics.moAcquire))
+      let owned = atomics.load(gDefaultPoolOwned, atomics.moRelaxed)
       if p != nil:
-        gDefaultPool.store(nil, moRelease)
-        gDefaultPoolOwned.store(false, moRelaxed)
+        atomics.store(gDefaultPool, nil, atomics.moRelease)
+        atomics.store(gDefaultPoolOwned, false, atomics.moRelaxed)
         if owned:
           p.shutdown()
           deallocShared(p)
