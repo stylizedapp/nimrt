@@ -1,12 +1,10 @@
-## Verification test for src/wiztree/types.nim
+## Verification test for apps/wiztree/types.nim
 
-import std/[strformat]
 import ../src/corex/allocators
 import ../src/corex/memory
-import ../src/corex/containers
 import ../src/corex/testing
 import ../src/algx/swissmap
-import ../src/wiztree/types
+import ../apps/wiztree/types
 
 proc main() =
   echo "=== Running WizTree Types Verification Suite ==="

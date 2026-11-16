@@ -124,23 +124,23 @@ proc main() =
   let desktopShot2 = "apps/html_desktop/showcase_interactive.png"
 
   echo "\n[1/4] Building & Verifying Singularity Lab (nimui_demo)..."
-  runCmdChecked(&"nim c -r apps/nimui_demo/src/main.nim --screenshot {demoShot}")
+  runCmdChecked(&"nim c --nimcache:nimcache/showcase_nimui_demo -r apps/nimui_demo/src/main.nim --screenshot {demoShot}")
   verifyPngAndPixels(demoShot, 1440, 880)
 
   echo "\n[2/4] Building & Verifying HTML5/CSS3 Zero-JS Studio (html_css_studio)..."
-  runCmdChecked(&"nim c -r apps/html_css_studio/src/main.nim --headless-test --export-screenshots {studioDir}")
+  runCmdChecked(&"nim c --nimcache:nimcache/showcase_html_css_studio -r apps/html_css_studio/src/main.nim --headless-test --export-screenshots {studioDir}")
   verifyPngAndPixels(studioDir / "studio_tab1_dashboard.png", 1360, 860)
   verifyPngAndPixels(studioDir / "studio_tab2_forms_controls.png", 1360, 860)
   verifyPngAndPixels(studioDir / "studio_tab3_zero_js_sandbox.png", 1360, 860)
   verifyPngAndPixels(studioDir / "studio_tab4_virtual_million.png", 1360, 860)
 
   echo "\n[3/4] Building & Verifying Component, SDF & Unicode Gallery (widget_gallery)..."
-  runCmdChecked(&"nim c -r apps/widget_gallery/src/main.nim --headless-test --screenshot {galleryShot1} --screenshot-open-dropdown {galleryShot2}")
+  runCmdChecked(&"nim c --nimcache:nimcache/showcase_widget_gallery -r apps/widget_gallery/src/main.nim --headless-test --screenshot {galleryShot1} --screenshot-open-dropdown {galleryShot2}")
   verifyPngAndPixels(galleryShot1, 1280, 820)
   verifyPngAndPixels(galleryShot2, 1280, 820)
 
   echo "\n[4/4] Building & Verifying Native HTML5/CSS3 Desktop Runner (html_desktop)..."
-  runCmdChecked(&"nim c -r apps/html_desktop/src/main.nim --headless-test --screenshot {desktopShot1} --screenshot-interactive {desktopShot2}")
+  runCmdChecked(&"nim c --nimcache:nimcache/showcase_html_desktop -r apps/html_desktop/src/main.nim --headless-test --screenshot {desktopShot1} --screenshot-interactive {desktopShot2}")
   verifyPngAndPixels(desktopShot1, 1440, 900)
   verifyPngAndPixels(desktopShot2, 1440, 900)
 

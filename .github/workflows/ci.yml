@@ -1,0 +1,85 @@
+name: Windows CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Build & Test (Windows)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Nim
+        uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: '2.2.12'
+
+      - name: Link C:\nim for compiler/nim.cfg
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "C:\nim")) {
+            $nimExe = (Get-Command nim).Source
+            $nimRoot = Split-Path -Parent (Split-Path -Parent $nimExe)
+            cmd /c mklink /J C:\nim "$nimRoot"
+          }
+
+      - name: Build QuickJS static library
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File tools/build_quickjs.ps1
+
+      - name: Build Hybrid Memory-Safe Compiler (nim_safe)
+        shell: pwsh
+        run: nimble build_compiler
+
+      - name: Run full test suite (nimble test_all)
+        shell: pwsh
+        run: nimble test_all
+
+      - name: Run UI tests (nimble test_ui)
+        shell: pwsh
+        run: nimble test_ui
+
+      - name: Run QuickJS hybrid tests (nimble test_js)
+        shell: pwsh
+        run: nimble test_js
+
+      - name: Run Showcase apps headless tests (nimble test_showcase)
+        shell: pwsh
+        run: nimble test_showcase
+
+      - name: Run nim_safe compiler tests (nimble test_compiler)
+        shell: pwsh
+        run: nimble test_compiler
+
+  strict-warnings:
+    name: Strict Warnings & Unused Imports Check
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Nim
+        uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: '2.2.12'
+
+      - name: Check corex, algx, and nimui with warnings-as-errors
+        shell: pwsh
+        run: |
+          $strictFlags = @(
+            "--hints:on",
+            "--warnings:on",
+            "--warningAsError[UnusedImport]:on",
+            "--hintAsError[XDeclaredButNotUsed]:on"
+          )
+          nim check @strictFlags src/corex.nim
+          nim check @strictFlags src/algx.nim
+          nim check @strictFlags src/nimui.nim

@@ -41,7 +41,11 @@ Desktop.ini
 
 # Tool binaries
 tools/glslang/
+src/nimui/js/.obj/
 
 # Generated screenshots and image outputs
+# Track curated showcase/documentation screenshots explicitly while ignoring ad-hoc PNG exports
 *.png
 **/screenshots/
+!docs/**/*.png
+!apps/*/*_preview.png
