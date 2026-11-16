@@ -19,3 +19,13 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+---
+
+Third-Party Licenses and Attributions
+
+- QuickJS Javascript Engine (`src/nimui/js/vendor/`)
+  Copyright (c) 2017-2025 Fabrice Bellard
+  Copyright (c) 2017-2025 Charlie Gordon
+  Licensed under the MIT License; see `src/nimui/js/vendor/LICENSE` and
+  `src/nimui/js/vendor/README.md` for full license text and provenance.

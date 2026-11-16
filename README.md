@@ -271,3 +271,10 @@ nim doc --project --index:on --outdir:htmldocs src/nimui.nim
 - [`docs/BENCHMARK_SHOWCASE.md`](docs/BENCHMARK_SHOWCASE.md) — методика и результаты сравнения `CoreX`/`AlgX` с Rust.
 - [`docs/NIM_ROADMAP_FEATURES.md`](docs/NIM_ROADMAP_FEATURES.md) — дорожная карта развития.
 
+---
+
+## Лицензия и сторонние компоненты
+
+- Основной код проекта распространяется под лицензией **MIT** (см. [`LICENSE`](LICENSE)).
+- Встроенный движок **QuickJS Javascript Engine** (`src/nimui/js/vendor/`, версия `2026-06-04`, Copyright (c) 2017-2025 Fabrice Bellard, Charlie Gordon) распространяется под лицензией **MIT** — см. [`src/nimui/js/vendor/LICENSE`](src/nimui/js/vendor/LICENSE) и [`src/nimui/js/vendor/README.md`](src/nimui/js/vendor/README.md).
+
