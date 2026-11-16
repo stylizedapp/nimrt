@@ -2,12 +2,22 @@ import corex
 import std/os
 
 var gWatchdogDone = initAtomic(false)
+var gIterProgress = initAtomic(0)
 
 proc watchdog() {.thread.} =
-  sleep(5000)
-  if not gWatchdogDone.load(moAcquire):
-    echo "[FAIL] DEADLOCK detected (5s timeout)"
-    quit(1)
+  var lastIter = -1
+  var stalledMs = 0
+  while not gWatchdogDone.load(moAcquire):
+    sleep(100)
+    let cur = gIterProgress.load(moAcquire)
+    if cur != lastIter:
+      lastIter = cur
+      stalledMs = 0
+    else:
+      stalledMs += 100
+      if stalledMs >= 3000:
+        echo "[FAIL] DEADLOCK detected (3s stall at iter ", cur, ")"
+        quit(1)
 
 type
   TestContext = object
@@ -28,6 +38,7 @@ proc main() =
   createThread(watchdogThread, watchdog)
 
   for iter in 1 .. 50:
+    gIterProgress.store(iter, moRelease)
     var pool = newThreadPool(8)
     var ctx: TestContext
     ctx.pool = pool

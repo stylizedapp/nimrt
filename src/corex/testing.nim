@@ -32,18 +32,47 @@ proc nextInt*(r: var FuzzRng, lowVal, highVal: int): int {.inline, raises: [].} 
   let span = uint64(highVal - lowVal + 1)
   lowVal + int(r.nextU64() mod span)
 
+proc orcOccupiedMem*(): int {.inline, raises: [].} =
+  ## Collects unreachable ORC cycles and returns currently occupied Nim heap bytes.
+  GC_fullCollect()
+  getOccupiedMem()
+
+proc orcHeapDelta*(beforeBytes: int): int {.inline, raises: [].} =
+  ## Collects unreachable ORC cycles and returns the signed delta in occupied Nim heap bytes.
+  orcOccupiedMem() - beforeBytes
+
+proc assertZeroOrcLeaks*(testName: string, beforeBytes: int, toleranceBytes: int = 0) =
+  ## Asserts that ORC-managed heap usage did not grow beyond `toleranceBytes` since `beforeBytes`.
+  let afterBytes = orcOccupiedMem()
+  let delta = afterBytes - beforeBytes
+  if delta > toleranceBytes:
+    raise newException(AssertionDefect,
+      "[ORC LEAK DETECTED] В тесте '" & testName & "' утечка ORC-кучи: " &
+      $delta & " байт (до: " & $beforeBytes & ", после: " & $afterBytes & ")")
+
 template testWithLeakCheck*(testName: string, body: untyped) =
-  ## Запускает тест с автоматическим `TrackingAllocator` (переменная `testAlloc` доступна внутри).
+  ## Запускает тест с автоматическим `TrackingAllocator` (переменная `testAlloc` доступна внутри)
+  ## и контролем дельты ORC-кучи (`GC_fullCollect()` + `getOccupiedMem()`).
   ## Если после завершения блока (и всех его `defer`) осталась неосвобождённая память — тест аварийно падает.
   block:
     var tracker = initTrackingAllocator()
     let testAlloc {.inject, used.} = tracker.allocator()
+    let orcBefore = orcOccupiedMem()
     block:
       body
     if tracker.hasLeaks():
       raise newException(AssertionDefect,
         "[LEAK DETECTED] В тесте '" & testName & "' утечка памяти: " &
         $tracker.activeAllocs & " аллокаций (" & $tracker.activeBytes & " байт)")
+    assertZeroOrcLeaks(testName, orcBefore)
+
+template testWithOrcLeakCheck*(testName: string, toleranceBytes: int = 0, body: untyped) =
+  ## Runs `body` and verifies that ORC-managed heap memory returns to baseline (within `toleranceBytes`).
+  block:
+    let orcBefore = orcOccupiedMem()
+    block:
+      body
+    assertZeroOrcLeaks(testName, orcBefore, toleranceBytes)
 
 template quickCheck*(propName: string, runs: int, rngVar: untyped, body: untyped) =
   ## Property-based фаззинг: прогоняет свойство `runs` раз на псевдослучайных данных.

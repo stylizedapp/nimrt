@@ -414,6 +414,9 @@ type
     pad: int
 
   TrackingAllocator* = object
+    ## Tracks explicit `Allocator` allocations/frees for deterministic 0-byte leak checks.
+    ## Note: Does not intercept Nim ORC-managed heap (`seq`, `string`, `ref`); pair with
+    ## `corex/testing.testWithLeakCheck` / `orcOccupiedMem` for full-heap leak audits.
     upstream*: Allocator
     allocCount*: int
     freeCount*: int

@@ -264,8 +264,8 @@ proc markDirtyAndPropagate*(rt: ptr ReactiveRuntime, sourceId: SlabId) {.raises:
       of nkEffect:
         obsNode.state = nsDirty
         if not obsNode.isQueued:
-          obsNode.isQueued = true
-          discard rt.pendingEffects.tryAdd(oId)
+          if rt.pendingEffects.tryAdd(oId).isOk:
+            obsNode.isQueued = true
       of nkSignal:
         discard
     edgeId = nextEdge

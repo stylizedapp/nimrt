@@ -1,27 +1,33 @@
 ## algx/swissmap — Сверхбыстрая плоская хэш-таблица (`FastMap[K, V]`) в стиле SwissTable
 ##
-## Высокопроизводительная реализация SwissTable с параллельным SWAR-поиском
-## (SIMD Within A Register) по 8 слотам за такт и треугольным прыжком по группам (quadratic/triangular group jumping)
+## Высокопроизводительная реализация SwissTable с параллельным 16-байтовым SSE2-поиском
+## (`_mm_cmpeq_epi8` + `_mm_movemask_epi8` на x86/amd64, с 16-байтовым SWAR фоллбэком)
+## по 16 слотам за такт и треугольным прыжком по группам (quadratic/triangular group jumping)
 ## для максимальной утилизации кэш-линий L1 и полного устранения вторичной кластеризации коллизий.
 ##
 ## Ключевые преимущества:
-## 1. SWAR 8-Byte Group Matching: 8 байт тегов контроля загружаются в 64-битный регистр.
-##    Поиск совпадений тегов и пустых слотов выполняется параллельно битовой маской за O(1).
-## 2. Triangular Group Probing: перемещение между 8-слотовыми группами шагами 1, 2, 3, 4...
+## 1. SSE2 16-Byte Group Matching: 16 байт тегов контроля загружаются в 128-битный XMM-регистр.
+##    Поиск совпадений тегов, удалённых и пустых слотов выполняется параллельно битовой маской за O(1).
+## 2. Triangular Group Probing: перемещение между 16-слотовыми группами шагами 1, 2, 3, 4...
 ##    гарантирует обход 100% групп при размере степени двойки без локальных кластеров коллизий.
 ## 3. Раздельные массивы метаданных (`ctrl`), ключей (`keys`) и значений (`vals`) в стиле SwissTable.
-## 4. Сверхбыстрый 64-битный хэш-миксер SplitMix64 / Fibonacci.
+## 4. Сверхбыстрый 64-битный хэш-миксер SplitMix64.
 
 import std/bitops
 import corex/adt
 export adt
 
-{.push checks: off, optimization: speed.}
+when defined(release) or defined(danger):
+  {.push checks: off, optimization: speed.}
+else:
+  {.push optimization: speed.}
 
 const
   SlotEmpty* = 0'u8
   SlotDeleted* = 1'u8
   # Занятые слоты имеют тег от 2 до 255 (верхние 8 бит хэша, скорректированные >= 2)
+  GroupWidth* = 16
+  UseSse2* = (defined(x86) or defined(amd64)) and not defined(noSse2)
 
 type
   FastMap*[K, V] = object
@@ -33,7 +39,7 @@ type
     usedSlots*: int
 
 # =============================================================================
-# SWAR Byte Matching & Bit Operations
+# SWAR & SSE2 16-Byte Group Matching
 # =============================================================================
 
 proc matchByteMask64*(word: uint64, byteVal: uint8): uint64 {.inline, raises: [].} =
@@ -42,6 +48,50 @@ proc matchByteMask64*(word: uint64, byteVal: uint8): uint64 {.inline, raises: []
   let broadcast = uint64(byteVal) * 0x0101_0101_0101_0101'u64
   let diff = word xor broadcast
   (diff - 0x0101_0101_0101_0101'u64) and (not diff) and 0x8080_8080_8080_8080'u64
+
+when UseSse2:
+  type
+    M128i {.importc: "__m128i", header: "<emmintrin.h>".} = object
+    CtrlGroup = M128i
+
+  proc mm_loadu_si128(p: ptr M128i): M128i {.importc: "_mm_loadu_si128", header: "<emmintrin.h>".}
+  proc mm_setzero_si128(): M128i {.importc: "_mm_setzero_si128", header: "<emmintrin.h>".}
+  proc mm_set1_epi8(b: int8): M128i {.importc: "_mm_set1_epi8", header: "<emmintrin.h>".}
+  proc mm_cmpeq_epi8(a, b: M128i): M128i {.importc: "_mm_cmpeq_epi8", header: "<emmintrin.h>".}
+  proc mm_movemask_epi8(a: M128i): int32 {.importc: "_mm_movemask_epi8", header: "<emmintrin.h>".}
+
+  proc loadCtrlGroup(p: ptr uint8): CtrlGroup {.inline, raises: [].} =
+    mm_loadu_si128(cast[ptr M128i](p))
+
+  proc matchGroupTag(grp: CtrlGroup, byteVal: uint8): uint32 {.inline, raises: [].} =
+    uint32(mm_movemask_epi8(mm_cmpeq_epi8(grp, mm_set1_epi8(cast[int8](byteVal)))))
+
+  proc matchGroupEmpty(grp: CtrlGroup): uint32 {.inline, raises: [].} =
+    uint32(mm_movemask_epi8(mm_cmpeq_epi8(grp, mm_setzero_si128())))
+
+  proc matchGroupDeleted(grp: CtrlGroup): uint32 {.inline, raises: [].} =
+    uint32(mm_movemask_epi8(mm_cmpeq_epi8(grp, mm_set1_epi8(cast[int8](SlotDeleted)))))
+
+else:
+  type
+    CtrlGroup = array[2, uint64]
+
+  proc loadCtrlGroup(p: ptr uint8): CtrlGroup {.inline, raises: [].} =
+    cast[ptr array[2, uint64]](p)[]
+
+  proc packMask64To8(m: uint64): uint32 {.inline, raises: [].} =
+    uint32((((m shr 7) * 0x0102_0408_1020_4080'u64) shr 56) and 0xFF'u64)
+
+  proc matchGroupTag(grp: CtrlGroup, byteVal: uint8): uint32 {.inline, raises: [].} =
+    let lo = packMask64To8(matchByteMask64(grp[0], byteVal))
+    let hi = packMask64To8(matchByteMask64(grp[1], byteVal))
+    lo or (hi shl 8)
+
+  proc matchGroupEmpty(grp: CtrlGroup): uint32 {.inline, raises: [].} =
+    matchGroupTag(grp, SlotEmpty)
+
+  proc matchGroupDeleted(grp: CtrlGroup): uint32 {.inline, raises: [].} =
+    matchGroupTag(grp, SlotDeleted)
 
 # =============================================================================
 # Layout & Hash Helpers
@@ -130,7 +180,7 @@ proc grow[K, V](m: var FastMap[K, V]) {.raises: [].} =
   let oldCap = m.ctrl.len
   let newCap = if oldCap == 0: 64 else: oldCap * 2
   let newMask = newCap - 1
-  let newGroupMask = newMask shr 3
+  let newGroupMask = newMask shr 4
 
   var newCtrl = newSeq[uint8](newCap)
   var newKeys = newSeq[K](newCap)
@@ -152,11 +202,11 @@ proc grow[K, V](m: var FastMap[K, V]) {.raises: [].} =
       var g = int(h and uint64(newGroupMask))
       var step = 0
       while true:
-        let baseIdx = g shl 3
-        let word = cast[ptr uint64](addr pNewCtrl[baseIdx])[]
-        let emptyMask = matchByteMask64(word, SlotEmpty)
-        if emptyMask != 0:
-          let target = baseIdx + (countTrailingZeroBits(emptyMask) shr 3)
+        let baseIdx = g shl 4
+        let grp = loadCtrlGroup(addr pNewCtrl[baseIdx])
+        let emptyMask = matchGroupEmpty(grp)
+        if emptyMask != 0'u32:
+          let target = baseIdx + countTrailingZeroBits(emptyMask)
           pNewCtrl[target] = tag
           pNewKeys[target] = k
           pNewVals[target] = pOldVals[i]
@@ -176,7 +226,7 @@ proc put*[K, V](m: var FastMap[K, V], key: K, val: V) {.inline, raises: [].} =
 
   let h = fastHash(key)
   let tag = extractTag(h)
-  let groupMask = m.mask shr 3
+  let groupMask = m.mask shr 4
   let pCtrl = cast[ptr UncheckedArray[uint8]](addr m.ctrl[0])
   let pKeys = cast[ptr UncheckedArray[K]](addr m.keys[0])
   let pVals = cast[ptr UncheckedArray[V]](addr m.vals[0])
@@ -186,30 +236,30 @@ proc put*[K, V](m: var FastMap[K, V], key: K, val: V) {.inline, raises: [].} =
   var firstDeleted = -1
 
   while true:
-    let baseIdx = g shl 3
-    let word = cast[ptr uint64](addr pCtrl[baseIdx])[]
+    let baseIdx = g shl 4
+    let grp = loadCtrlGroup(addr pCtrl[baseIdx])
 
-    # 1. Match tag across 8 slots in parallel with SWAR
-    var matchMask = matchByteMask64(word, tag)
-    while matchMask != 0:
-      let slotOffset = countTrailingZeroBits(matchMask) shr 3
+    # 1. Match tag across 16 slots in parallel with SSE2
+    var matchMask = matchGroupTag(grp, tag)
+    while matchMask != 0'u32:
+      let slotOffset = countTrailingZeroBits(matchMask)
       let slotIdx = baseIdx + slotOffset
       if pKeys[slotIdx] == key:
         pVals[slotIdx] = val
         return
-      matchMask = matchMask and (matchMask - 1)
+      matchMask = matchMask and (matchMask - 1'u32)
 
     # 2. Track first deleted slot
     if firstDeleted < 0:
-      let delMask = matchByteMask64(word, SlotDeleted)
-      if delMask != 0:
-        firstDeleted = baseIdx + (countTrailingZeroBits(delMask) shr 3)
+      let delMask = matchGroupDeleted(grp)
+      if delMask != 0'u32:
+        firstDeleted = baseIdx + countTrailingZeroBits(delMask)
 
-    # 3. Match empty slots across 8 slots in parallel
-    let emptyMask = matchByteMask64(word, SlotEmpty)
-    if emptyMask != 0:
+    # 3. Match empty slots across 16 slots in parallel
+    let emptyMask = matchGroupEmpty(grp)
+    if emptyMask != 0'u32:
       let target = if firstDeleted >= 0: firstDeleted
-                   else: baseIdx + (countTrailingZeroBits(emptyMask) shr 3)
+                   else: baseIdx + countTrailingZeroBits(emptyMask)
       if firstDeleted < 0:
         inc(m.usedSlots)
       pCtrl[target] = tag
@@ -231,7 +281,7 @@ proc getOrDefault*[K, V](m: FastMap[K, V], key: K, defaultVal: V): V {.inline, r
 
   let h = fastHash(key)
   let tag = extractTag(h)
-  let groupMask = m.mask shr 3
+  let groupMask = m.mask shr 4
   let pCtrl = cast[ptr UncheckedArray[uint8]](unsafeAddr m.ctrl[0])
   let pKeys = cast[ptr UncheckedArray[K]](unsafeAddr m.keys[0])
   let pVals = cast[ptr UncheckedArray[V]](unsafeAddr m.vals[0])
@@ -240,19 +290,19 @@ proc getOrDefault*[K, V](m: FastMap[K, V], key: K, defaultVal: V): V {.inline, r
   var step = 0
 
   while true:
-    let baseIdx = g shl 3
-    let word = cast[ptr uint64](addr pCtrl[baseIdx])[]
+    let baseIdx = g shl 4
+    let grp = loadCtrlGroup(addr pCtrl[baseIdx])
 
-    var matchMask = matchByteMask64(word, tag)
-    while matchMask != 0:
-      let slotOffset = countTrailingZeroBits(matchMask) shr 3
+    var matchMask = matchGroupTag(grp, tag)
+    while matchMask != 0'u32:
+      let slotOffset = countTrailingZeroBits(matchMask)
       let slotIdx = baseIdx + slotOffset
       if pKeys[slotIdx] == key:
         return pVals[slotIdx]
-      matchMask = matchMask and (matchMask - 1)
+      matchMask = matchMask and (matchMask - 1'u32)
 
-    let emptyMask = matchByteMask64(word, SlotEmpty)
-    if emptyMask != 0:
+    let emptyMask = matchGroupEmpty(grp)
+    if emptyMask != 0'u32:
       return defaultVal
 
     inc step
@@ -267,7 +317,7 @@ proc contains*[K, V](m: FastMap[K, V], key: K): bool {.inline, raises: [].} =
 
   let h = fastHash(key)
   let tag = extractTag(h)
-  let groupMask = m.mask shr 3
+  let groupMask = m.mask shr 4
   let pCtrl = cast[ptr UncheckedArray[uint8]](unsafeAddr m.ctrl[0])
   let pKeys = cast[ptr UncheckedArray[K]](unsafeAddr m.keys[0])
 
@@ -275,19 +325,19 @@ proc contains*[K, V](m: FastMap[K, V], key: K): bool {.inline, raises: [].} =
   var step = 0
 
   while true:
-    let baseIdx = g shl 3
-    let word = cast[ptr uint64](addr pCtrl[baseIdx])[]
+    let baseIdx = g shl 4
+    let grp = loadCtrlGroup(addr pCtrl[baseIdx])
 
-    var matchMask = matchByteMask64(word, tag)
-    while matchMask != 0:
-      let slotOffset = countTrailingZeroBits(matchMask) shr 3
+    var matchMask = matchGroupTag(grp, tag)
+    while matchMask != 0'u32:
+      let slotOffset = countTrailingZeroBits(matchMask)
       let slotIdx = baseIdx + slotOffset
       if pKeys[slotIdx] == key:
         return true
-      matchMask = matchMask and (matchMask - 1)
+      matchMask = matchMask and (matchMask - 1'u32)
 
-    let emptyMask = matchByteMask64(word, SlotEmpty)
-    if emptyMask != 0:
+    let emptyMask = matchGroupEmpty(grp)
+    if emptyMask != 0'u32:
       return false
 
     inc step
@@ -299,7 +349,7 @@ proc del*[K, V](m: var FastMap[K, V], key: K): bool {.inline, raises: [].} =
 
   let h = fastHash(key)
   let tag = extractTag(h)
-  let groupMask = m.mask shr 3
+  let groupMask = m.mask shr 4
   let pCtrl = cast[ptr UncheckedArray[uint8]](addr m.ctrl[0])
   let pKeys = cast[ptr UncheckedArray[K]](addr m.keys[0])
   let pVals = cast[ptr UncheckedArray[V]](addr m.vals[0])
@@ -308,12 +358,12 @@ proc del*[K, V](m: var FastMap[K, V], key: K): bool {.inline, raises: [].} =
   var step = 0
 
   while true:
-    let baseIdx = g shl 3
-    let word = cast[ptr uint64](addr pCtrl[baseIdx])[]
+    let baseIdx = g shl 4
+    let grp = loadCtrlGroup(addr pCtrl[baseIdx])
 
-    var matchMask = matchByteMask64(word, tag)
-    while matchMask != 0:
-      let slotOffset = countTrailingZeroBits(matchMask) shr 3
+    var matchMask = matchGroupTag(grp, tag)
+    while matchMask != 0'u32:
+      let slotOffset = countTrailingZeroBits(matchMask)
       let slotIdx = baseIdx + slotOffset
       if pKeys[slotIdx] == key:
         pCtrl[slotIdx] = SlotDeleted
@@ -321,10 +371,10 @@ proc del*[K, V](m: var FastMap[K, V], key: K): bool {.inline, raises: [].} =
         reset(pVals[slotIdx])
         dec(m.count)
         return true
-      matchMask = matchMask and (matchMask - 1)
+      matchMask = matchMask and (matchMask - 1'u32)
 
-    let emptyMask = matchByteMask64(word, SlotEmpty)
-    if emptyMask != 0:
+    let emptyMask = matchGroupEmpty(grp)
+    if emptyMask != 0'u32:
       return false
 
     inc step
@@ -337,7 +387,7 @@ proc get*[K, V](m: FastMap[K, V], key: K): Option[V] {.inline, raises: [].} =
 
   let h = fastHash(key)
   let tag = extractTag(h)
-  let groupMask = m.mask shr 3
+  let groupMask = m.mask shr 4
   let pCtrl = cast[ptr UncheckedArray[uint8]](unsafeAddr m.ctrl[0])
   let pKeys = cast[ptr UncheckedArray[K]](unsafeAddr m.keys[0])
   let pVals = cast[ptr UncheckedArray[V]](unsafeAddr m.vals[0])
@@ -346,19 +396,19 @@ proc get*[K, V](m: FastMap[K, V], key: K): Option[V] {.inline, raises: [].} =
   var step = 0
 
   while true:
-    let baseIdx = g shl 3
-    let word = cast[ptr uint64](addr pCtrl[baseIdx])[]
+    let baseIdx = g shl 4
+    let grp = loadCtrlGroup(addr pCtrl[baseIdx])
 
-    var matchMask = matchByteMask64(word, tag)
-    while matchMask != 0:
-      let slotOffset = countTrailingZeroBits(matchMask) shr 3
+    var matchMask = matchGroupTag(grp, tag)
+    while matchMask != 0'u32:
+      let slotOffset = countTrailingZeroBits(matchMask)
       let slotIdx = baseIdx + slotOffset
       if pKeys[slotIdx] == key:
         return some(pVals[slotIdx])
-      matchMask = matchMask and (matchMask - 1)
+      matchMask = matchMask and (matchMask - 1'u32)
 
-    let emptyMask = matchByteMask64(word, SlotEmpty)
-    if emptyMask != 0:
+    let emptyMask = matchGroupEmpty(grp)
+    if emptyMask != 0'u32:
       return none(V)
 
     inc step
@@ -368,7 +418,7 @@ proc `[]`*[K, V](m: FastMap[K, V], key: K): lent V {.inline, raises: [].} =
   if m.count > 0 and m.ctrl.len > 0:
     let h = fastHash(key)
     let tag = extractTag(h)
-    let groupMask = m.mask shr 3
+    let groupMask = m.mask shr 4
     let pCtrl = cast[ptr UncheckedArray[uint8]](unsafeAddr m.ctrl[0])
     let pKeys = cast[ptr UncheckedArray[K]](unsafeAddr m.keys[0])
     let pVals = cast[ptr UncheckedArray[V]](unsafeAddr m.vals[0])
@@ -377,19 +427,19 @@ proc `[]`*[K, V](m: FastMap[K, V], key: K): lent V {.inline, raises: [].} =
     var step = 0
 
     while true:
-      let baseIdx = g shl 3
-      let word = cast[ptr uint64](addr pCtrl[baseIdx])[]
+      let baseIdx = g shl 4
+      let grp = loadCtrlGroup(addr pCtrl[baseIdx])
 
-      var matchMask = matchByteMask64(word, tag)
-      while matchMask != 0:
-        let slotOffset = countTrailingZeroBits(matchMask) shr 3
+      var matchMask = matchGroupTag(grp, tag)
+      while matchMask != 0'u32:
+        let slotOffset = countTrailingZeroBits(matchMask)
         let slotIdx = baseIdx + slotOffset
         if pKeys[slotIdx] == key:
           return pVals[slotIdx]
-        matchMask = matchMask and (matchMask - 1)
+        matchMask = matchMask and (matchMask - 1'u32)
 
-      let emptyMask = matchByteMask64(word, SlotEmpty)
-      if emptyMask != 0:
+      let emptyMask = matchGroupEmpty(grp)
+      if emptyMask != 0'u32:
         break
 
       inc step
@@ -401,7 +451,7 @@ proc `[]`*[K, V](m: var FastMap[K, V], key: K): var V {.inline, raises: [].} =
   if m.count > 0 and m.ctrl.len > 0:
     let h = fastHash(key)
     let tag = extractTag(h)
-    let groupMask = m.mask shr 3
+    let groupMask = m.mask shr 4
     let pCtrl = cast[ptr UncheckedArray[uint8]](addr m.ctrl[0])
     let pKeys = cast[ptr UncheckedArray[K]](addr m.keys[0])
     let pVals = cast[ptr UncheckedArray[V]](addr m.vals[0])
@@ -410,19 +460,19 @@ proc `[]`*[K, V](m: var FastMap[K, V], key: K): var V {.inline, raises: [].} =
     var step = 0
 
     while true:
-      let baseIdx = g shl 3
-      let word = cast[ptr uint64](addr pCtrl[baseIdx])[]
+      let baseIdx = g shl 4
+      let grp = loadCtrlGroup(addr pCtrl[baseIdx])
 
-      var matchMask = matchByteMask64(word, tag)
-      while matchMask != 0:
-        let slotOffset = countTrailingZeroBits(matchMask) shr 3
+      var matchMask = matchGroupTag(grp, tag)
+      while matchMask != 0'u32:
+        let slotOffset = countTrailingZeroBits(matchMask)
         let slotIdx = baseIdx + slotOffset
         if pKeys[slotIdx] == key:
           return pVals[slotIdx]
-        matchMask = matchMask and (matchMask - 1)
+        matchMask = matchMask and (matchMask - 1'u32)
 
-      let emptyMask = matchByteMask64(word, SlotEmpty)
-      if emptyMask != 0:
+      let emptyMask = matchGroupEmpty(grp)
+      if emptyMask != 0'u32:
         break
 
       inc step
