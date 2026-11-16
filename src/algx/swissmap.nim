@@ -17,10 +17,13 @@ import std/bitops
 import corex/adt
 export adt
 
-when defined(release) or defined(danger):
-  {.push checks: off, optimization: speed.}
+when not defined(algxChecked):
+  when defined(release) or defined(danger):
+    {.push checks: off, optimization: speed.}
+  else:
+    {.push optimization: speed.}
 else:
-  {.push optimization: speed.}
+  {.push checks: on.}
 
 const
   SlotEmpty* = 0'u8

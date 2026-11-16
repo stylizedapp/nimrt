@@ -8,10 +8,13 @@
 
 import std/typetraits
 
-when defined(release) or defined(danger):
-  {.push checks: off, optimization: speed.}
+when not defined(algxChecked):
+  when defined(release) or defined(danger):
+    {.push checks: off, optimization: speed.}
+  else:
+    {.push optimization: speed.}
 else:
-  {.push optimization: speed.}
+  {.push checks: on.}
 
 template isBlittable*(T: typedesc): bool =
   ## Проверяет на этапе компиляции, можно ли копировать тип `T` напрямую побайтово (Zero-Copy POD).
