@@ -6,23 +6,35 @@ $VendorDir = Join-Path $JsDir "vendor"
 $ObjDir = Join-Path $JsDir ".obj"
 $OutLib = Join-Path $JsDir "libquickjs.a"
 
+$NimCmd = Get-Command nim -ErrorAction SilentlyContinue
+$MingwBin = $null
+if ($NimCmd) {
+    $NimRoot = Split-Path -Parent (Split-Path -Parent $NimCmd.Source)
+    $Candidate = Join-Path $NimRoot "dist\mingw64\bin"
+    if (Test-Path $Candidate) {
+        $MingwBin = $Candidate
+    }
+}
+
 function Resolve-BuildTool {
     param(
-        [string]$PreferredPath,
         [string]$ToolName
     )
-    if (Test-Path $PreferredPath) {
-        return $PreferredPath
+    if ($MingwBin) {
+        $PreferredPath = Join-Path $MingwBin "$ToolName.exe"
+        if (Test-Path $PreferredPath) {
+            return $PreferredPath
+        }
     }
     $cmd = Get-Command $ToolName -ErrorAction SilentlyContinue
     if ($cmd) {
         return $cmd.Source
     }
-    throw "Required build tool '$ToolName' was not found at '$PreferredPath' or in PATH. Install MinGW-W64 GCC (e.g. C:\nim\dist\mingw64\bin) or add '$ToolName' to PATH before running tools/build_quickjs.ps1."
+    throw "Required build tool '$ToolName' was not found relative to nim.exe (dist\mingw64\bin) or in PATH. Install MinGW-W64 GCC or add '$ToolName' to PATH before running tools/build_quickjs.ps1."
 }
 
-$Gcc = Resolve-BuildTool -PreferredPath "C:\nim\dist\mingw64\bin\gcc.exe" -ToolName "gcc"
-$Ar = Resolve-BuildTool -PreferredPath "C:\nim\dist\mingw64\bin\ar.exe" -ToolName "ar"
+$Gcc = Resolve-BuildTool -ToolName "gcc"
+$Ar = Resolve-BuildTool -ToolName "ar"
 
 New-Item -ItemType Directory -Force -Path $ObjDir | Out-Null
 
