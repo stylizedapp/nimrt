@@ -7,6 +7,9 @@ on:
     branches: [ main, master ]
   workflow_dispatch:
 
+env:
+  NIM_VERSION: '2.2.12'
+
 jobs:
   test:
     name: Build & Test (Windows)
@@ -19,16 +22,7 @@ jobs:
       - name: Setup Nim
         uses: jiro4989/setup-nim-action@v2
         with:
-          nim-version: '2.2.12'
-
-      - name: Link C:\nim for compiler/nim.cfg
-        shell: pwsh
-        run: |
-          if (-not (Test-Path "C:\nim")) {
-            $nimExe = (Get-Command nim).Source
-            $nimRoot = Split-Path -Parent (Split-Path -Parent $nimExe)
-            cmd /c mklink /J C:\nim "$nimRoot"
-          }
+          nim-version: ${{ env.NIM_VERSION }}
 
       - name: Build QuickJS static library
         shell: pwsh
@@ -45,6 +39,14 @@ jobs:
       - name: Run full test suite (nimble test_all)
         shell: pwsh
         run: nimble test_all
+
+      - name: Run algx checked tests (-d:algxChecked)
+        shell: pwsh
+        run: |
+          nim c -d:algxChecked -r tests/test_algx_checked.nim
+          nim c -d:algxChecked -r tests/test_ecosystem.nim
+          nim c -d:algxChecked -r tests/test_ironclad_heap.nim
+          nim c -d:release -d:algxChecked -r tests/test_ironclad_map_stress.nim
 
       - name: Run UI tests (nimble test_ui)
         shell: pwsh
@@ -63,7 +65,7 @@ jobs:
         run: nimble test_compiler
 
   strict-warnings:
-    name: Strict Warnings & Unused Imports Check
+    name: Strict Warnings, Nimble Check & Docs
     runs-on: windows-latest
 
     steps:
@@ -73,7 +75,11 @@ jobs:
       - name: Setup Nim
         uses: jiro4989/setup-nim-action@v2
         with:
-          nim-version: '2.2.12'
+          nim-version: ${{ env.NIM_VERSION }}
+
+      - name: Validate nimble package
+        shell: pwsh
+        run: nimble check
 
       - name: Check corex, algx, and nimui with warnings-as-errors
         shell: pwsh
@@ -87,3 +93,28 @@ jobs:
           nim check @strictFlags src/corex.nim
           nim check @strictFlags src/algx.nim
           nim check @strictFlags src/nimui.nim
+
+      - name: Generate documentation (nim doc)
+        shell: pwsh
+        run: |
+          nim doc --project --index:on --outdir:htmldocs src/corex.nim
+          nim doc --project --index:on --outdir:htmldocs src/algx.nim
+          nim doc --project --index:on --outdir:htmldocs src/nimui.nim
+
+  ubuntu:
+    name: Ubuntu Portability Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Nim
+        uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: ${{ env.NIM_VERSION }}
+
+      - name: Check corex and algx on Linux
+        run: |
+          nim check src/corex.nim
+          nim check src/algx.nim
