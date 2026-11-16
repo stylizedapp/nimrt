@@ -13,7 +13,7 @@
 ##
 ## Compilation: nim c -r tests/test_nimui_widgets.nim under --mm:orc --threads:on --panics:on
 
-import std/[strformat, strutils]
+import std/[strformat, strutils, random]
 import corex
 import corex/unicode
 import nimui
@@ -1419,18 +1419,29 @@ proc testGpuAtlasDpiAndResilienceSuite() =
   testWithLeakCheck("10.1 FontAtlas Extended Unicode (Latin-1/Ext-A/B, Cyrillic) & Tofu Fallback"):
     let atlas = initFontAtlas("Segoe UI", 32.0f)
     doAssert atlas.width == 1024 and atlas.height == 1024
-    # Latin-1 Supplement & Extended-A/B diacritics
-    for cp in [0x00E9'u32, 0x00FC'u32, 0x00DF'u32, 0x0100'u32, 0x010D'u32, 0x017E'u32, 0x0219'u32]:
+    # Latin-1 Supplement (é, ü, ß) & Extended-A/B diacritics including 'ł' (U+0142)
+    for cp in [0x00E9'u32, 0x00FC'u32, 0x00DF'u32, 0x0100'u32, 0x010D'u32, 0x0142'u32, 0x017E'u32, 0x0219'u32]:
       let g = atlas.getGlyph(Rune(cp))
       doAssert g.advance > 0.0f and g.width > 0.0f, &"Missing extended Latin glyph 0x{cp:X}"
+    # Explicit Latin Extended-A 'ł' (U+0142) check: must rasterize real glyph, not tofu fallback
+    let lStroke = atlas.getGlyph(Rune(0x0142))
+    doAssert lStroke.advance > 0.0f and lStroke.width > 0.0f, "Missing Latin Extended-A 'ł' (U+0142)"
+    doAssert lStroke.uvMin != atlas.missingGlyph.uvMin or lStroke.uvMax != atlas.missingGlyph.uvMax,
+      "Latin Extended-A 'ł' (U+0142) must not fall back to tofu"
     # Cyrillic U+0400..0x04FF
     for cp in [0x0414'u32, 0x042F'u32, 0x0449'u32]:
       let g = atlas.getGlyph(Rune(cp))
       doAssert g.advance > 0.0f and g.width > 0.0f, &"Missing Cyrillic glyph 0x{cp:X}"
-    # Uncovered codepoint returns pinned tofu box (never vanishes)
+    # Explicit missing glyph handling: uncovered codepoint returns pinned tofu box U+FFFD (never silent skip)
+    doAssert atlas.hasResidentGlyph(0xFFFD'u32), "Pinned U+FFFD tofu glyph must be resident"
+    let tofu = atlas.getGlyph(Rune(0xFFFD))
+    doAssert tofu.width > 0.0f and tofu.height > 0.0f and tofu.advance > 0.0f
+    doAssert tofu.uvMin == atlas.missingGlyph.uvMin and tofu.uvMax == atlas.missingGlyph.uvMax
     let missing = atlas.getGlyph(Rune(0x13A0))
     doAssert missing.width > 0.0f and missing.height > 0.0f and missing.uvMax[0] > missing.uvMin[0]
-    echo "  [PASS] 10.1 Extended Unicode & tofu missing-glyph fallback verified."
+    doAssert missing.uvMin == atlas.missingGlyph.uvMin and missing.uvMax == atlas.missingGlyph.uvMax,
+      "Uncovered codepoint must fall back explicitly to pinned U+FFFD tofu box"
+    echo "  [PASS] 10.1 Extended Unicode (incl. U+0142 'ł') & explicit U+FFFD tofu fallback verified."
 
   testWithLeakCheck("10.2 FontAtlas Genuine LRU Eviction, Repack & Explicit Oversize Error"):
     var smallAtlas = initFontAtlas("Segoe UI", 16.0f, dpiScale = 1.0f, atlasWidth = 96, atlasHeight = 96)
@@ -1516,6 +1527,67 @@ proc testGpuAtlasDpiAndResilienceSuite() =
     doAssert riLost.isErr and "VK_ERROR_DEVICE_LOST" in riLost.error
     vb.isInitialized = false
     echo "  [PASS] 10.6 Vulkan VK_ERROR_DEVICE_LOST & minimized 0x0 handling verified."
+
+  testWithLeakCheck("10.7 FontAtlas Property-Based LRU Eviction & Bounds Invariants"):
+    var maxBmp = newSeq[uint8](24 * 24)
+    for i in 0 ..< maxBmp.len:
+      maxBmp[i] = uint8((i * 17) mod 255)
+
+    for seed in [42, 1337, 9001]:
+      var rng = initRand(seed)
+      var pAtlas = initFontAtlas("Segoe UI", 16.0f, dpiScale = 1.0f, atlasWidth = 96, atlasHeight = 96)
+      let mruCp = 0x5100'u32
+      let mruRes = pAtlas.packGlyphBitmap(mruCp, 14, 14, maxBmp[0 ..< (14 * 14)], 14, 1.0f, 14.0f, 16.0f)
+      doAssert mruRes.isOk, "Initial MRU glyph pack failed"
+
+      for step in 0 ..< 60:
+        # Keep mruCp strictly most-recently-used before each randomized pack
+        pAtlas.touchGlyph(mruCp)
+
+        let cp = 0x5101'u32 + uint32(rng.rand(0 .. 47))
+        let gw = rng.rand(10 .. 20)
+        let gh = rng.rand(10 .. 20)
+        let wasResident = pAtlas.hasResidentGlyph(cp)
+        let prevEvictions = pAtlas.evictionCount
+        if not wasResident:
+          pAtlas.atlasNeedsUpload = false
+
+        let res = pAtlas.packGlyphBitmap(cp, gw, gh, maxBmp[0 ..< (gw * gh)], gw, 1.0f, float32(gh), float32(gw + 2))
+        doAssert res.isOk, &"Property test pack failed at seed={seed} step={step}: " & (if res.isErr: res.error else: "")
+
+        if not wasResident or pAtlas.evictionCount > prevEvictions:
+          doAssert pAtlas.atlasNeedsUpload, "Packing/evicting a new glyph must set atlasNeedsUpload = true"
+
+        # Invariant 1: MRU glyph and pinned U+FFFD tofu stay resident
+        doAssert pAtlas.hasResidentGlyph(mruCp), &"MRU glyph evicted at seed={seed} step={step}"
+        doAssert pAtlas.hasResidentGlyph(0xFFFD'u32), &"Pinned U+FFFD tofu evicted at seed={seed} step={step}"
+
+        # Invariant 2: Atlas dimensions and pixel buffer never grow or overflow
+        doAssert pAtlas.width == 96 and pAtlas.height == 96
+        doAssert pAtlas.pixels.len == 96 * 96
+        doAssert pAtlas.curX >= 1 and pAtlas.curX <= pAtlas.width
+        doAssert pAtlas.curY >= 1 and pAtlas.curY <= pAtlas.height
+
+        # Invariant 3: All active slots stay strictly within atlas bounds and never overlap
+        for i in 0 ..< pAtlas.slots.len:
+          let si = pAtlas.slots[i]
+          if not si.active or si.w == 0'u16 or si.h == 0'u16:
+            continue
+          doAssert int(si.x) >= 1 and int(si.y) >= 1
+          doAssert int(si.x) + int(si.w) <= pAtlas.width, "Slot X exceeds atlas width"
+          doAssert int(si.y) + int(si.h) <= pAtlas.height, "Slot Y exceeds atlas height"
+          for j in (i + 1) ..< pAtlas.slots.len:
+            let sj = pAtlas.slots[j]
+            if not sj.active or sj.w == 0'u16 or sj.h == 0'u16:
+              continue
+            let overlapX = int(si.x) < int(sj.x) + int(sj.w) and int(sj.x) < int(si.x) + int(si.w)
+            let overlapY = int(si.y) < int(sj.y) + int(sj.h) and int(sj.y) < int(si.y) + int(si.h)
+            doAssert not (overlapX and overlapY), &"Overlapping active atlas slots {i} and {j}"
+
+      doAssert pAtlas.evictionCount > 0'u64, &"Expected evictionCount > 0 for seed={seed}"
+      doAssert pAtlas.epoch > 1'u64, &"Expected epoch > 1 after evictions for seed={seed}"
+      doAssert pAtlas.atlasNeedsUpload, &"Expected atlasNeedsUpload == true after sequence for seed={seed}"
+    echo "  [PASS] 10.7 Property-based LRU eviction, MRU residency, upload flag & bounds invariants verified."
 
 # =============================================================================
 # Main Entry Point
