@@ -147,7 +147,6 @@ when defined(windows):
   proc GetClientRect(hWnd: HWND, lpRect: ptr RECT): BOOL {.stdcall, dynlib: "user32", importc: "GetClientRect", raises: [].}
   proc SetWindowLongPtrW(hWnd: HWND, nIndex: int32, dwNewLong: LPARAM): LPARAM {.stdcall, dynlib: "user32", importc: "SetWindowLongPtrW", raises: [].}
   proc GetWindowLongPtrW(hWnd: HWND, nIndex: int32): LPARAM {.stdcall, dynlib: "user32", importc: "GetWindowLongPtrW", raises: [].}
-  proc WaitMessage(): BOOL {.stdcall, dynlib: "user32", importc: "WaitMessage", raises: [].}
   proc MsgWaitForMultipleObjectsEx(nCount: uint32, pHandles: pointer, dwMilliseconds: uint32, dwWakeMask: uint32, dwFlags: uint32): uint32 {.stdcall, dynlib: "user32", importc: "MsgWaitForMultipleObjectsEx", raises: [].}
   proc LoadCursorW(hInstance: HINSTANCE, lpCursorName: pointer): HCURSOR {.stdcall, dynlib: "user32", importc: "LoadCursorW", raises: [].}
   proc GetModuleHandleW(lpModuleName: pointer): HINSTANCE {.stdcall, dynlib: "kernel32", importc: "GetModuleHandleW", raises: [].}

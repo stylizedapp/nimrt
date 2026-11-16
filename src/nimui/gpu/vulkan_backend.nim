@@ -12,7 +12,6 @@ import ./vulkan_api
 import ./shaders
 import ./font_atlas
 import corex/result
-import corex/allocators
 
 const
   MaxFramesInFlight* = 2

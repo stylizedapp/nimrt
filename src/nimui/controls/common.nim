@@ -1,7 +1,6 @@
 ## nimui/controls/common — Shared Design Tokens, Key Constants, Types & Registry
 
 import corex/slab
-import corex/signals
 import algx/swissmap
 
 const

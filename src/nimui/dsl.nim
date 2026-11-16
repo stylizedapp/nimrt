@@ -9,7 +9,6 @@
 import std/macros
 import corex/signals
 import corex/slab
-import corex/smallvec
 import ./layout
 
 # =============================================================================

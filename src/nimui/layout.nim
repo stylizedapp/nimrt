@@ -757,7 +757,6 @@ proc emitNodeInstances(
     for idx in firstIdx .. lastIdx:
       let itemY = ny + float32(idx) * itemH - offset
       let isSelected = (idx == node.selectedIndex)
-      let isHover = false # Can track per-item hover if needed
 
       # Item background (subtle alternating or selection)
       let itemBg = if isSelected: 0x2A3B54FF'u32

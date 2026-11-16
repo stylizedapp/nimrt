@@ -76,7 +76,6 @@ type
 
 when defined(windows):
   type
-    HANDLE = pointer
     HDC = pointer
     HFONT = pointer
     HGDIOBJ = pointer

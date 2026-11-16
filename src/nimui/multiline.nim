@@ -11,10 +11,8 @@
 ##   - Caret rendering at current position.
 ## - Follows NimUI patterns: zero runtime memory leaks, monochrome design tokens, ARC/ORC compliance.
 
-import std/strutils
 import corex/unicode
 import corex/slab
-import corex/allocators
 import ./gpu/font_atlas
 import ./gpu/vulkan_backend
 import ./layout
