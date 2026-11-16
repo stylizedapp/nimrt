@@ -147,12 +147,35 @@ proc getRegistry*(): ControlRegistry {.raises: [].} =
 
 proc resetControls*() {.raises: [].} =
   if not gDefaultRegistry.isNil:
-    gDefaultRegistry.checkboxes.setLen(0)
-    gDefaultRegistry.radioGroups.setLen(0)
-    gDefaultRegistry.sliders.setLen(0)
-    gDefaultRegistry.dropdowns.setLen(0)
-    gDefaultRegistry.tooltips.setLen(0)
-    gDefaultRegistry.nodeToCheckbox.clear()
-    gDefaultRegistry.nodeToRadio.clear()
-    gDefaultRegistry.nodeToSlider.clear()
-    gDefaultRegistry.nodeToDropdown.clear()
+    for cb in gDefaultRegistry.checkboxes:
+      if not cb.isNil:
+        cb.onToggle = nil
+    for rg in gDefaultRegistry.radioGroups:
+      if not rg.isNil:
+        rg.onSelect = nil
+        rg.onSelectInt = nil
+        for rb in rg.radios:
+          if not rb.isNil:
+            rb.group = nil
+            rb.onSelect = nil
+        rg.radios.setLen(0)
+    for rb in gDefaultRegistry.nodeToRadio.vals:
+      if not rb.isNil:
+        rb.group = nil
+        rb.onSelect = nil
+    for sl in gDefaultRegistry.sliders:
+      if not sl.isNil:
+        sl.onValueChange = nil
+    for dd in gDefaultRegistry.dropdowns:
+      if not dd.isNil:
+        dd.onSelect = nil
+    reset(gDefaultRegistry.checkboxes)
+    reset(gDefaultRegistry.radioGroups)
+    reset(gDefaultRegistry.sliders)
+    reset(gDefaultRegistry.dropdowns)
+    reset(gDefaultRegistry.tooltips)
+    reset(gDefaultRegistry.nodeToCheckbox)
+    reset(gDefaultRegistry.nodeToRadio)
+    reset(gDefaultRegistry.nodeToSlider)
+    reset(gDefaultRegistry.nodeToDropdown)
+    gDefaultRegistry = nil

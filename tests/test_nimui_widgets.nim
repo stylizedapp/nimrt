@@ -13,7 +13,7 @@
 ##
 ## Compilation: nim c -r tests/test_nimui_widgets.nim under --mm:orc --threads:on --panics:on
 
-import std/[strformat, strutils, math]
+import std/[strformat, strutils]
 import corex
 import corex/unicode
 import nimui
@@ -244,69 +244,71 @@ proc testRadioSuite(atlas: FontAtlas) =
   echo "================================================================="
 
   testWithLeakCheck("2.1 RadioGroup Mutual Exclusivity & State Tracking"):
-    resetControls()
-    var tree = initUiTree(testAlloc)
-    defer:
-      tree.destroy()
+    proc runRadioExclusivityTest(alloc: Allocator, atlas: FontAtlas) =
       resetControls()
+      var tree = initUiTree(alloc)
+      defer:
+        tree.destroy()
+        resetControls()
 
-    var selectedIdxHistory: seq[int] = @[]
-    var selectedValHistory: seq[string] = @[]
+      var selectedIdxHistory: seq[int] = @[]
+      var selectedValHistory: seq[string] = @[]
 
-    let (container, group) = RadioGroup(
-      tree, SlabId(-1),
-      options = ["Low", "Medium", "High", "Ultra"],
-      selectedIndex = 0,
-      direction = fdColumn,
-      gap = 6.0f,
-      onSelect = proc(idx: int, val: string) =
-        selectedIdxHistory.add(idx)
-        selectedValHistory.add(val)
-    )
-    tree.rootId = container
-    tree.layoutTree(400.0f, 400.0f, atlas)
+      let (container, group) = RadioGroup(
+        tree, SlabId(-1),
+        options = ["Low", "Medium", "High", "Ultra"],
+        selectedIndex = 0,
+        direction = fdColumn,
+        gap = 6.0f,
+        onSelect = proc(idx: int, val: string) =
+          selectedIdxHistory.add(idx)
+          selectedValHistory.add(val)
+      )
+      tree.rootId = container
+      tree.layoutTree(400.0f, 400.0f, atlas)
 
-    doAssert group.radios.len == 4
-    doAssert group.selectedValue == "Low"
-    doAssert group.selectedInt == 0
-    doAssert group.radios[0].selected
-    doAssert not group.radios[1].selected
-    doAssert not group.radios[2].selected
-    doAssert not group.radios[3].selected
+      doAssert group.radios.len == 4
+      doAssert group.selectedValue == "Low"
+      doAssert group.selectedInt == 0
+      doAssert group.radios[0].selected
+      doAssert not group.radios[1].selected
+      doAssert not group.radios[2].selected
+      doAssert not group.radios[3].selected
 
-    # Verify visual node representation
-    doAssert tree.nodes[group.radios[0].outerRingId].borderColor == ColFocusRing
-    doAssert tree.nodes[group.radios[0].innerCircleId].bgColor == ColTextPrim
-    doAssert tree.nodes[group.radios[1].outerRingId].borderColor == ColBorderCtl
-    doAssert tree.nodes[group.radios[1].innerCircleId].bgColor == 0'u32
+      # Verify visual node representation
+      doAssert tree.nodes[group.radios[0].outerRingId].borderColor == ColFocusRing
+      doAssert tree.nodes[group.radios[0].innerCircleId].bgColor == ColTextPrim
+      doAssert tree.nodes[group.radios[1].outerRingId].borderColor == ColBorderCtl
+      doAssert tree.nodes[group.radios[1].innerCircleId].bgColor == 0'u32
 
-    # Select "High" (index 2)
-    group.select(2, addr tree)
-    doAssert group.selectedValue == "High"
-    doAssert group.selectedInt == 2
-    doAssert not group.radios[0].selected
-    doAssert not group.radios[1].selected
-    doAssert group.radios[2].selected
-    doAssert not group.radios[3].selected
+      # Select "High" (index 2)
+      group.select(2, addr tree)
+      doAssert group.selectedValue == "High"
+      doAssert group.selectedInt == 2
+      doAssert not group.radios[0].selected
+      doAssert not group.radios[1].selected
+      doAssert group.radios[2].selected
+      doAssert not group.radios[3].selected
 
-    # Verify visuals updated
-    doAssert tree.nodes[group.radios[0].outerRingId].borderColor == ColBorderCtl
-    doAssert tree.nodes[group.radios[0].innerCircleId].bgColor == 0'u32
-    doAssert tree.nodes[group.radios[2].outerRingId].borderColor == ColFocusRing
-    doAssert tree.nodes[group.radios[2].innerCircleId].bgColor == ColTextPrim
+      # Verify visuals updated
+      doAssert tree.nodes[group.radios[0].outerRingId].borderColor == ColBorderCtl
+      doAssert tree.nodes[group.radios[0].innerCircleId].bgColor == 0'u32
+      doAssert tree.nodes[group.radios[2].outerRingId].borderColor == ColFocusRing
+      doAssert tree.nodes[group.radios[2].innerCircleId].bgColor == ColTextPrim
 
-    # Select "Ultra" by string
-    group.select("Ultra", addr tree)
-    doAssert group.selectedValue == "Ultra"
-    doAssert group.selectedInt == 3
-    doAssert group.radios[3].selected
-    doAssert not group.radios[2].selected
+      # Select "Ultra" by string
+      group.select("Ultra", addr tree)
+      doAssert group.selectedValue == "Ultra"
+      doAssert group.selectedInt == 3
+      doAssert group.radios[3].selected
+      doAssert not group.radios[2].selected
 
-    # Note: currently RadioGroup invokes both onSelect and onSelectInt closures
-    doAssert 2 in selectedIdxHistory
-    doAssert 3 in selectedIdxHistory
-    doAssert "High" in selectedValHistory
-    doAssert "Ultra" in selectedValHistory
+      # Note: currently RadioGroup invokes both onSelect and onSelectInt closures
+      doAssert 2 in selectedIdxHistory
+      doAssert 3 in selectedIdxHistory
+      doAssert "High" in selectedValHistory
+      doAssert "Ultra" in selectedValHistory
+    runRadioExclusivityTest(testAlloc, atlas)
     echo "  [PASS] 2.1 RadioGroup mutual exclusivity & state tracking verified."
 
   testWithLeakCheck("2.2 RadioGroup Keyboard Arrow Navigation (Circular)"):
@@ -400,7 +402,7 @@ proc testRadioSuite(atlas: FontAtlas) =
       resetControls()
 
     let sig = rt.createSignal("Fast")
-    let (container, group) = RadioGroup(
+    let (_, group) = RadioGroup(
       tree, SlabId(-1),
       options = ["Slow", "Normal", "Fast", "Ludicrous"],
       selectedIndex = 0
@@ -509,59 +511,61 @@ proc testSliderSuite(atlas: FontAtlas) =
     echo "  [PASS] 3.3 Slider FlexGrow weight calculation verified."
 
   testWithLeakCheck("3.4 Slider Mouse Drag Emulation & Out-of-Bounds Clamping"):
-    resetControls()
-    var tree = initUiTree(testAlloc)
-    defer:
-      tree.destroy()
+    proc runSliderDragTest(alloc: Allocator, atlas: FontAtlas) =
       resetControls()
+      var tree = initUiTree(alloc)
+      defer:
+        tree.destroy()
+        resetControls()
 
-    var changedValues: seq[float32] = @[]
-    let s = newSlider(
-      minVal = 0.0f,
-      maxVal = 100.0f,
-      currentVal = 0.0f,
-      thumbSize = 16.0f,
-      onValueChange = proc(v: float32) = changedValues.add(v)
-    )
-    let root = Slider(tree, SlabId(-1), s, width = fixed(200.0f))
-    tree.rootId = root
-    tree.layoutTree(400.0f, 300.0f, atlas)
+      var changedValues: seq[float32] = @[]
+      let s = newSlider(
+        minVal = 0.0f,
+        maxVal = 100.0f,
+        currentVal = 0.0f,
+        thumbSize = 16.0f,
+        onValueChange = proc(v: float32) = changedValues.add(v)
+      )
+      let root = Slider(tree, SlabId(-1), s, width = fixed(200.0f))
+      tree.rootId = root
+      tree.layoutTree(400.0f, 300.0f, atlas)
 
-    let rect = tree.nodes[root].computedRect
-    doAssert approxEq(rect.w, 200.0f)
+      let rect = tree.nodes[root].computedRect
+      doAssert approxEq(rect.w, 200.0f)
 
-    # 1. Mouse down at center of slider track -> jumps to ~50%
-    let centerX = rect.x + rect.w * 0.5f
-    let centerY = rect.y + rect.h * 0.5f
-    let handledDown = s.handleMouseDown(centerX, centerY, addr tree)
-    doAssert handledDown
-    doAssert s.isDragging
-    doAssert approxEq(s.currentVal, 50.0f, 1.0f)
+      # 1. Mouse down at center of slider track -> jumps to ~50%
+      let centerX = rect.x + rect.w * 0.5f
+      let centerY = rect.y + rect.h * 0.5f
+      let handledDown = s.handleMouseDown(centerX, centerY, addr tree)
+      doAssert handledDown
+      doAssert s.isDragging
+      doAssert approxEq(s.currentVal, 50.0f, 1.0f)
 
-    # 2. Mouse move dragging thumb to 75%
-    let drag75X = rect.x + rect.w * 0.75f
-    let handledMove = s.handleMouseMove(drag75X, centerY, addr tree)
-    doAssert handledMove
-    doAssert s.currentVal > 70.0f and s.currentVal < 80.0f
+      # 2. Mouse move dragging thumb to 75%
+      let drag75X = rect.x + rect.w * 0.75f
+      let handledMove = s.handleMouseMove(drag75X, centerY, addr tree)
+      doAssert handledMove
+      doAssert s.currentVal > 70.0f and s.currentVal < 80.0f
 
-    # 3. Drag far beyond right edge -> clamped to maxVal (100.0)
-    discard s.handleMouseMove(rect.x + rect.w + 500.0f, centerY, addr tree)
-    doAssert approxEq(s.currentVal, 100.0f)
+      # 3. Drag far beyond right edge -> clamped to maxVal (100.0)
+      discard s.handleMouseMove(rect.x + rect.w + 500.0f, centerY, addr tree)
+      doAssert approxEq(s.currentVal, 100.0f)
 
-    # 4. Drag far beyond left edge -> clamped to minVal (0.0)
-    discard s.handleMouseMove(rect.x - 500.0f, centerY, addr tree)
-    doAssert approxEq(s.currentVal, 0.0f)
+      # 4. Drag far beyond left edge -> clamped to minVal (0.0)
+      discard s.handleMouseMove(rect.x - 500.0f, centerY, addr tree)
+      doAssert approxEq(s.currentVal, 0.0f)
 
-    # 5. Mouse up ends drag
-    let handledUp = s.handleMouseUp(centerX, centerY)
-    doAssert handledUp
-    doAssert not s.isDragging
+      # 5. Mouse up ends drag
+      let handledUp = s.handleMouseUp(centerX, centerY)
+      doAssert handledUp
+      doAssert not s.isDragging
 
-    # 6. Mouse move after mouse up does NOT change value
-    let valBefore = s.currentVal
-    discard s.handleMouseMove(centerX, centerY, addr tree)
-    doAssert approxEq(s.currentVal, valBefore)
-    doAssert changedValues.len > 0
+      # 6. Mouse move after mouse up does NOT change value
+      let valBefore = s.currentVal
+      discard s.handleMouseMove(centerX, centerY, addr tree)
+      doAssert approxEq(s.currentVal, valBefore)
+      doAssert changedValues.len > 0
+    runSliderDragTest(testAlloc, atlas)
     echo "  [PASS] 3.4 Slider mouse drag emulation & out-of-bounds clamping verified."
 
   testWithLeakCheck("3.5 Slider Keyboard Step Navigation"):
@@ -671,41 +675,43 @@ proc testDropdownSuite(atlas: FontAtlas) =
     echo "  [PASS] 4.2 Dropdown open, toggle & chevron transitions verified."
 
   testWithLeakCheck("4.3 Dropdown Option Selection via Mouse Click"):
-    resetControls()
-    var tree = initUiTree(testAlloc)
-    defer:
-      tree.destroy()
+    proc runDropdownClickTest(alloc: Allocator, atlas: FontAtlas) =
       resetControls()
+      var tree = initUiTree(alloc)
+      defer:
+        tree.destroy()
+        resetControls()
 
-    var selectedHistory: seq[int] = @[]
-    let dd = newDropdown(
-      @["First", "Second", "Third", "Fourth"],
-      selectedIndex = 0,
-      itemHeight = 30.0f,
-      onSelect = proc(idx: int) = selectedHistory.add(idx)
-    )
-    let header = Dropdown(tree, SlabId(-1), dd, width = fixed(180.0f), height = fixed(36.0f))
-    tree.rootId = header
-    tree.layoutTree(400.0f, 400.0f, atlas)
+      var selectedHistory: seq[int] = @[]
+      let dd = newDropdown(
+        @["First", "Second", "Third", "Fourth"],
+        selectedIndex = 0,
+        itemHeight = 30.0f,
+        onSelect = proc(idx: int) = selectedHistory.add(idx)
+      )
+      let header = Dropdown(tree, SlabId(-1), dd, width = fixed(180.0f), height = fixed(36.0f))
+      tree.rootId = header
+      tree.layoutTree(400.0f, 400.0f, atlas)
 
-    let hRect = tree.nodes[header].computedRect
+      let hRect = tree.nodes[header].computedRect
 
-    # 1. Click header to open
-    let handledHeader = dd.handleMouseDown(hRect.x + 10.0f, hRect.y + 10.0f, addr tree)
-    doAssert handledHeader
-    doAssert dd.isOpen
+      # 1. Click header to open
+      let handledHeader = dd.handleMouseDown(hRect.x + 10.0f, hRect.y + 10.0f, addr tree)
+      doAssert handledHeader
+      doAssert dd.isOpen
 
-    # 2. Click on "Third" option (index 2)
-    let (popX, popY, popW, popH) = dd.getPopupRect(addr tree)
-    let opt2Y = popY + 4.0f + 2.0f * dd.itemHeight + dd.itemHeight * 0.5f
-    let opt2X = popX + popW * 0.5f
+      # 2. Click on "Third" option (index 2)
+      let (popX, popY, popW, _) = dd.getPopupRect(addr tree)
+      let opt2Y = popY + 4.0f + 2.0f * dd.itemHeight + dd.itemHeight * 0.5f
+      let opt2X = popX + popW * 0.5f
 
-    let handledOpt = dd.handleMouseDown(opt2X, opt2Y, addr tree)
-    doAssert handledOpt
-    doAssert not dd.isOpen # Closed after select
-    doAssert dd.selectedIndex == 2
-    doAssert tree.nodes[dd.textId].text == "Third"
-    doAssert selectedHistory == @[2]
+      let handledOpt = dd.handleMouseDown(opt2X, opt2Y, addr tree)
+      doAssert handledOpt
+      doAssert not dd.isOpen # Closed after select
+      doAssert dd.selectedIndex == 2
+      doAssert tree.nodes[dd.textId].text == "Third"
+      doAssert selectedHistory == @[2]
+    runDropdownClickTest(testAlloc, atlas)
     echo "  [PASS] 4.3 Dropdown option selection via mouse click verified."
 
   testWithLeakCheck("4.4 Dropdown Outside Click Closing"):
@@ -1162,8 +1168,10 @@ proc testTextAreaSuite(atlas: FontAtlas) =
 
   testWithLeakCheck("8.5 TextArea Clipboard Shortcuts (Ctrl+A, Ctrl+C, Ctrl+V, Ctrl+X)"):
     setClipboardForceFallback(true)
-    defer: setClipboardForceFallback(false)
     clearClipboardFallback()
+    defer:
+      clearClipboardFallback()
+      setClipboardForceFallback(false)
 
     var ta = initTextArea("Line Alpha\nLine Beta")
     ta.isFocused = true

@@ -8,9 +8,8 @@
 ## - Both interactive Vulkan 1.1+ window (1360x860) and --headless-test / --export-screenshots
 ## =============================================================================
 
-import std/[os, strformat, strutils, monotimes, times]
+import std/[os, strformat, strutils]
 import corex
-import corex/unicode
 import corex/signals
 import nimui
 import nimui/controls
