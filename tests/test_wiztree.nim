@@ -23,10 +23,10 @@
 import std/[os, strutils, algorithm, monotimes, times]
 import corex
 import algx
-import wiztree/types
-import wiztree/tree
-import wiztree/scanner
-import wiztree/cli
+import ../apps/wiztree/types
+import ../apps/wiztree/tree
+import ../apps/wiztree/scanner
+import ../apps/wiztree/cli
 
 # =============================================================================
 # 1. Unit Tests: Node Memory Layout, Alignment & Helpers

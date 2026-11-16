@@ -1,7 +1,7 @@
 import std/strutils
 import corex
-import everything/src/indexer
-import everything/src/search
+import ../apps/everything/src/indexer
+import ../apps/everything/src/search
 
 proc runSearchUnitTests() =
   echo "=== RUNNING EVERYTHING SEARCH UNIT TESTS ==="

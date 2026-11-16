@@ -9,11 +9,11 @@
 
 import std/[os, json, strutils, widestrs]
 import corex
-import everything/src/config
-import everything/src/indexer
-import everything/src/search
-import everything/src/win32_gui
-import everything/src/gui
+import ../apps/everything/src/config
+import ../apps/everything/src/indexer
+import ../apps/everything/src/search
+import ../apps/everything/src/win32_gui
+import ../apps/everything/src/gui
 
 proc testConfigSerialization() =
   echo "--- Testing Config Serialization & Parsing ---"

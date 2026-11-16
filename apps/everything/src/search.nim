@@ -9,7 +9,7 @@
 import std/algorithm
 import std/strutils
 import corex
-import everything/src/indexer
+import ./indexer
 
 type
   IndexEntry* = object

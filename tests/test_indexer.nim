@@ -1,7 +1,7 @@
 import std/os
 import corex
 import corex/platform/windows/win32_fs
-import everything/src/indexer
+import ../apps/everything/src/indexer
 
 proc makeMockUsnRecord(name: string, parentFrn: uint64, frn: uint64, isDir: bool): seq[byte] =
   let nameUtf16Len = name.len * 2

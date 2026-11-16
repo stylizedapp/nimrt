@@ -14,7 +14,7 @@ import std/[os, times, strutils]
 import corex
 import corex/[allocators, result, testing]
 import corex/platform/windows/win32_fs
-import everything/src/[indexer, search, cli]
+import ../apps/everything/src/[indexer, search, cli]
 
 proc makeMockUsnRecord(name: string, parentFrn: uint64, frn: uint64, isDir: bool): seq[byte] =
   let nameUtf16Len = name.len * 2
