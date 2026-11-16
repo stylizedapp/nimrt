@@ -206,10 +206,9 @@ proc attachJsListener(core: ptr HtmlJsCore, id, evName: string, cbId: int32) {.r
       if not prevClick.isNil:
         prevClick()
       if not core.isNil and core.active:
-        {.cast(gcsafe).}:
-          let res = core.engine.invokeCallback(cbId)
-          if res.isErr():
-            core.lastJsError = res.error()
+        let res = core.engine.invokeCallback(cbId)
+        if res.isErr():
+          core.lastJsError = res.error()
     core.treePtr[].nodes[slab].onClick = newClick
     propagateOnClickRecursive(core.treePtr[], slab, newClick)
   elif lowEv == "input":
@@ -218,10 +217,9 @@ proc attachJsListener(core: ptr HtmlJsCore, id, evName: string, cbId: int32) {.r
       if not prevInput.isNil:
         prevInput(txt)
       if not core.isNil and core.active:
-        {.cast(gcsafe).}:
-          let res = core.engine.invokeCallback(cbId, txt)
-          if res.isErr():
-            core.lastJsError = res.error()
+        let res = core.engine.invokeCallback(cbId, txt)
+        if res.isErr():
+          core.lastJsError = res.error()
     core.treePtr[].nodes[slab].onInput = newInput
 
 proc parseInt32Safe(s: string): int32 {.raises: [].} =
@@ -242,92 +240,91 @@ proc makeHostDispatcher(core: ptr HtmlJsCore): JsHostDispatchProc {.raises: [].}
   result = proc(op: int32, a0, a1, a2: string, errMsg: var string): string {.closure, gcsafe, raises: [].} =
     if core.isNil or not core.active:
       return ""
-    {.cast(gcsafe).}:
-      let caps = core.engine.config.validation.allowedCaps
-      case op
-      of OpDomGetText, OpDomGetVal:
-        if core.engine.config.validation.requireExplicitCaps and jcDom notin caps:
-          errMsg = "Zig-Explicitness Violation [JS-Z03]: DOM read denied without 'dom' capability"
-          return ""
-        return core.getElementText(a0)
-      of OpDomSetText, OpDomSetVal:
-        if core.engine.config.validation.requireExplicitCaps and jcDom notin caps:
-          errMsg = "Zig-Explicitness Violation [JS-Z03]: DOM write denied without 'dom' capability"
-          return ""
-        core.setElementText(a0, a1)
+    let caps = core.engine.config.validation.allowedCaps
+    case op
+    of OpDomGetText, OpDomGetVal:
+      if core.engine.config.validation.requireExplicitCaps and jcDom notin caps:
+        errMsg = "Zig-Explicitness Violation [JS-Z03]: DOM read denied without 'dom' capability"
         return ""
-      of OpDomSetStyle:
-        if core.engine.config.validation.requireExplicitCaps and jcDom notin caps:
-          errMsg = "Zig-Explicitness Violation [JS-Z03]: DOM style denied without 'dom' capability"
-          return ""
-        core.setElementStyleProp(a0, a1, a2)
+      return core.getElementText(a0)
+    of OpDomSetText, OpDomSetVal:
+      if core.engine.config.validation.requireExplicitCaps and jcDom notin caps:
+        errMsg = "Zig-Explicitness Violation [JS-Z03]: DOM write denied without 'dom' capability"
         return ""
-      of OpDomGetStyle:
-        if core.engine.config.validation.requireExplicitCaps and jcDom notin caps:
-          errMsg = "Zig-Explicitness Violation [JS-Z03]: DOM style read denied without 'dom' capability"
-          return ""
-        return core.getElementStyleProp(a0, a1)
-      of OpDomAddListener:
-        if core.engine.config.validation.requireExplicitCaps and jcDom notin caps:
-          errMsg = "Zig-Explicitness Violation [JS-Z03]: DOM listener denied without 'dom' capability"
-          return ""
-        let cbId = parseInt32Safe(a2)
-        core.attachJsListener(a0, a1, cbId)
+      core.setElementText(a0, a1)
+      return ""
+    of OpDomSetStyle:
+      if core.engine.config.validation.requireExplicitCaps and jcDom notin caps:
+        errMsg = "Zig-Explicitness Violation [JS-Z03]: DOM style denied without 'dom' capability"
         return ""
-      of OpTimerSet:
-        if core.engine.config.validation.requireExplicitCaps and jcTimers notin caps:
-          errMsg = "Zig-Explicitness Violation [JS-Z01]: Timer registration denied without 'timers' capability"
-          return ""
-        let delayMs = int(parseInt32Safe(a0))
-        let repeat = (a1 == "1")
-        let cbId = parseInt32Safe(a2)
-        let tid = core.engine.registerTimer(delayMs, repeat, cbId)
-        return $tid
-      of OpTimerClear:
-        if core.engine.config.validation.requireExplicitCaps and jcTimers notin caps:
-          errMsg = "Zig-Explicitness Violation [JS-Z01]: Timer clear denied without 'timers' capability"
-          return ""
-        let tid = parseInt32Safe(a0)
-        core.engine.clearTimer(tid)
+      core.setElementStyleProp(a0, a1, a2)
+      return ""
+    of OpDomGetStyle:
+      if core.engine.config.validation.requireExplicitCaps and jcDom notin caps:
+        errMsg = "Zig-Explicitness Violation [JS-Z03]: DOM style read denied without 'dom' capability"
         return ""
-      of OpNimCall:
-        if core.engine.config.validation.requireExplicitCaps and jcNimBridge notin caps:
-          errMsg = "Zig-Explicitness Violation [JS-Z02]: Nim.call denied without 'nim' capability"
-          return ""
-        if core.nimFuncs.contains(a0):
-          let fn = core.nimFuncs.getOrDefault(a0)
-          if not fn.isNil:
-            return fn(a1, a2)
-        errMsg = "Nim host function not registered: '" & a0 & "'"
+      return core.getElementStyleProp(a0, a1)
+    of OpDomAddListener:
+      if core.engine.config.validation.requireExplicitCaps and jcDom notin caps:
+        errMsg = "Zig-Explicitness Violation [JS-Z03]: DOM listener denied without 'dom' capability"
         return ""
-      of OpNimSigGet:
-        if core.engine.config.validation.requireExplicitCaps and jcNimBridge notin caps:
-          errMsg = "Zig-Explicitness Violation [JS-Z02]: Nim.get denied without 'nim' capability"
-          return ""
-        if not core.bindingsPtr.isNil:
-          if core.bindingsPtr[].textSignals.contains(a0):
-            return core.bindingsPtr[].textSignals.getOrDefault(a0).get()
-          elif core.bindingsPtr[].inputSignals.contains(a0):
-            return core.bindingsPtr[].inputSignals.getOrDefault(a0).get()
+      let cbId = parseInt32Safe(a2)
+      core.attachJsListener(a0, a1, cbId)
+      return ""
+    of OpTimerSet:
+      if core.engine.config.validation.requireExplicitCaps and jcTimers notin caps:
+        errMsg = "Zig-Explicitness Violation [JS-Z01]: Timer registration denied without 'timers' capability"
         return ""
-      of OpNimSigSet:
-        if core.engine.config.validation.requireExplicitCaps and jcNimBridge notin caps:
-          errMsg = "Zig-Explicitness Violation [JS-Z02]: Nim.set denied without 'nim' capability"
-          return ""
-        if not core.bindingsPtr.isNil:
-          if core.bindingsPtr[].textSignals.contains(a0):
-            core.bindingsPtr[].textSignals.getOrDefault(a0).set(a1)
-          elif core.bindingsPtr[].inputSignals.contains(a0):
-            core.bindingsPtr[].inputSignals.getOrDefault(a0).set(a1)
+      let delayMs = int(parseInt32Safe(a0))
+      let repeat = (a1 == "1")
+      let cbId = parseInt32Safe(a2)
+      let tid = core.engine.registerTimer(delayMs, repeat, cbId)
+      return $tid
+    of OpTimerClear:
+      if core.engine.config.validation.requireExplicitCaps and jcTimers notin caps:
+        errMsg = "Zig-Explicitness Violation [JS-Z01]: Timer clear denied without 'timers' capability"
         return ""
-      of OpConsoleLog:
-        if core.engine.config.validation.requireExplicitCaps and jcConsole notin caps:
-          errMsg = "Zig-Explicitness Violation [JS-Z04]: console denied without 'console' capability"
-          return ""
-        core.consoleLogs.add("[" & a0 & "] " & a1)
+      let tid = parseInt32Safe(a0)
+      core.engine.clearTimer(tid)
+      return ""
+    of OpNimCall:
+      if core.engine.config.validation.requireExplicitCaps and jcNimBridge notin caps:
+        errMsg = "Zig-Explicitness Violation [JS-Z02]: Nim.call denied without 'nim' capability"
         return ""
-      else:
+      if core.nimFuncs.contains(a0):
+        let fn = core.nimFuncs.getOrDefault(a0)
+        if not fn.isNil:
+          return fn(a1, a2)
+      errMsg = "Nim host function not registered: '" & a0 & "'"
+      return ""
+    of OpNimSigGet:
+      if core.engine.config.validation.requireExplicitCaps and jcNimBridge notin caps:
+        errMsg = "Zig-Explicitness Violation [JS-Z02]: Nim.get denied without 'nim' capability"
         return ""
+      if not core.bindingsPtr.isNil:
+        if core.bindingsPtr[].textSignals.contains(a0):
+          return core.bindingsPtr[].textSignals.getOrDefault(a0).get()
+        elif core.bindingsPtr[].inputSignals.contains(a0):
+          return core.bindingsPtr[].inputSignals.getOrDefault(a0).get()
+      return ""
+    of OpNimSigSet:
+      if core.engine.config.validation.requireExplicitCaps and jcNimBridge notin caps:
+        errMsg = "Zig-Explicitness Violation [JS-Z02]: Nim.set denied without 'nim' capability"
+        return ""
+      if not core.bindingsPtr.isNil:
+        if core.bindingsPtr[].textSignals.contains(a0):
+          core.bindingsPtr[].textSignals.getOrDefault(a0).set(a1)
+        elif core.bindingsPtr[].inputSignals.contains(a0):
+          core.bindingsPtr[].inputSignals.getOrDefault(a0).set(a1)
+      return ""
+    of OpConsoleLog:
+      if core.engine.config.validation.requireExplicitCaps and jcConsole notin caps:
+        errMsg = "Zig-Explicitness Violation [JS-Z04]: console denied without 'console' capability"
+        return ""
+      core.consoleLogs.add("[" & a0 & "] " & a1)
+      return ""
+    else:
+      return ""
 
 proc initHtmlJsSession*(
   alloc: Allocator,

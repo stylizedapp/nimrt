@@ -144,6 +144,7 @@ proc add*[T](s: var BufSeq[T], item: sink T) {.raises: [].} =
 
 proc clear*[T](s: var BufSeq[T]) {.inline, gcsafe, raises: [].} =
   if not s.data.isNil:
+    # Safe: destroys only elements owned by this BufSeq slot; no shared GC globals accessed.
     {.cast(gcsafe).}:
       for i in 0 ..< s.len:
         `=destroy`(s.data[i])

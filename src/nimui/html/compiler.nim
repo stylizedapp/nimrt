@@ -513,12 +513,11 @@ proc mountElementRecursive(
       let optsCopy = optLabels
       let treePtr = addr tree
       tree.nodes[slab].onClick = proc() {.closure, gcsafe, raises: [].} =
-        {.cast(gcsafe).}:
-          curIdx = (curIdx + 1) mod optsCopy.len
-          if treePtr[].nodes.contains(slab):
-            treePtr[].nodes[slab].text = optsCopy[curIdx] & " ▾"
-            treePtr[].nodes[slab].isDirty = true
-            treePtr[].isDirty = true
+        curIdx = (curIdx + 1) mod optsCopy.len
+        if treePtr[].nodes.contains(slab):
+          treePtr[].nodes[slab].text = optsCopy[curIdx] & " ▾"
+          treePtr[].nodes[slab].isDirty = true
+          treePtr[].isDirty = true
 
     return wrapWithMarginIfNeeded(tree, slab, style, parentDir, parentSlab)
 

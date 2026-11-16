@@ -475,7 +475,9 @@ when defined(windows):
 
     let initRes = initAsyncFile(reactor, h, ownsHandle = true)
     if not initRes.isOk:
-      discard closeHandle(h)
+      if closeHandle(h).isErr:
+        # Best-effort cleanup after initAsyncFile already failed; preserve initRes error.
+        discard
       return initRes
     initRes
 

@@ -122,12 +122,14 @@ proc currentRuntime*(): ptr ReactiveRuntime {.inline, raises: [].} =
 
 proc destroyTypedVal[T](p: pointer, alloc: Allocator) {.nimcall, gcsafe, raises: [].} =
   if p != nil:
+    # Safe: type-erased destructor on owned signal value slot; no shared GC globals accessed.
     {.cast(gcsafe).}:
       `=destroy`(cast[ptr T](p)[])
     alloc.dealloc(p, sizeof(T))
 
 proc destroyTypedEnv[T](p: pointer, alloc: Allocator) {.nimcall, gcsafe, raises: [].} =
   if p != nil:
+    # Safe: type-erased destructor on owned computed env slot; no shared GC globals accessed.
     {.cast(gcsafe).}:
       `=destroy`(cast[ptr ComputedEnv[T]](p)[])
     alloc.dealloc(p, sizeof(ComputedEnv[T]))
