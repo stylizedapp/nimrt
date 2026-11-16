@@ -9,7 +9,10 @@
 import corex/adt
 export adt
 
-{.push checks: off, optimization: speed.}
+when defined(release) or defined(danger):
+  {.push checks: off, optimization: speed.}
+else:
+  {.push optimization: speed.}
 
 type
   BinaryHeap*[T] = object

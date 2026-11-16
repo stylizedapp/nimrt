@@ -6,9 +6,12 @@
 ##    из плоских примитивов (POD), и копирует целые массивы структур за ОДНУ инструкцию `copyMem`!
 ## 3. Генерирует JSON напрямую в преаллоцированный буфер без создания `JsonNode` дерева в куче.
 
-import std/[typetraits, strutils]
+import std/typetraits
 
-{.push checks: off, optimization: speed.}
+when defined(release) or defined(danger):
+  {.push checks: off, optimization: speed.}
+else:
+  {.push optimization: speed.}
 
 template isBlittable*(T: typedesc): bool =
   ## Проверяет на этапе компиляции, можно ли копировать тип `T` напрямую побайтово (Zero-Copy POD).
@@ -117,6 +120,8 @@ proc unpackBin*[T](buf: openArray[byte]): T {.inline, raises: [].} =
   when T is seq:
     type ElemT = typeof(result[0])
     when isBlittable(ElemT):
+      if buf.len < 4:
+        return
       var n: int32
       copyMem(addr n, unsafeAddr buf[0], 4)
       if n > 0:

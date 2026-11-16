@@ -1,12 +1,14 @@
 # Project: Nim High-Performance Core Ecosystem
 
+> **Note:** This document originated as the Phase 0 systems foundation specification (`corex`, `algx`, `sysx`). For the full current v0.1.0 ecosystem status (including `nimui`, QuickJS hybrid, `compiler/nim_safe`, and `apps/wiztree`), see [`README.md`](../README.md) and [`docs/STATE.md`](STATE.md).
+
 ## Architecture & Boundary Invariants
-The Nim High-Performance Core Ecosystem provides a zero-overhead, memory-safe, cross-platform systems foundation engineered for extreme throughput and low latency.
+The Nim High-Performance Core Ecosystem provides a **Windows-first** systems foundation with a **safe high-level API surface over an explicit low-level core** (`cast`/`ptr`/`importc`, release-only `{.push checks: off.}` in `algx`), experimentally checked with `nim_safe` (`--mem-safe` / `--safe-mode`), engineered for high throughput and low latency.
 
 ### Strict Architectural Rule: Pure Runtime in `src/`
 To maintain documentation and structural integrity, the project strictly enforces:
-- **`src/`**: Strictly reserved for foundational systems runtime modules (`corex`, `algx`, and future `netx`). Application code, CLI binaries, and end-user tools must never be added to `src/`.
-- **`apps/`**: Downstream applications, CLI tools, and production case studies (e.g. `apps/wiztree`).
+- **`src/`**: Strictly reserved for foundational systems runtime modules (`corex`, `algx`, `nimui`, and future `netx`). Application code, CLI binaries, and end-user tools must never be added to `src/`.
+- **`apps/`**: Downstream applications, CLI tools, and production case studies (e.g. `apps/wiztree`, `apps/html_desktop`, `apps/nimui_demo`).
 - **`tools/`**: Developer scaffolding, utilities, and build scripts.
 - **`tests/`**: Automated test suites and leak verification harnesses.
 - **`benchmarks/`**: High-performance micro-benchmarks and hardware saturation suites.

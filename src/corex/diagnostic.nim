@@ -115,7 +115,7 @@ proc severityLabel(s: Severity): string {.inline, raises: [].} =
 proc render*(d: Diagnostic, sf: SourceFile): string {.raises: [].} =
   var res = ""
   let (startLine, startCol) = sf.lineCol(d.span.start)
-  let (endLine, endCol) = sf.lineCol(d.span.`end`)
+  let (endLine, _) = sf.lineCol(d.span.`end`)
 
   # Header: e.g. "error: <message>"
   res.add(severityLabel(d.severity) & ": " & d.message & "\n")

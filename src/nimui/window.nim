@@ -1,8 +1,10 @@
-## nimui/window — Native OS Window & Event Handling (Win32 + DPI Awareness)
+## nimui/window — Native OS Window & Event Handling (Win32 + DPI Awareness + IME)
 ##
 ## Strict invariants:
 ## - Pure native OS windowing without SDL/GLFW/Qt.
-## - DPI-aware: SetProcessDpiAwarenessContext (Per-Monitor v2).
+## - DPI-aware: SetProcessDpiAwarenessContext (Per-Monitor v2) + GetDpiForWindow + WM_DPICHANGED.
+## - Minimized window tracking (IsIconic / SIZE_MINIMIZED / 0x0 client extent).
+## - Basic Win32 IME CJK composition & GCS_RESULTSTR UTF-16 -> UTF-8 -> Rune dispatch.
 ## - Mouse, keyboard, scroll, and resize event dispatch.
 ## - 0% CPU/GPU idle wait via MsgWaitForMultipleObjectsEx / WaitMessage.
 ## - Live RAM working set query via psapi GetProcessMemoryInfo.
@@ -20,6 +22,7 @@ when defined(windows):
     HICON* = pointer
     HCURSOR* = pointer
     HBRUSH* = pointer
+    HIMC* = pointer
     WPARAM* = uint
     LPARAM* = int
     LRESULT* = int
@@ -84,6 +87,9 @@ when defined(windows):
     SW_SHOW*: int32 = 5
     PM_REMOVE*: uint32 = 0x0001
     GWLP_USERDATA*: int32 = -21
+    SIZE_MINIMIZED*: uint = 1
+    SWP_NOZORDER*: uint32 = 0x0004
+    SWP_NOACTIVATE*: uint32 = 0x0010
 
     # Messages
     WM_DESTROY*: uint32 = 0x0002
@@ -92,6 +98,9 @@ when defined(windows):
     WM_CHAR*: uint32 = 0x0102
     WM_KEYDOWN*: uint32 = 0x0100
     WM_KEYUP*: uint32 = 0x0101
+    WM_IME_STARTCOMPOSITION*: uint32 = 0x010D
+    WM_IME_ENDCOMPOSITION*: uint32 = 0x010E
+    WM_IME_COMPOSITION*: uint32 = 0x010F
     WM_MOUSEMOVE*: uint32 = 0x0200
     WM_LBUTTONDOWN*: uint32 = 0x0201
     WM_LBUTTONUP*: uint32 = 0x0202
@@ -99,6 +108,10 @@ when defined(windows):
     WM_RBUTTONUP*: uint32 = 0x0205
     WM_MOUSEWHEEL*: uint32 = 0x020A
     WM_DPICHANGED*: uint32 = 0x02E0
+
+    # IME Composition flags
+    GCS_COMPSTR*: uint32 = 0x0008
+    GCS_RESULTSTR*: uint32 = 0x0800
 
     # Key codes
     VK_BACK*: uint32 = 0x08
@@ -134,13 +147,20 @@ when defined(windows):
   proc GetClientRect(hWnd: HWND, lpRect: ptr RECT): BOOL {.stdcall, dynlib: "user32", importc: "GetClientRect", raises: [].}
   proc SetWindowLongPtrW(hWnd: HWND, nIndex: int32, dwNewLong: LPARAM): LPARAM {.stdcall, dynlib: "user32", importc: "SetWindowLongPtrW", raises: [].}
   proc GetWindowLongPtrW(hWnd: HWND, nIndex: int32): LPARAM {.stdcall, dynlib: "user32", importc: "GetWindowLongPtrW", raises: [].}
-  proc WaitMessage(): BOOL {.stdcall, dynlib: "user32", importc: "WaitMessage", raises: [].}
   proc MsgWaitForMultipleObjectsEx(nCount: uint32, pHandles: pointer, dwMilliseconds: uint32, dwWakeMask: uint32, dwFlags: uint32): uint32 {.stdcall, dynlib: "user32", importc: "MsgWaitForMultipleObjectsEx", raises: [].}
   proc LoadCursorW(hInstance: HINSTANCE, lpCursorName: pointer): HCURSOR {.stdcall, dynlib: "user32", importc: "LoadCursorW", raises: [].}
   proc GetModuleHandleW(lpModuleName: pointer): HINSTANCE {.stdcall, dynlib: "kernel32", importc: "GetModuleHandleW", raises: [].}
   proc SetProcessDpiAwarenessContext(value: pointer): BOOL {.stdcall, dynlib: "user32", importc: "SetProcessDpiAwarenessContext", raises: [].}
   proc SetProcessDPIAware(): BOOL {.stdcall, dynlib: "user32", importc: "SetProcessDPIAware", raises: [].}
+  proc GetDpiForWindow(hWnd: HWND): UINT {.stdcall, dynlib: "user32", importc: "GetDpiForWindow", raises: [].}
+  proc SetWindowPos(hWnd: HWND, hWndInsertAfter: HWND, X, Y, cx, cy: int32, uFlags: UINT): BOOL {.stdcall, dynlib: "user32", importc: "SetWindowPos", raises: [].}
+  proc IsIconic(hWnd: HWND): BOOL {.stdcall, dynlib: "user32", importc: "IsIconic", raises: [].}
   proc AdjustWindowRectEx(lpRect: ptr RECT, dwStyle: uint32, bMenu: BOOL, dwExStyle: uint32): BOOL {.stdcall, dynlib: "user32", importc: "AdjustWindowRectEx", raises: [].}
+
+  # IME (imm32)
+  proc ImmGetContext(hWnd: HWND): HIMC {.stdcall, dynlib: "imm32", importc: "ImmGetContext", raises: [].}
+  proc ImmReleaseContext(hWnd: HWND, hIMC: HIMC): BOOL {.stdcall, dynlib: "imm32", importc: "ImmReleaseContext", raises: [].}
+  proc ImmGetCompositionStringW(hIMC: HIMC, dwIndex: DWORD, lpBuf: pointer, dwBufLen: DWORD): int32 {.stdcall, dynlib: "imm32", importc: "ImmGetCompositionStringW", raises: [].}
 
   # PSAPI
   proc GetProcessMemoryInfo(hProcess: pointer, ppsmps: ptr PROCESS_MEMORY_COUNTERS, cb: uint32): BOOL {.stdcall, dynlib: "psapi", importc: "GetProcessMemoryInfo", raises: [].}
@@ -169,20 +189,94 @@ type
     shiftDown*: bool
     newWidth*: int32
     newHeight*: int32
+    dpiScale*: float32
 
   NativeWindow* = object
-    hwnd*: HWND
+    hwnd*: pointer
     width*: int32
     height*: int32
+    dpi*: uint32
+    dpiScale*: float32
+    dpiChanged*: bool
+    minimized*: bool
     running*: bool
     pendingEvents*: seq[UiEvent]
     resized*: bool
+    pendingHighSurrogate*: uint16
+    imeComposing*: bool
+    imeCompositionText*: string
+
+# =============================================================================
+# Cross-Platform UTF-16 -> UTF-8 IME Helper
+# =============================================================================
+
+proc decodeImeUtf16*(units: openArray[uint16]): string {.raises: [].} =
+  ## Converts a UTF-16 code unit sequence (including surrogate pairs) to UTF-8.
+  result = newStringOfCap(units.len * 3)
+  var i = 0
+  while i < units.len:
+    let w1 = units[i]
+    inc(i)
+    if w1 == 0'u16:
+      break
+    if w1 >= 0xD800'u16 and w1 <= 0xDBFF'u16:
+      if i < units.len:
+        let w2 = units[i]
+        if w2 >= 0xDC00'u16 and w2 <= 0xDFFF'u16:
+          inc(i)
+          let cp = 0x10000'u32 + (((uint32(w1) and 0x3FF'u32) shl 10) or (uint32(w2) and 0x3FF'u32))
+          result.add(toUTF8(Rune(cp)))
+          continue
+      result.add(toUTF8(Rune(0xFFFD'u32)))
+    elif w1 >= 0xDC00'u16 and w1 <= 0xDFFF'u16:
+      result.add(toUTF8(Rune(0xFFFD'u32)))
+    else:
+      result.add(toUTF8(Rune(w1)))
+
+proc queryDpiScale*(dpi: uint32): float32 {.inline, raises: [].} =
+  if dpi == 0'u32: 1.0f else: float32(dpi) / 96.0f
+
+proc isMinimized*(win: NativeWindow): bool {.inline, raises: [].} =
+  if win.minimized or win.width <= 0 or win.height <= 0:
+    return true
+  when defined(windows):
+    if win.hwnd != nil and IsIconic(win.hwnd) != 0:
+      return true
+  false
+
+proc getDpiScale*(win: NativeWindow): float32 {.inline, raises: [].} =
+  if win.dpiScale > 0.1f: win.dpiScale else: 1.0f
+
+proc toLogicalPx*(win: NativeWindow, physicalPx: float32): float32 {.inline, raises: [].} =
+  physicalPx / win.getDpiScale()
+
+proc toPhysicalPx*(win: NativeWindow, logicalPx: float32): float32 {.inline, raises: [].} =
+  logicalPx * win.getDpiScale()
 
 # =============================================================================
 # Win32 Window Procedure
 # =============================================================================
 
 when defined(windows):
+  proc readImeStringUtf8(hWnd: HWND, dwIndex: uint32): string {.raises: [].} =
+    let hImc = ImmGetContext(hWnd)
+    if hImc == nil:
+      return ""
+    defer:
+      discard ImmReleaseContext(hWnd, hImc)
+    let bytesLen = ImmGetCompositionStringW(hImc, dwIndex, nil, 0'u32)
+    if bytesLen <= 0:
+      return ""
+    let unitCount = int(bytesLen) div 2
+    if unitCount <= 0:
+      return ""
+    var buf = newSeq[uint16](unitCount)
+    let readBytes = ImmGetCompositionStringW(hImc, dwIndex, addr buf[0], DWORD(bytesLen))
+    if readBytes <= 0:
+      return ""
+    let actualUnits = min(unitCount, int(readBytes) div 2)
+    decodeImeUtf16(buf.toOpenArray(0, actualUnits - 1))
+
   proc wndProc(hWnd: HWND, uMsg: uint32, wParam: WPARAM, lParam: LPARAM): LRESULT {.stdcall.} =
     let pWin = cast[ptr NativeWindow](GetWindowLongPtrW(hWnd, GWLP_USERDATA))
     if pWin != nil:
@@ -192,8 +286,32 @@ when defined(windows):
         let h = int32((lParam shr 16) and 0xFFFF)
         pWin.width = w
         pWin.height = h
+        pWin.minimized = (wParam == SIZE_MINIMIZED or w <= 0 or h <= 0)
         pWin.resized = true
         pWin.pendingEvents.add(UiEvent(kind: ueResize, newWidth: w, newHeight: h))
+        return 0
+
+      of WM_DPICHANGED:
+        let newDpi = uint32(wParam and 0xFFFF)
+        pWin.dpi = if newDpi > 0'u32: newDpi else: 96'u32
+        pWin.dpiScale = queryDpiScale(pWin.dpi)
+        pWin.dpiChanged = true
+        let suggested = cast[ptr RECT](lParam)
+        if suggested != nil:
+          discard SetWindowPos(
+            hWnd, nil,
+            suggested.left, suggested.top,
+            suggested.right - suggested.left,
+            suggested.bottom - suggested.top,
+            SWP_NOZORDER or SWP_NOACTIVATE
+          )
+        pWin.resized = true
+        pWin.pendingEvents.add(UiEvent(
+          kind: ueResize,
+          newWidth: pWin.width,
+          newHeight: pWin.height,
+          dpiScale: pWin.dpiScale
+        ))
         return 0
 
       of WM_MOUSEMOVE:
@@ -234,9 +352,43 @@ when defined(windows):
         return 0
 
       of WM_CHAR:
-        let r = Rune(wParam)
-        pWin.pendingEvents.add(UiEvent(kind: ueChar, charVal: r))
+        let unit = uint16(wParam and 0xFFFF)
+        if unit >= 0xD800'u16 and unit <= 0xDBFF'u16:
+          pWin.pendingHighSurrogate = unit
+        elif unit >= 0xDC00'u16 and unit <= 0xDFFF'u16:
+          if pWin.pendingHighSurrogate != 0'u16:
+            let cp = 0x10000'u32 + (((uint32(pWin.pendingHighSurrogate) and 0x3FF'u32) shl 10) or (uint32(unit) and 0x3FF'u32))
+            pWin.pendingHighSurrogate = 0'u16
+            pWin.pendingEvents.add(UiEvent(kind: ueChar, charVal: Rune(cp)))
+        else:
+          pWin.pendingHighSurrogate = 0'u16
+          pWin.pendingEvents.add(UiEvent(kind: ueChar, charVal: Rune(unit)))
         return 0
+
+      of WM_IME_STARTCOMPOSITION:
+        pWin.imeComposing = true
+        pWin.imeCompositionText = ""
+        # Let DefWindowProcW manage the OS IME candidate window position
+        return DefWindowProcW(hWnd, uMsg, wParam, lParam)
+
+      of WM_IME_COMPOSITION:
+        let flags = uint32(lParam)
+        if (flags and GCS_COMPSTR) != 0'u32:
+          pWin.imeComposing = true
+          pWin.imeCompositionText = readImeStringUtf8(hWnd, GCS_COMPSTR)
+        if (flags and GCS_RESULTSTR) != 0'u32:
+          let committed = readImeStringUtf8(hWnd, GCS_RESULTSTR)
+          pWin.imeCompositionText = ""
+          for r in runes(committed):
+            pWin.pendingEvents.add(UiEvent(kind: ueChar, charVal: r))
+          # Returning 0 consumes GCS_RESULTSTR so DefWindowProcW does not duplicate WM_IME_CHAR/WM_CHAR
+          return 0
+        return DefWindowProcW(hWnd, uMsg, wParam, lParam)
+
+      of WM_IME_ENDCOMPOSITION:
+        pWin.imeComposing = false
+        pWin.imeCompositionText = ""
+        return DefWindowProcW(hWnd, uMsg, wParam, lParam)
 
       of WM_KEYDOWN:
         let code = uint32(wParam)
@@ -266,6 +418,9 @@ when defined(windows):
 proc initNativeWindow*(title: string, width, height: int32): NativeWindow {.raises: [].} =
   result.width = width
   result.height = height
+  result.dpi = 96'u32
+  result.dpiScale = 1.0f
+  result.minimized = false
   result.running = true
   result.pendingEvents = @[]
   result.resized = false
@@ -311,16 +466,21 @@ proc initNativeWindow*(title: string, width, height: int32): NativeWindow {.rais
 
     result.hwnd = hwnd
 
-    # Get actual client area
-    var rect: RECT
-    if GetClientRect(hwnd, addr rect) != 0:
-      result.width = rect.right - rect.left
-      result.height = rect.bottom - rect.top
+    if hwnd != nil:
+      let winDpi = GetDpiForWindow(hwnd)
+      if winDpi > 0'u32:
+        result.dpi = winDpi
+        result.dpiScale = queryDpiScale(winDpi)
 
-    # Set user data pointer
-    discard SetWindowLongPtrW(hwnd, GWLP_USERDATA, cast[LPARAM](unsafeAddr result))
-    discard ShowWindow(hwnd, SW_SHOW)
-    discard UpdateWindow(hwnd)
+      var rect: RECT
+      if GetClientRect(hwnd, addr rect) != 0:
+        result.width = rect.right - rect.left
+        result.height = rect.bottom - rect.top
+      result.minimized = (IsIconic(hwnd) != 0 or result.width <= 0 or result.height <= 0)
+
+      discard SetWindowLongPtrW(hwnd, GWLP_USERDATA, cast[LPARAM](unsafeAddr result))
+      discard ShowWindow(hwnd, SW_SHOW)
+      discard UpdateWindow(hwnd)
 
 proc setTitle*(win: NativeWindow, title: string) {.raises: [].} =
   when defined(windows):
@@ -331,8 +491,8 @@ proc setTitle*(win: NativeWindow, title: string) {.raises: [].} =
 proc pollEvents*(win: var NativeWindow): seq[UiEvent] {.raises: [].} =
   when defined(windows):
     var msg: MSG
-    # Bind this NativeWindow instance to HWND
-    discard SetWindowLongPtrW(win.hwnd, GWLP_USERDATA, cast[LPARAM](addr win))
+    if win.hwnd != nil:
+      discard SetWindowLongPtrW(win.hwnd, GWLP_USERDATA, cast[LPARAM](addr win))
     while PeekMessageW(addr msg, nil, 0, 0, PM_REMOVE) != 0:
       discard TranslateMessage(addr msg)
       discard DispatchMessageW(addr msg)
@@ -342,7 +502,6 @@ proc pollEvents*(win: var NativeWindow): seq[UiEvent] {.raises: [].} =
 
 proc waitEvents*(win: var NativeWindow, timeoutMs: int32 = 16) {.raises: [].} =
   when defined(windows):
-    # Wait until a message is posted or timeout elapses
     discard MsgWaitForMultipleObjectsEx(0, nil, uint32(timeoutMs), 0x04FF, 0) # QS_ALLINPUT
 
 proc close*(win: var NativeWindow) {.raises: [].} =

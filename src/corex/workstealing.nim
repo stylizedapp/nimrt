@@ -29,12 +29,13 @@ const CacheLineSize = 64
 
 type
   JobProc* = proc(arg: pointer) {.nimcall, gcsafe.}
+  JobCleanupProc* = proc(arg: pointer) {.nimcall, gcsafe, raises: [].}
 
   Job* = object
     ## Unit of executable work in the thread pool and work-stealing schedulers.
     fn*: JobProc
     arg*: pointer
-    cleanup*: JobProc
+    cleanup*: JobCleanupProc
 
   Buffer[T] = object
     capacity: int
@@ -76,15 +77,16 @@ func nextPowerOfTwo(n: int): int {.inline.} =
     v = v or (v shr 32)
   return v + 1
 
-proc initJob*(fn: JobProc, arg: pointer = nil, cleanup: JobProc = nil): Job {.inline.} =
+proc initJob*(fn: JobProc, arg: pointer = nil, cleanup: JobCleanupProc = nil): Job {.inline.} =
   Job(fn: fn, arg: arg, cleanup: cleanup)
 
 proc execute*(job: var Job) {.inline.} =
   ## Executes the job function and invokes cleanup (if provided).
+  ## Never swallows `Defect` (fatal panics propagate under `--panics:on`).
   if job.fn != nil:
     try:
       job.fn(job.arg)
-    except CatchableError, Defect:
+    except CatchableError:
       discard
     finally:
       if job.cleanup != nil:

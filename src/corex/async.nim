@@ -291,7 +291,7 @@ when defined(windows):
 
     try:
       createThread(reactor.workerThread, reactorWorkerProc, addr reactor)
-    except CatchableError, Defect:
+    except CatchableError:
       reactor.started.store(false, moRelaxed)
       reactor.running.store(false, moRelaxed)
       discard winCloseHandle(reactor.iocpHandle)
@@ -331,7 +331,7 @@ when defined(windows):
 
     try:
       createThread(p.workerThread, reactorWorkerProc, p)
-    except CatchableError, Defect:
+    except CatchableError:
       p.started.store(false, moRelaxed)
       p.running.store(false, moRelaxed)
       discard winCloseHandle(p.iocpHandle)
@@ -377,7 +377,7 @@ when defined(windows):
   # =============================================================================
 
   var gDefaultReactor: Atomic[pointer]
-  var gDefaultReactorLock: SysLock = initSysLock()
+  var gDefaultReactorLock: SpinLock
 
   proc getDefaultReactor*(pool: ptr ThreadPool = nil): ptr AsyncReactor {.raises: [].} =
     ## Returns the process-wide shared default AsyncReactor instance, initialized lazily.
@@ -388,10 +388,7 @@ when defined(windows):
       if r == nil:
         var tp = pool
         if tp == nil:
-          try:
-            tp = getDefaultPool()
-          except CatchableError, Defect:
-            tp = nil
+          tp = getDefaultPool()
         let res = newAsyncReactor(tp)
         if res.isOk:
           r = res.val
@@ -425,7 +422,9 @@ when defined(windows):
   proc close*(file: var AsyncFile): Result[void, int32] {.raises: [].}
 
   proc `=destroy`*(file: var AsyncFile) =
-    discard file.close()
+    let closeRes = file.close()
+    if closeRes.isErr:
+      discard
 
   proc initAsyncFile*(
     reactor: ptr AsyncReactor,

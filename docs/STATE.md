@@ -1,7 +1,7 @@
 # STATE — состояние проекта
 
-Снимок от 2026-11-11, 14:20 (UTC+4). Все тесты и бенчмарки перезапущены и верифицированы агентом `@verifier` в рамках полного цикла приёмки.
-Окружение: Nim 2.2.12, MinGW GCC 11.1, Windows x64, Ryzen 3 3200U. Флаги из `nim.cfg`: `--mm:orc --threads:on --panics:on`.
+Снимок от 2026-11-16 (UTC+4). Статус подготовки релиза **v0.1.0 (Windows-first)**: включает `corex`, `algx`, `nimui` (Vulkan 1.1+ SDF, практический subset HTML5/CSS3 + опциональный sandboxed QuickJS hybrid), экспериментальный компилятор `compiler/nim_safe` (`--mem-safe` / `--safe-mode` / `--check-safe-atf`) и приложения `apps/` (`wiztree`, `everything`, `html_desktop`, `html_css_studio`, `widget_gallery`, `nimui_demo`).
+Окружение: Nim 2.2.12, MinGW GCC 11.1.0, Windows x64, AMD Ryzen 3 3200U. Флаги из `nim.cfg`: `--mm:orc --threads:on --panics:on`.
 
 ## Этапы
 
@@ -14,13 +14,13 @@
 | M5 | `io.nim`, `fs.nim`, `platform/windows/win32_fs.nim`, `platform/posix/posix_fs.nim` | Принят. Полная верификация `tests/test_m5_verification.nim` (8/8) и `test_adversarial_m5.nim` (5/5), нулевые утечки под ARC/ORC |
 | M6 | Чистка предупреждений `algx`, прогон бенчмарков | Принят. Предупреждения `UnreachableCode` в `zeropack.nim` полностью устранены (0 warnings), бенчмарки актуализированы |
 | M7 | Полный прогон тестов с проверкой на утечки | Принят. Полный системный тест `nimble test` (`test_ecosystem.nim` 10/10) и все подсьюты пройдены без ошибок и утечек памяти |
-| M8 | Сканер дисков WizTree Engine (`src/wiztree/` + `src/wiztree.nim`) | Принят. 40-байтный POD `Node`, Arena-интернирование имен, MFT Direct + Win32 Fast fallback, O(N) rollup, Top-K выборка, экспорт JSON/CSV. Все 9/9 тестов и бенчмарк на 1M нод пройдены (0 утечек) |
+| M8 | Сканер дисков WizTree Engine (`apps/wiztree/`: `wiztree.nim`, `scanner.nim`, `tree.nim`, `types.nim`, `cli.nim`) | Принят. 40-байтный POD `Node`, Arena-интернирование имен, MFT Direct + Win32 Fast fallback, O(N) rollup, Top-K выборка, экспорт JSON/CSV. Тесты `tests/test_wiztree.nim` (9/9) и бенчмарк на 1M нод пройдены |
 | M9 | Work-Stealing ThreadPool (`src/corex/workstealing.nim` + `src/corex/concurrency.nim`) | Принят. Chase-Lev lock-free deque на поток (LIFO push/pop, lock-free FIFO steal), батчевая инжекция (до 16 задач), cooperative `parallelFor`, устранение гонок цикла ORC, 0 утечек под ARC/ORC, до 10x ускорение под конкуренцией (935 M items/s на рекурсивном divide-and-conquer) |
 | M10 | Расширение ядра (`bitops`, `unicode`), SWAR-ускорение (`swissmap`, `bufmap`, `heap`) и «железные» тесты | Принят. `BitSet[N]`, SWAR 8-byte matching, UAX #29 графемы (8.19M runes/s), UTF-8 (до 9.85 GB/s), $O(N)$ `heapify` (56.9M ops/s), 3.6x ускорение промахов в FastMap. 4/4 стресс-сьюта пройдены с 0 ошибок и 0 утечек |
 | M11 | Zero-Exception Hardening & Безопасность ядра (`heap`, `swissmap`, `concurrency`, `win32_fs`) | Принят. Устранены `KeyError` и `ValueError` из горячих путей; `FastMap.get` и `BinaryHeap.tryPeek/tryPop` возвращают `Option[T]`; защита кучи в `-d:danger`; проверка Win32 API диска; удалены мусорные бинарники |
 | M12 | Нативный IOCP Async рантайм & Парсер Raw MFT (`corex/async`, `corex/mft`, `win32_iocp`, `win32_mft`) | Принят. Батчевый IOCP (`GetQueuedCompletionStatusEx` до 64 пакетов), интеграция с Chase-Lev ThreadPool (0 утечек на 3072 асинхронных операциях); парсер 1024-байтных записей `$MFT` с валидацией FIXUP, декодером цепочек кластеров runlist для точного `fileSize` и `sizeOnDisk`, потоковым чтением томов `\\.\<drive>:`. Все тесты пройдены |
 | M13 | Стабилизация ядра, Реактивный движок (`corex/signals`) и MFT+IOCP конвейер | Принят. Устранён dangling pointer в `OverlappedPool`, `gDefaultReactor`/`gDefaultPool` переведены на `Atomic[pointer]` с `moAcquire`/`moRelease`; zero-overhead реактивный граф `corex/signals` (Slab-backed узлы и рёбра, glitch-free diamond, динамическая отписка веток, батчинг, 10k циклов 0 утечек); парсинг `$ATTRIBUTE_LIST` (0x20) и дедупликация Hardlinks в MFT; Everything-Nim GUI интеграция `SearchIndex` и фикс утечек `AppState` через `=destroy(state[])` |
-| M14 | Реактивный UI-фреймворк `nimui` + Vulkan 1.1+ бэкенд (`src/nimui/`, `src/nimui.nim`, `apps/nimui_demo/src/main.nim`) | Принят. Нулевые аллокации в Flexbox layout, SDF font atlas, reverse Z-order hit-testing, O(1) VirtualList (1,000,000 элементов за 272 µs), Single-Draw-Call Vulkan 1.1+ инстансинг, реактивные сигналы `corex/signals`, 100% тестов `tests/test_nimui_layout.nim` (5/5 сьютов, 0 утечек под TrackingAllocator), Raycast Spotlight demo (0.020 ms CPU frame time, 68 KB RAM) |
+| M14 | Реактивный UI-фреймворк `nimui` + Vulkan 1.1+ бэкенд (`src/nimui/`, `src/nimui.nim`, `apps/nimui_demo/src/main.nim`) | Принят. Нулевые аллокации в Flexbox layout, атлас глифов (GDI coverage-битмапы, LRU), reverse Z-order hit-testing, O(1) VirtualList (1,000,000 элементов за 272 µs), Single-Draw-Call Vulkan 1.1+ инстансинг, реактивные сигналы `corex/signals`, `tests/test_nimui_layout.nim` (5/5 сьютов). Примечание: ранний Raycast Spotlight (`0.020 ms` CPU `buildDrawInstances`, `68 KB` trimmed headless RAM) позже заменён на **Singularity Lab** в `apps/nimui_demo` |
 | M15 | QuickJS C Engine, `Allocator` Bridge & Философский валидатор (`src/nimui/js/`, `tools/build_quickjs.ps1`) | Принят. Собрана `libquickjs.a`, все аллокации QuickJS идут через `corex/allocators.Allocator` (0 утечек), добавлены проверки Rust (`var`, `==`/`!=`, `eval`/`Function`/`with`/`__proto__`, лимиты памяти/стека/шагов), Zig (`data-caps`), Python (`ui.*`/`Nim.*`) |
 | M16 | Гибридный HTML5/CSS3 + Nim + QuickJS мост (`src/nimui/html_css.nim`, `src/nimui/js/html_js_bridge.nim`) | Принят. Сохранён строгий Zero-JS режим (`allowJs = false` по умолчанию) и добавлен гибридный режим с совместной работой `HtmlBindingRegistry` + `Signal[T]` + QuickJS DOM/стилей/событий/таймеров |
 | M17 | Помодоро-таймер (1–3 сек) & `/browser` + Headless верификация (`apps/html_desktop/ui/pomodoro.html`, `tests/test_nimui_quickjs.nim`) | Принят. 4/4 сьюта QuickJS (включая 30-цикловый стресс с 0 утечек), headless PNG-скриншоты и интерактивная проверка в браузере (`/browser` `127.0.0.1:8765/pomodoro.html`) пройдены |
@@ -38,17 +38,21 @@
 | `tests/bench_workstealing.nim` | ✅ 4 бенчмарк-сценария | 935.89 M items/s (divide-and-conquer), 0 байт утечек под ORC |
 | `tests/test_wiztree.nim` | ✅ 9/9 тестовых сьютов | 82.72 ms, 0 ошибок, 0 утечек памяти под TrackingAllocator |
 | `tests/test_m5_verification.nim` | ✅ 8/8 тестовых сьютов | 0 дефектов, 0 утечек памяти |
-| `.agents/teamwork/sub_orch_m4/worker_1/test_concurrency.nim` | ✅ 24/24 сьюта | 0 ошибок, double-checked locking & reset(task) подтверждены |
-| `.agents/teamwork/teamwork_worker_m2_r2/test_remediation_suite.nim` | ✅ 7/7 сьютов | Без утечек под TrackingAllocator |
-| `.agents/teamwork/teamwork_reviewer_m2_r2_1/test_reviewer_suite.nim` | ✅ 11/11 сьютов | Без утечек под TrackingAllocator |
-| `.agents/teamwork/challenger_m3_r2_1/test_move_semantics.nim` | ✅ 9/9 тестов | Move/Sink семантика и деструкторы проверены |
-| `tests/test_ironclad_signals.nim` | ✅ 5/5 тестов | 0 ошибок, glitch-free diamond, dynamic unsubscription, 10,000 циклов с 0 байт утечек |
-| `tests/test_ironclad_mft.nim` | ✅ 7/7 сьютов | 0 ошибок, $ATTRIBUTE_LIST 0x20 и Hardlink дедупликация, 25,000 записей с 0 байт утечек |
-| `tests/test_ironclad_async_iocp.nim` | ✅ 4/4 сьюта | 0 ошибок, 1024 concurrent read/write, 0 байт утечек под TrackingAllocator |
-| `tests/test_gui_headless.nim` | ✅ 2/2 сьюта | 0 ошибок, SearchIndex интеграция, AppState lifecycle с 0 байт утечек |
-| `test_adversarial_m5.nim` | ✅ 5/5 стресс-тестов | Буферы >64KB, суррогаты UTF-16, 48-bit MFT, кластеры |
-| `tests/test_nimui_layout.nim` (`--mm:orc --threads:on --panics:on`) | ✅ 5/5 сьютов (20 проверок) | 0 ошибок, 0 утечек памяти под TrackingAllocator (Flexbox, HitTest, VirtualList 1M, Signals, 1000-cycle audit) |
-| `apps/nimui_demo/src/main.nim` (`--bench`) | ✅ Headless Benchmark Suite | 0.020 ms CPU frame time (release) / 1.171 ms (debug), 68 KB RAM, instant search < 1 ms |
+| `tests/test_concurrency.nim` | ✅ 24/24 сьюта | Double-checked locking, WorkStealing, Atomics, WaitGroup |
+| `tests/test_parallel_for_shutdown.nim` | ✅ 50 итераций | Watchdog проверка завершения без дедлоков |
+| `tests/test_ironclad_signals.nim` | ✅ 5/5 тестов | 0 ошибок, glitch-free diamond, dynamic unsubscription, 10,000 циклов |
+| `tests/test_ironclad_mft.nim` | ✅ 7/7 сьютов | 0 ошибок, `$ATTRIBUTE_LIST` 0x20 и Hardlink дедупликация |
+| `tests/test_ironclad_async_iocp.nim` | ✅ 4/4 сьюта | 0 ошибок, 1024 concurrent read/write (`TrackingAllocator`) |
+| `tests/test_gui_headless.nim` | ✅ 2/2 сьюта | `SearchIndex` интеграция, `AppState` lifecycle |
+| `tests/test_adversarial_m5.nim` | ✅ 5/5 стресс-тестов | Буферы >64KB, суррогаты UTF-16, 48-bit MFT, кластеры |
+| `tests/test_nimui_layout.nim` (`--mm:orc --threads:on --panics:on`) | ✅ 5/5 сьютов (20 проверок) | Flexbox, HitTest, VirtualList 1M, Signals, 1000-cycle audit (`TrackingAllocator`) |
+| `tests/test_nimui_widgets.nim`, `tests/test_nimui_html_css.nim` | ✅ NimUI Widgets & HTML/CSS | Нативные контролы, HTML5/CSS3 subset и `HtmlBindingRegistry` |
+| `tests/test_fuzz_mft.nim` | ✅ 100,000 входов | Детерминированный фаззинг `$MFT` парсера (включая границы `$DATA` и `parseRunList`) |
+| `tests/test_fuzz_html_css.nim` | ✅ 100,000 входов | Детерминированный фаззинг HTML/CSS парсера, `var()` циклов и JS-валидатора |
+| `tests/test_nimui_quickjs.nim` | ✅ 4/4 сьюта QuickJS | Валидатор философии, `Allocator` bridge (`TrackingAllocator`), 30-cycle стресс, Pomodoro |
+| `tests/test_safe_compiler.nim` | ✅ 5/5 сьютов `nim_safe` | `--mem-safe`, `--safe-mode`, `--check-safe-atf` + ATF проверка C-кода (требует `nimble build_compiler`) |
+| `tests/test_showcase_apps.nim` | ✅ Headless Showcase (4/4) | Headless-сборка (изолированный `--nimcache`) и экспорт 9 PNG всех 4 витринных приложений |
+| `apps/nimui_demo/src/main.nim` (`--screenshot`) | ✅ Singularity Lab | Текущее демо на Vulkan 1.1+ (`~5 MB` trimmed WS после `EmptyWorkingSet()`); заменило M14 Raycast `--bench` |
 
 ---
 
@@ -83,33 +87,38 @@
 
 ---
 
-## Актуальные результаты бенчмарков NimUI Framework & Raycast Demo (M14)
+## Актуальные результаты бенчмарков NimUI Framework & M14 Microbenchmark
 
-Запуск: `nim c -d:danger --opt:speed --mm:orc --threads:on apps/nimui_demo/src/main.nim` и `tests/test_nimui_layout.nim`.
+Запуск: `tests/test_nimui_layout.nim` и `apps/nimui_demo/src/main.nim --screenshot ...` (в раннем M14 также использовался `runHeadlessBenchmark` из Raycast Spotlight до замены на Singularity Lab).
 
-| Бенчмарк / Сценарий | Объем / Параметры | Latency / Frame Time | Throughput / Память | Статус |
+| Бенчмарк / Сценарий | Объем / Параметры | Измеренная метрика | Пояснение / Охват | Статус |
 |---|---|---|---|---|
-| **VirtualList Layout** | 1,000,000 элементов (VirtualList layout + draw pass) | **272.85 µs/frame** | 189 draw instances ($O(1)$ memory vs 8M) | ✅ Verified (< 500 µs target) |
-| **Instant Search (Demo)** | 100,000 команд/инструментов (SWAR bloom filter) | **0.326 – 1.149 ms** | 100,000 элементов отфильтровано | ✅ Verified (< 2.0 ms target) |
-| **CPU Frame Time (Release)**| 100 интерактивных кадров (buildDrawInstances) | **0.020 ms / кадр** | 50,000 FPS расчетная пропускная способность | ✅ Verified (< 0.200 ms target) |
-| **Process Working Set** | 100,000 элементов в памяти + Font Atlas | **68 KB** (Release) / 160 KB (Debug) | Бюджет < 15.0 MB (в 200x меньше лимита) | ✅ Verified (< 15 MB budget) |
-| **Idle GPU/CPU Load** | Ожидание событий пользователя (`waitEvents`) | **0.0% CPU / 0.0% GPU** | Энергосберегающий режим Win32 | ✅ Verified (zero idle spinning) |
+| **VirtualList Layout** | 1,000,000 элементов (VirtualList layout + draw pass) | **272.85 µs/frame** | 189 draw instances ($O(1)$ slice vs 1M items) | ✅ Verified (< 500 µs target) |
+| **Instant Search (M14 Legacy)** | 100,000 команд/инструментов (SWAR bloom filter) | **0.326 – 1.149 ms** | Только CPU-фильтрация индекса в Raycast Spotlight | ℹ️ Historical M14 |
+| **CPU Draw-Instance Build (M14 Legacy)**| 100 кадров (`tree.buildDrawInstances` только на CPU) | **0.020 ms / вызов** | ~50,000 instance-builds/с на CPU (без layout и Vulkan GPU/present) | ℹ️ Historical M14 (< 0.200 ms CPU target) |
+| **Trimmed Headless RAM vs Interactive WS** | Headless M14 без Vulkan (`EmptyWorkingSet`) vs Singularity Lab (Vulkan) | **68 KB** (headless trim) / **~5 MB** (Singularity Lab trim) | `EmptyWorkingSet()` вытесняет резидентные страницы в standby; реальный Process Working Set с Vulkan-драйвером выше | ℹ️ Clarified |
+| **Idle GPU/CPU Load** | Ожидание событий пользователя (`waitEvents`) | **~0.0% CPU / 0.0% GPU** | Энергосберегающий цикл Win32 (`WaitMessage`) | ✅ Verified (zero idle spinning) |
 
 ---
 
-## Исправления и доработки, внесённые в текущем цикле
+## Исправления и доработки в текущем цикле подготовки v0.1.0 (2026-11-16)
 
-1. **`src/corex/concurrency.nim:1296-1300` (`freeTaskEnv`):**
-   - Добавлен вызов `reset(env.task)` перед `deallocShared(env)`.
-   - В ARC/ORC closure окружение хранится внутри дескриптора proc; явный `reset` гарантирует своевременный вызов деструкторов захваченных переменных до освобождения памяти обёртки задачи.
-2. **`src/algx/zeropack.nim:95-131` (`packBin` / `unpackBin`):**
-   - Устранены предупреждения `UnreachableCode` за счёт перехода от ранних `return` внутри `when isBlittable(...)` к строгой структуре `when ... else:`.
-   - Сборка с `--warnings:on` теперь проходит абсолютно чисто (0 предупреждений).
-3. **`src/corex/platform/windows/win32_fs.nim` & `src/corex/io.nim`:**
-   - Верифицированы RAII-деструкторы `FileHandle` с защитой от двойного закрытия, буферизованные потоки с автоматическим сбросом (flush) при деструкции и заполнении, а также структуры MFT/USN Journal.
-4. **`apps/nimui_demo/src/main.nim:242-246` (`runHeadlessBenchmark`):**
-   - Скорректирован порог проверки времени кадра в отладочном режиме (`when not defined(release): doAssert avgCpuMs < 3.000f` вместо нереалистичного для неоптимизированного Debug-режима `< 0.450f`), что гарантирует стабильное прохождение headless benchmark в отладочной сборке на машинах класса AMD Ryzen 3 3200U под нагрузкой ОС.
-   - В релизном режиме (`-d:release` / `-d:danger`) сохранен и подтвержден строгий контракт `< 0.200 ms` (фактическое время кадра составляет **0.020 ms**).
+1. **Ядро `corex` & `algx`:**
+   - `src/algx/*`: `{.push checks: off.}` перенесено под `when defined(release) or defined(danger):` — debug/тестовые сборки работают с полными проверками границ.
+   - `src/corex/testing.nim`: добавлены `orcOccupiedMem()`, `orcHeapDelta()`, `assertZeroOrcLeaks()`, `testWithOrcLeakCheck()`; `testWithLeakCheck` проверяет и `TrackingAllocator`, и ORC-дельту (`GC_fullCollect()` + `getOccupiedMem()`).
+   - `src/corex/concurrency.nim` разделён на `src/corex/concurrency/{primitives,pool,parallel}.nim`; глобальные локи переведены на `SpinLock`, добавлены `setDefaultPool` / `hasDefaultPool` и `Result`-API (`trySpawn`, `tryParallelFor`), исключена ловля `Defect`.
+   - `src/algx/swissmap.nim` (`FastMap`): обновлён до 16-байтового SSE2-пробирования (`_mm_cmpeq_epi8` / `_mm_movemask_epi8` + SWAR-фоллбэк под `-d:noSse2`).
+   - `src/corex/platform/windows/win32_mft.nim`: усилены проверки границ при разборе `$DATA` / `parseRunList` / UTF-16LE и добавлен фаззер `tests/test_fuzz_mft.nim` (100 000 кейсов).
+   - `apps/wiztree/types.nim`: исправлена утечка ORC (2,688 байт) в `Tree.=destroy` — добавлено явное уничтожение `frnMap` и `parentFrns`.
+2. **`nimui` GPU, окно, контролы, HTML/CSS и QuickJS:**
+   - `src/nimui/gpu/font_atlas.nim`: LRU-вытеснение при переполнении атласа, расширение Unicode (Latin-1 + Latin Extended-A/B `U+00A0..U+024F` + кириллица `U+0400..U+04FF`), fallback-шрифты и tofu `U+FFFD`, DPI-масштабирование; уточнено, что текст использует 65-уровневые GDI coverage-битмапы в `R8_UNORM` (не SDF), а SDF применяется для боксов/рамок.
+   - `src/nimui/gpu/vulkan_backend.nim` & `window.nim`: обработка `VK_ERROR_DEVICE_LOST`, опциональный `-d:nimuiValidation`, пропуск рендера при свёрнутом окне (`0×0`), `WM_DPICHANGED`, базовая `WM_IME_COMPOSITION`, `clipboard.nim` переведён на `threadvar`.
+   - `src/nimui/controls.nim` разделён на `src/nimui/controls/{common,checkbox,radio,slider,dropdown,tooltip}.nim`.
+   - `src/nimui/html_css.nim` разделён на `src/nimui/html/{types,parser,cascade,compiler}.nim`; расширены CSS3/HTML5, нестандартные цвета темы вынесены в opt-in `parseThemeColor`, добавлен 100k-фаззер `tests/test_fuzz_html_css.nim`.
+3. **Инфраструктура, документация и бенчмарки:**
+   - Добавлены `LICENSE` (MIT), `CHANGELOG.md`, `CONTRIBUTING.md`, `.github/workflows/ci.yml` (Windows CI + strict warnings), `nimble test_all` / `build_quickjs` / `build_shaders`.
+   - `benchmarks/run_benchmarks.ps1` переведён на `--mm:orc`; в `README.md`, `docs/STATE.md`, `docs/DECISIONS.md`, `docs/MANIFEST.md`, `docs/PROJECT.md` и `docs/BENCHMARK_SHOWCASE.md` приведены честные формулировки безопасности, учёта утечек, ограничений и метрик M14.
+   - **Историческая заметка (`apps/nimui_demo`, M14 `runHeadlessBenchmark`):** в исходной M14-версии Raycast Spotlight (до замены на Singularity Lab в `dc90d16`) `0.020 ms` означало CPU-время `buildDrawInstances`, а `68 KB` — память после `EmptyWorkingSet()` без Vulkan. В текущем `apps/nimui_demo` (`Singularity Lab`) используется интерактивный цикл Vulkan 1.1+ и headless-скриншоты `--screenshot`.
 
 ---
 
@@ -130,18 +139,13 @@
 
 ---
 
-## Перспективный бэклог и направления развития (будущие фазы)
+## Перспективный бэклог и направления развития (после v0.1.0)
 
-1. **Сканер директорий уровня WizTree на raw MFT:**
-   - Прямое чтение файла `$MFT` через `\\.\<drive>:` (`FSCTL_GET_NTFS_VOLUME_DATA`, `FSCTL_GET_RETRIEVAL_POINTERS`, декодирование FILE-записей и runlists).
-   - Вызовы `DeviceIoControl` с `FSCTL_ENUM_USN_DATA` / `FSCTL_READ_USN_JOURNAL` для мгновенной синхронизации изменений.
-   - Подключение `NtQueryDirectoryFileEx` в качестве промежуточного слоя обхода.
-2. **Низкоуровневые асинхронные примитивы NTFS:**
-   - `AlignedBuffer` под флаг `FILE_FLAG_NO_BUFFERING` (выравнивание по границе сектора 4KB).
-   - Интеграция с IOCP (I/O Completion Ports).
-   - `StringArena` и компактный `Slab[T]` с адресацией по `NodeId`.
-   - Work-stealing очередь (алгоритм Chase-Lev) для масштабируемого пула потоков [РЕАЛИЗОВАНО в M9].
-3. **Кросс-платформенная верификация POSIX:**
-   - Запуск сьютов на Linux и macOS в CI/CD контейнерах для подтверждения идентичности поведения `posix_fs.nim`.
-4. **Система контроля версий:**
-   - Инициализация `git`-репозитория и фиксация базовых коммитов по завершённым этапам M1–M7.
+1. **Дальнейшее развитие сканера NTFS (`apps/wiztree` & `corex/mft`):**
+   - Базовый raw `$MFT` парсер (`parseMftRecord`, FIXUP, runlists, `$ATTRIBUTE_LIST`, hardlink deduplication) и `FSCTL_ENUM_USN_DATA` уже реализованы (M8, M12, M13); в бэклоге — подключение `NtQueryDirectoryFileEx` как промежуточного слоя и расширение CLI/GUI визуализации (treemap).
+2. **Кросс-платформенная поддержка и CI (Linux / macOS):**
+   - Запуск сьютов на Linux и macOS в CI/CD контейнерах для верификации `posix_fs.nim` (сейчас не проверяется в CI).
+   - Портирование `corex/async.nim` (`epoll` / `io_uring` / `kqueue`) и `nimui` windowing/GPU бэкендов (X11/Wayland/Metal/Vulkan) за рамки Windows-first релиза v0.1.0.
+3. **Доступность (Accessibility), IME и типографика:**
+   - Интеграция с Windows UI Automation (screen readers), расширенная поддержка IME и сложных скриптов (shaping/BiDi/emoji).
+

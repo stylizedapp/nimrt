@@ -406,13 +406,14 @@ testCase "Feature 31: WaitGroup batch worker coordination":
   doAssert wg.value == 0
 
 testCase "Feature 31: WaitGroup negative counter raises Defect":
-  let helperPath = "c:\\Users\\sanal\\Desktop\\nim\\.agents\\teamwork\\sub_orch_m4\\worker_1\\defect_test.nim"
+  let helperPath = getTempDir() / "corex_waitgroup_defect_test.nim"
+  let srcPath = currentSourcePath().parentDir.parentDir / "src"
   writeFile(helperPath, """
 import corex
 var wg = initWaitGroup()
 wg.add(-1)
 """)
-  let (outp, exitCode) = execCmdEx("nim c -r --hints:off " & helperPath)
+  let (outp, exitCode) = execCmdEx("nim c -r --hints:off --mm:orc --threads:on --panics:on --path:" & quoteShell(srcPath) & " " & quoteShell(helperPath))
   if fileExists(helperPath): removeFile(helperPath)
   if fileExists(changeFileExt(helperPath, ExeExt)): removeFile(changeFileExt(helperPath, ExeExt))
   doAssert exitCode != 0
@@ -616,6 +617,38 @@ testCase "Feature 34: Global ThreadPool facades (spawn, parallelFor, shutdownThr
     doAssert results[i] == i + 10
 
   shutdownThreadPool()
+  doAssert not hasDefaultPool()
+
+testCase "Feature 34: Explicit default pool override (setDefaultPool) & Result-based trySpawn/tryParallelFor":
+  var customPool = newThreadPool(2)
+  doAssert not hasDefaultPool()
+  let prev = setDefaultPool(customPool, takeOwnership = false)
+  doAssert prev == nil
+  doAssert hasDefaultPool()
+  doAssert getDefaultPool() == customPool
+
+  var ran = initAtomic(0)
+  doAssert customPool.trySpawn(proc() {.gcsafe.} =
+    discard ran.fetchAdd(1, moRelaxed)
+  ).isOk
+  doAssert customPool.tryParallelFor(0, 100, proc(s, e: int) {.gcsafe.} =
+    discard ran.fetchAdd(e - s, moRelaxed)
+  ).isOk
+  while ran.load() < 101:
+    cpuRelax()
+  doAssert ran.load() == 101
+
+  # Detach borrowed pool without freeing it
+  shutdownThreadPool()
+  doAssert not hasDefaultPool()
+
+  # After explicit shutdown, trySpawn/tryParallelFor return Err(cePoolStopped) instead of panicking
+  customPool.shutdown()
+  let spRes = customPool.trySpawn(proc() {.gcsafe.} = discard)
+  doAssert spRes.isErr and spRes.error == cePoolStopped
+  let pfRes = customPool.tryParallelFor(0, 10, proc(s, e: int) {.gcsafe.} = discard)
+  doAssert pfRes.isErr and pfRes.error == cePoolStopped
+  deallocShared(customPool)
 
 # =============================================================================
 # Final Summary

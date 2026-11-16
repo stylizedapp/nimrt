@@ -152,7 +152,7 @@ src/
         ├── vulkan_backend.nim  # Vulkan 1.1+ backend, single vkCmdDrawIndexed instancing
         ├── vulkan_api.nim      # Direct Win32 vulkan-1.dll dynamic loader & structs
         ├── shaders.nim         # Compiled SPIR-V shaders (quad SDF + glyph rendering)
-        └── font_atlas.nim      # Monospace SDF font atlas & glyph metric cache
+        └── font_atlas.nim      # GDI-rasterized glyph atlas (R8 coverage), LRU eviction & glyph metric cache
 ```
 
 ### 3.2 Tier 1: `corex` (Foundational System Primitives)
@@ -218,7 +218,7 @@ src/
    - Type-safe distinct identifiers: `SignalId`, `ComputedId`, `EffectId`.
    - Core primitives: `Signal[T]` (`createSignal`, `get`, `set`, `peek`), `Computed[T]` (lazy, memoized, glitch-free with dirty flags), `Effect` (automatic tracking and untracking before re-run).
    - Grouping: `batch(rt, body)` guarantees effects fire exactly once at batch completion.
-   - Deterministic cleanup: `dispose` and `destroy` guarantee 0 bytes leaked under ARC/ORC and `TrackingAllocator`.
+   - Deterministic cleanup: `dispose` and `destroy` guarantee 0 bytes leaked in `corex` allocators (`TrackingAllocator`) and zero ORC heap growth (`GC_fullCollect()` + `getOccupiedMem()`).
 
 10. **Traits & Testing (`corex/traits`, `corex/testing`)**:
    - `Dyn[Trait]`: Zero-heap fat-pointer dynamic dispatch without `ref object of RootObj`.
@@ -316,8 +316,8 @@ The platform layer isolates operating system specifics behind high-level, cross-
    - 64-byte POD `UiDrawInstance` vertex attributes: rectangle bounds `(x, y, w, h)`, clip rect, fill color, border color, border width, corner radius, texture atlas coordinates `(u0, v0, u1, v1)`, and primitive mode (solid quad vs textured glyph).
    - Compiled SPIR-V shaders with signed-distance-field (SDF) anti-aliased rounded corners and alpha-blended text.
 
-3. **SDF Font Atlas & Rasterizer (`nimui/gpu/font_atlas`)**:
-   - Pre-baked 512x512 monochrome SDF texture atlas supporting proportional and monospace ASCII font metrics.
+3. **Glyph Atlas & Rasterizer (`nimui/gpu/font_atlas`)**:
+   - 1024x1024 `R8_UNORM` glyph atlas rasterized via Win32 GDI `GetGlyphOutlineW(GGO_GRAY8_BITMAP)` (65-level anti-aliased coverage, **not** a signed-distance-field; only box/border primitives use analytical SDF in `ui.frag`). Covers ASCII, Latin-1/Latin Extended-A/B (`U+00A0..U+024F`), Cyrillic and UI symbols, with LRU eviction, symbol-font fallback and a `U+FFFD` tofu glyph for missing codepoints, plus DPI-scaled rasterization.
    - Zero-allocation string measurement and quad generation with kerning and baseline alignment.
 
 4. **Declarative DSL & Reactive Bindings (`nimui/dsl`)**:
@@ -388,13 +388,12 @@ A modern 2 TB NVMe drive can host between 1,000,000 and 5,000,000 files and dire
 4. **Memory Footprint Minimization**:
    Instead of storing millions of isolated `ref object` records in the global heap, records are stored in contiguous `ArenaAllocator` chunks with 32-byte POD layouts, keeping 2,000,000 file descriptors within ~64 MB of RAM.
 
-### 4.3 High-Performance Application Showcase: Raycast Spotlight Demo (`apps/nimui_demo`)
+### 4.3 High-Performance Application Showcase: Singularity Lab & M14 Microbenchmark (`apps/nimui_demo`)
 
-Built entirely on `nimui` and `corex`, `apps/nimui_demo` demonstrates an Apple HIG / Raycast dark-theme desktop spotlight application:
-- **100,000 Items Instant Search**: Uses SWAR-accelerated bitmask signatures to filter 100,000 indexed system tools, commands, and applications in < 1 ms.
-- **Virtualized High-Density Rendering**: 100,000 items rendered via `VirtualList` with 0 stutter and 60+ FPS scrolling, requiring layout of only ~20–30 visible items per frame (< 280 µs).
-- **Ultra-Low Resource Profile**: 0.020 ms CPU frame time in release mode, and < 160 KB process working set (budget < 15 MB).
-- **Zero Idle Overhead**: Drops to 0% CPU and 0% GPU utilization when waiting for user keystrokes via native Win32 `waitEvents()`.
+Built entirely on `nimui` and `corex`, `apps/nimui_demo` currently hosts **Singularity Lab** (a relativistic N-body black-hole simulation with an HTML/CSS HUD over Vulkan 1.1+), which superseded the earlier M14 Raycast Spotlight demo:
+- **Virtualized High-Density Rendering**: `VirtualList` (verified on 1,000,000 items in `tests/test_nimui_layout.nim`) lays out and builds draw instances only for the visible slice (~20–30 rows) in `< 300 µs/frame`.
+- **CPU Draw-Instance Build vs Full Frame**: In the legacy M14 headless microbenchmark, `buildDrawInstances` took `0.020 ms` CPU time in release mode (a theoretical ~50,000 instance-builds/s CPU rate, excluding layout and Vulkan GPU/present); interactive Vulkan rendering is swapchain/driver-paced (`~5 MB` working set in Singularity Lab after Win32 `EmptyWorkingSet()`, vs `68 KB`–`160 KB` reported in the legacy driverless headless trim).
+- **Zero Idle Overhead**: Drops to ~0% CPU and ~0% GPU utilization when waiting for user input via native Win32 `waitEvents()`.
 
 ---
 
@@ -404,11 +403,11 @@ All modules within the ecosystem adhere to strict, audited invariants:
 
 | Category | Invariant Guarantee | Verification Mechanism |
 | :--- | :--- | :--- |
-| **Memory Safety** | Zero memory leaks under modern ARC/ORC (`--mm:orc` / `--mm:arc`). | `testWithLeakCheck` harness verifying byte counters via `TrackingAllocator`. |
-| **GC Pauses** | Zero stop-the-world garbage collection pauses across all hot execution paths. | ARC/ORC deterministic reference counting and regional arena allocators. |
-| **Error Safety** | Zero unhandled runtime exceptions in systems core. | Value-based `Result[T, E]`, `?` operator, and `{.raises: [].}` verification. |
-| **Platform Isolation** | Windows-specific headers and kernel APIs never leak into platform-agnostic code. | Modules under `corex/platform/` isolated behind `when defined(windows): ... else: ...` facades in `corex/fs`. |
-| **Mechanical Sympathy** | Flat contiguous memory layouts, cache line padding (`align(64)`), and ILP loop unrolling. | Verified benchmarks in `benchmarks/run_benchmarks.ps1`. |
+| **API & Memory Safety** | Safe high-level API surface (`Result`, `Option`, `Span`, `Owned`) over an explicit low-level core (`cast`/`ptr`/`importc`, release-only `{.push checks: off.}` in `algx`). | Experimental `compiler/nim_safe` (`--mem-safe` / `--safe-mode` / `--check-safe-atf`), plus `testWithLeakCheck` (`TrackingAllocator` for `corex` allocators + `GC_fullCollect()` / `getOccupiedMem()` for ORC heap). |
+| **GC Pauses** | No stop-the-world tracing GC pauses across hot execution paths. | ORC deterministic reference counting (`--mm:orc`), move/sink hooks, and regional arena allocators. |
+| **Error Safety** | No exceptions in systems hot paths (`{.raises: [].}`). | Value-based `Result[T, E]`, `?` operator, `errdefer`, and `Defect` never swallowed. |
+| **Platform Isolation** | Windows-first implementation (`win32_fs`, `win32_iocp`, `win32_mft`, Win32 `window`); `posix_fs.nim` is in backlog / unverified in CI. | Modules under `corex/platform/` isolated behind `when defined(windows): ... else: ...` facades in `corex/fs` and `corex/mft`. |
+| **Mechanical Sympathy** | Flat contiguous memory layouts, cache line padding (`align(64)`), and ILP loop unrolling. | Verified benchmarks in `benchmarks/run_benchmarks.ps1` (`--mm:orc`). |
 
 ---
 
@@ -476,3 +475,4 @@ let tree = ui:
 ## 7. Conclusion
 
 The Nim High-Performance Core Ecosystem establishes an uncompromising foundation for modern systems programming. By playing "3D chess" with hardware cache lines, deterministic lifetimes, and kernel abstractions, it delivers bare-metal execution speeds on par with heavily optimized Rust, while preserving the elegance, readability, and expressive clarity that make Nim exceptional.
+

@@ -287,7 +287,9 @@ proc loadHtmlSource(app: HtmlDesktopApp, rawHtml: string) =
             <p style="color: #F8FAFC; font-size: 14px;">""" & errMsg & """</p>
           </div>
         """
-        discard mountHtmlString(app.tree, addr app.rt, fallbackErrHtml, "", app.bindings)
+        let fbRes = mountHtmlString(app.tree, addr app.rt, fallbackErrHtml, "", app.bindings)
+        if fbRes.isErr():
+          echo "[ERROR] Fallback mount failed: ", fbRes.error()
     else:
       echo "[ERROR] Failed to init QuickJS session: ", sessRes.error()
   else:
@@ -319,7 +321,9 @@ proc loadHtmlSource(app: HtmlDesktopApp, rawHtml: string) =
           <p style="color: #94A3B8; font-size: 13px;">Движок NimUI блокирует теги &lt;script&gt;, inline-обработчики on* и javascript: URI на этапе разбора DOM до выделения UI-узлов.</p>
         </div>
       """
-      discard mountHtmlString(app.tree, addr app.rt, fallbackErrHtml, "", app.bindings)
+      let fbRes = mountHtmlString(app.tree, addr app.rt, fallbackErrHtml, "", app.bindings)
+      if fbRes.isErr():
+        echo "[ERROR] Fallback mount failed: ", fbRes.error()
 
   app.tree.layoutTree(float32(DesktopWidth), float32(DesktopHeight), app.fontAtlas)
 
@@ -541,7 +545,9 @@ proc runInteractiveWindow(htmlPath: string, allowJs: bool) =
     if dtMs > 0:
       lastTickTime = nowTime
       if app.allowJs and app.jsSession.hasActiveTimers():
-        discard app.jsSession.tick(dtMs)
+        let tickRes = app.jsSession.tick(dtMs)
+        if tickRes.isErr():
+          echo "[ERROR] QuickJS timer tick failed: ", tickRes.error()
 
     let events = win.pollEvents()
     for ev in events:

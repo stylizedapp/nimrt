@@ -6,7 +6,10 @@
 ## аккумуляторов позволяет GCC автоматически сгенерировать AVX2 инструкции (`vpaddq` / `vpmulld`)
 ## и загрузить все порты исполнения CPU на 100% пропускной способности кэша L1/RAM.
 
-{.push checks: off, optimization: speed.}
+when defined(release) or defined(danger):
+  {.push checks: off, optimization: speed.}
+else:
+  {.push optimization: speed.}
 
 proc fastSum*(arr: openArray[int64]): int64 {.inline, raises: [].} =
   let n = arr.len

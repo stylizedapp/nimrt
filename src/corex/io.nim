@@ -140,7 +140,9 @@ proc close*(f: var FileHandle): Result[void, IOError] =
 
 proc `=destroy`*(f: var FileHandle) =
   if f.isOpen:
-    discard f.close()
+    let closeRes = f.close()
+    if closeRes.isErr:
+      discard
 
 proc `=copy`*(dest: var FileHandle, src: FileHandle) {.error: "FileHandle cannot be copied; use move semantics".}
 
@@ -356,7 +358,9 @@ proc close*(w: var BufferedWriter): Result[void, IOError] =
 
 proc `=destroy`*(w: var BufferedWriter) =
   if w.tail > 0 and w.file.isOpen:
-    discard w.flush()
+    let flushRes = w.flush()
+    if flushRes.isErr:
+      discard
   if not w.buffer.isNil and w.capacity > 0:
     w.alloc.dealloc(w.buffer, w.capacity)
     w.buffer = nil
@@ -464,8 +468,12 @@ proc write*(w: var BufferedWriter, s: string): Result[int, IOError] {.inline.} =
 
 proc writeLine*(w: var BufferedWriter, s: string): Result[void, IOError] =
   if s.len > 0:
-    discard ?w.write(s)
-  discard ?w.write("\n")
+    let written = ?w.write(s)
+    if written < s.len:
+      return err[void, IOError](ioError("BufferedWriter.writeLine: short write"))
+  let nlWritten = ?w.write("\n")
+  if nlWritten < 1:
+    return err[void, IOError](ioError("BufferedWriter.writeLine: short newline write"))
   ok[void, IOError]()
 
 # =============================================================================

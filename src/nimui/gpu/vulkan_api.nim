@@ -339,6 +339,12 @@ type
     enabledExtensionCount*: uint32
     ppEnabledExtensionNames*: cstringArray
 
+  VkLayerProperties* = object
+    layerName*: array[256, char]
+    specVersion*: uint32
+    implementationVersion*: uint32
+    description*: array[256, char]
+
   VkQueueFamilyProperties* = object
     queueFlags*: VkFlags
     queueCount*: uint32
@@ -924,6 +930,7 @@ type
   PFN_vkGetDeviceProcAddr* = proc(device: VkDevice, pName: cstring): pointer {.stdcall, raises: [].}
 
   PFN_vkCreateInstance* = proc(pCreateInfo: ptr VkInstanceCreateInfo, pAllocator: pointer, pInstance: ptr VkInstance): VkResult {.stdcall, raises: [].}
+  PFN_vkEnumerateInstanceLayerProperties* = proc(pPropertyCount: ptr uint32, pProperties: ptr VkLayerProperties): VkResult {.stdcall, raises: [].}
   PFN_vkDestroyInstance* = proc(instance: VkInstance, pAllocator: pointer) {.stdcall, raises: [].}
   PFN_vkEnumeratePhysicalDevices* = proc(instance: VkInstance, pPhysicalDeviceCount: ptr uint32, pPhysicalDevices: ptr VkPhysicalDevice): VkResult {.stdcall, raises: [].}
   PFN_vkGetPhysicalDeviceProperties* = proc(physicalDevice: VkPhysicalDevice, pProperties: ptr VkPhysicalDeviceProperties) {.stdcall, raises: [].}
@@ -1044,6 +1051,7 @@ type
 
     # Instance
     vkCreateInstance*: PFN_vkCreateInstance
+    vkEnumerateInstanceLayerProperties*: PFN_vkEnumerateInstanceLayerProperties
     vkDestroyInstance*: PFN_vkDestroyInstance
     vkEnumeratePhysicalDevices*: PFN_vkEnumeratePhysicalDevices
     vkGetPhysicalDeviceProperties*: PFN_vkGetPhysicalDeviceProperties
@@ -1171,8 +1179,9 @@ proc loadVulkanApi*(): VulkanApi {.raises: [].} =
     result.lib = nil
     return
 
-  # Load base instance creation proc
+  # Load base instance creation & layer enumeration procs
   result.vkCreateInstance = cast[PFN_vkCreateInstance](result.vkGetInstanceProcAddr(nil, "vkCreateInstance"))
+  result.vkEnumerateInstanceLayerProperties = cast[PFN_vkEnumerateInstanceLayerProperties](result.vkGetInstanceProcAddr(nil, "vkEnumerateInstanceLayerProperties"))
 
 proc loadInstanceProcs*(api: var VulkanApi, instance: VkInstance) {.raises: [].} =
   template load(field, name) =

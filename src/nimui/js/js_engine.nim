@@ -49,7 +49,6 @@ proc qjs_bridge_new(
 proc qjs_bridge_free(brt: QjsBridgeRuntimePtr) {.importc, cdecl.}
 proc qjs_bridge_set_host(brt: QjsBridgeRuntimePtr, hostCb: QjsHostCbFn, hostUserData: pointer) {.importc, cdecl.}
 proc qjs_bridge_reset_steps(brt: QjsBridgeRuntimePtr, maxSteps: uint64) {.importc, cdecl.}
-proc qjs_bridge_get_steps(brt: QjsBridgeRuntimePtr): uint64 {.importc, cdecl.}
 proc qjs_bridge_get_malloc_size(brt: QjsBridgeRuntimePtr): csize_t {.importc, cdecl.}
 proc qjs_bridge_get_malloc_count(brt: QjsBridgeRuntimePtr): csize_t {.importc, cdecl.}
 proc qjs_bridge_run_gc(brt: QjsBridgeRuntimePtr) {.importc, cdecl.}
@@ -59,16 +58,6 @@ proc qjs_bridge_eval(
   code: cstring,
   codeLen: csize_t,
   filename: cstring,
-  outBuf: cstring,
-  outCap: int32,
-  errBuf: cstring,
-  errCap: int32
-): int32 {.importc, cdecl.}
-
-proc qjs_bridge_call_global1(
-  brt: QjsBridgeRuntimePtr,
-  funcName: cstring,
-  arg0: cstring,
   outBuf: cstring,
   outCap: int32,
   errBuf: cstring,
@@ -353,6 +342,15 @@ proc evalRawInternal(
   let outLen = outBuf.cstring.len
   ok[string, string](if outLen > 0: outBuf[0 ..< outLen] else: "")
 
+proc evalCleanupInternal(
+  brt: QjsBridgeRuntimePtr,
+  code: string,
+  filename: string
+) {.raises: [].} =
+  let res = evalRawInternal(brt, code, filename)
+  if res.isErr():
+    return
+
 proc setHostHandler*(eng: var QuickJsEngine, handler: JsHostDispatchProc) {.raises: [].} =
   if not eng.hostBox.isNil:
     eng.hostBox.handler = handler
@@ -361,7 +359,7 @@ proc setHostHandler*(eng: var QuickJsEngine, handler: JsHostDispatchProc) {.rais
 
 proc destroy*(eng: var QuickJsEngine) {.raises: [].} =
   if not eng.brt.isNil:
-    discard evalRawInternal(eng.brt, "__qjs_clear_all_cbs();", "<cleanup>")
+    evalCleanupInternal(eng.brt, "__qjs_clear_all_cbs();", "<cleanup>")
     qjs_bridge_free(eng.brt)
     eng.brt = nil
   if not eng.hostBox.isNil:
@@ -491,8 +489,7 @@ proc clearTimer*(eng: var QuickJsEngine, tid: int32) {.raises: [].} =
   for i in 0 ..< eng.timers.len:
     if eng.timers[i].id == tid and eng.timers[i].active:
       eng.timers[i].active = false
-      let delRes = evalRawInternal(eng.brt, "__qjs_del_cb(" & $eng.timers[i].cbId & ");", "<timer-gc>")
-      discard delRes
+      evalCleanupInternal(eng.brt, "__qjs_del_cb(" & $eng.timers[i].cbId & ");", "<timer-gc>")
       break
 
 proc hasActiveTimers*(eng: QuickJsEngine): bool {.inline, raises: [].} =
@@ -526,7 +523,7 @@ proc tickTimers*(eng: var QuickJsEngine, dtMs: int): Result[int, string] {.raise
 
       let invRes = eng.invokeCallback(cbId)
       if not isRepeat and eng.initialized and not eng.brt.isNil:
-        discard evalRawInternal(eng.brt, "__qjs_del_cb(" & $cbId & ");", "<timer-gc>")
+        evalCleanupInternal(eng.brt, "__qjs_del_cb(" & $cbId & ");", "<timer-gc>")
       if invRes.isErr():
         return err[int, string](invRes.error())
       inc fired

@@ -7,7 +7,10 @@
 
 import std/[monotimes, times, typedthreads, sysatomics]
 
-{.push checks: off, optimization: speed.}
+when defined(release) or defined(danger):
+  {.push checks: off, optimization: speed.}
+else:
+  {.push optimization: speed.}
 
 const
   NumThreads* = 4

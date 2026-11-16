@@ -24,7 +24,6 @@
 import std/widestrs
 import ../../result
 import ../../memory
-import ./win32_fs
 
 const
   MFT_RECORD_SIZE* = 1024
@@ -139,7 +138,7 @@ proc decodeUtf16LeFast*(
   dst: var string
 ) {.inline, raises: [].} =
   ## In-place UTF-16LE to UTF-8 decoding using stack buffer. Zero heap allocations.
-  if charCount <= 0:
+  if startOffset < 0 or charCount <= 0 or charCount > (buf.len - startOffset) div 2:
     dst.setLen(0)
     return
 
@@ -267,8 +266,10 @@ proc calculateAllocatedClusters*(
 ): int64 {.inline, raises: [].} =
   ## Fast zero-allocation calculator for total allocated clusters from a runlist.
   ## Skips sparse runs (where offset length nibble is 0).
+  if startOffset < 0 or maxLen <= 0 or startOffset >= data.len:
+    return 0'i64
   var rOff = startOffset
-  let endOff = min(startOffset + maxLen, data.len)
+  let endOff = startOffset + min(maxLen, data.len - startOffset)
   var allocatedClusters: int64 = 0
 
   while rOff < endOff:
@@ -285,14 +286,17 @@ proc calculateAllocatedClusters*(
     if rOff + lenBytes + offBytes > endOff:
       break
 
-    var clusterCount: int64 = 0
+    var clusterCount: uint64 = 0'u64
     for i in 0 ..< lenBytes:
-      clusterCount = clusterCount or (int64(data[rOff + i]) shl (i * 8))
+      clusterCount = clusterCount or (uint64(data[rOff + i]) shl (i * 8))
     rOff += lenBytes
 
     if offBytes > 0:
       rOff += offBytes
-      allocatedClusters += clusterCount
+      if clusterCount <= uint64(high(int64) - allocatedClusters):
+        allocatedClusters += int64(clusterCount)
+      else:
+        allocatedClusters = high(int64)
 
   allocatedClusters
 
@@ -305,8 +309,10 @@ proc parseRunList*(
   ## Parses compressed nibble-encoded variable-length LCN offsets and cluster lengths.
   ## Populates `runs` and returns total allocated clusters (excluding sparse runs).
   runs.setLen(0)
+  if startOffset < 0 or maxLen <= 0 or startOffset >= data.len:
+    return ok[int64, IOError](0'i64)
   var rOff = startOffset
-  let endOff = min(startOffset + maxLen, data.len)
+  let endOff = startOffset + min(maxLen, data.len - startOffset)
   var allocatedClusters: int64 = 0
   var currentLcn: int64 = 0
 
@@ -325,24 +331,35 @@ proc parseRunList*(
     if rOff + lenBytes + offBytes > endOff:
       return err[int64, IOError](IOError(msg: "Corrupt data run: run exceeds attribute buffer"))
 
-    var clusterCount: int64 = 0
+    var clusterCountU: uint64 = 0'u64
     for i in 0 ..< lenBytes:
-      clusterCount = clusterCount or (int64(data[rOff + i]) shl (i * 8))
+      clusterCountU = clusterCountU or (uint64(data[rOff + i]) shl (i * 8))
     rOff += lenBytes
 
-    if offBytes > 0:
-      var lcnDelta: int64 = 0
-      for i in 0 ..< offBytes:
-        lcnDelta = lcnDelta or (int64(data[rOff + i]) shl (i * 8))
+    if clusterCountU > uint64(high(int64)):
+      return err[int64, IOError](IOError(msg: "Corrupt data run: cluster count exceeds int64 range"))
+    let clusterCount = int64(clusterCountU)
 
-      # Sign-extend lcnDelta
-      let signBit = 1'i64 shl (offBytes * 8 - 1)
-      if (lcnDelta and signBit) != 0:
-        let signMask = -1'i64 shl (offBytes * 8)
-        lcnDelta = lcnDelta or signMask
+    if offBytes > 0:
+      var lcnDeltaU: uint64 = 0'u64
+      for i in 0 ..< offBytes:
+        lcnDeltaU = lcnDeltaU or (uint64(data[rOff + i]) shl (i * 8))
+
+      # Sign-extend lcnDelta safely (avoid shifting by 64 when offBytes == 8)
+      let signBit = 1'u64 shl (offBytes * 8 - 1)
+      if (lcnDeltaU and signBit) != 0'u64 and offBytes < 8:
+        let signMask = (not 0'u64) shl (offBytes * 8)
+        lcnDeltaU = lcnDeltaU or signMask
+      let lcnDelta = cast[int64](lcnDeltaU)
 
       rOff += offBytes
+      if (lcnDelta > 0 and currentLcn > high(int64) - lcnDelta) or
+         (lcnDelta < 0 and currentLcn < low(int64) - lcnDelta):
+        return err[int64, IOError](IOError(msg: "Corrupt data run: LCN overflow"))
       currentLcn += lcnDelta
+
+      if allocatedClusters > high(int64) - clusterCount:
+        return err[int64, IOError](IOError(msg: "Corrupt data run: allocated clusters overflow"))
       allocatedClusters += clusterCount
       runs.add(MftDataRun(lcn: currentLcn, clusterCount: clusterCount, isSparse: false))
     else:
@@ -421,7 +438,7 @@ proc parseMftRecord*(
       break
 
     let attrLen = cast[ptr uint32](addr rec[attrOffset + 4])[]
-    if attrLen < 16'u32 or attrOffset + int(attrLen) > MFT_RECORD_SIZE:
+    if attrLen < 16'u32 or attrLen > uint32(MFT_RECORD_SIZE - attrOffset):
       break # Corrupt or out-of-bounds attribute length
 
     let nonResident = rec[attrOffset + 8] != 0
@@ -429,8 +446,8 @@ proc parseMftRecord*(
 
     case attrType
     of ATTR_STANDARD_INFORMATION:
-      if not nonResident:
-        let valLen = int(cast[ptr uint32](addr rec[attrOffset + 16])[])
+      if not nonResident and attrLen >= 24'u32 and attrOffset + 24 <= MFT_RECORD_SIZE:
+        let valLen = min(int(cast[ptr uint32](addr rec[attrOffset + 16])[]), MFT_RECORD_SIZE)
         let valOff = int(cast[ptr uint16](addr rec[attrOffset + 20])[])
         let pOff = attrOffset + valOff
         if pOff + 36 <= MFT_RECORD_SIZE and valLen >= 36:
@@ -444,37 +461,42 @@ proc parseMftRecord*(
     of ATTR_ATTRIBUTE_LIST:
       entry.hasAttrList = true
       if not nonResident:
-        let valLen = int(cast[ptr uint32](addr rec[attrOffset + 16])[])
-        let valOff = int(cast[ptr uint16](addr rec[attrOffset + 20])[])
-        let pOff = attrOffset + valOff
-        let pEnd = min(pOff + valLen, MFT_RECORD_SIZE)
-        var curOff = pOff
-        while curOff + 24 <= pEnd:
-          let alRecLen = int(cast[ptr uint16](addr rec[curOff + 4])[])
-          if alRecLen < 24:
-            break
-          let childFrn = cast[ptr uint64](addr rec[curOff + 16])[]
-          if childFrn != 0 and (childFrn and 0x0000FFFFFFFFFFFF'u64) != (frn and 0x0000FFFFFFFFFFFF'u64):
-            var alreadyPresent = false
-            for c in entry.childFrns:
-              if c == childFrn:
-                alreadyPresent = true
-                break
-            if not alreadyPresent:
-              entry.childFrns.add(childFrn)
-          curOff += alRecLen
+        if attrLen >= 24'u32 and attrOffset + 24 <= MFT_RECORD_SIZE:
+          let valLen = min(int(cast[ptr uint32](addr rec[attrOffset + 16])[]), MFT_RECORD_SIZE)
+          let valOff = int(cast[ptr uint16](addr rec[attrOffset + 20])[])
+          let pOff = attrOffset + valOff
+          let pEnd = min(pOff + valLen, MFT_RECORD_SIZE)
+          var curOff = pOff
+          while curOff + 24 <= pEnd:
+            let alRecLen = int(cast[ptr uint16](addr rec[curOff + 4])[])
+            if alRecLen < 24:
+              break
+            let childFrn = cast[ptr uint64](addr rec[curOff + 16])[]
+            if childFrn != 0 and (childFrn and 0x0000FFFFFFFFFFFF'u64) != (frn and 0x0000FFFFFFFFFFFF'u64):
+              var alreadyPresent = false
+              for c in entry.childFrns:
+                if c == childFrn:
+                  alreadyPresent = true
+                  break
+              if not alreadyPresent:
+                entry.childFrns.add(childFrn)
+            curOff += alRecLen
       else:
-        if attrOffset + 40 <= MFT_RECORD_SIZE:
+        if attrLen >= 40'u32 and attrOffset + 40 <= MFT_RECORD_SIZE:
           let runListOff = int(cast[ptr uint16](addr rec[attrOffset + 32])[])
-          if runListOff > 0 and attrOffset + runListOff < MFT_RECORD_SIZE:
+          if runListOff > 0 and runListOff < int(attrLen) and attrOffset + runListOff < MFT_RECORD_SIZE:
             let maxRunBytes = min(int(attrLen) - runListOff, MFT_RECORD_SIZE - (attrOffset + runListOff))
             let allocatedClusters = calculateAllocatedClusters(rec, attrOffset + runListOff, maxRunBytes)
-            if bytesPerCluster > 0'u32:
-              entry.sizeOnDisk += allocatedClusters * int64(bytesPerCluster)
+            if bytesPerCluster > 0'u32 and allocatedClusters > 0:
+              let bpc = int64(bytesPerCluster)
+              if allocatedClusters <= (high(int64) - entry.sizeOnDisk) div bpc:
+                entry.sizeOnDisk += allocatedClusters * bpc
+              else:
+                entry.sizeOnDisk = high(int64)
 
     of ATTR_FILE_NAME:
-      if not nonResident:
-        let valLen = int(cast[ptr uint32](addr rec[attrOffset + 16])[])
+      if not nonResident and attrLen >= 24'u32 and attrOffset + 24 <= MFT_RECORD_SIZE:
+        let valLen = min(int(cast[ptr uint32](addr rec[attrOffset + 16])[]), MFT_RECORD_SIZE)
         let valOff = int(cast[ptr uint16](addr rec[attrOffset + 20])[])
         let pOff = attrOffset + valOff
         if pOff + 66 <= MFT_RECORD_SIZE and valLen >= 66:
@@ -512,21 +534,26 @@ proc parseMftRecord*(
       # Primary unnamed data stream only (nameLen == 0)
       if nameLen == 0:
         if not nonResident:
-          let valLen = int(cast[ptr uint32](addr rec[attrOffset + 16])[])
-          entry.fileSize = int64(valLen)
-          entry.sizeOnDisk = int64(valLen)
+          if attrLen >= 24'u32 and attrOffset + 24 <= MFT_RECORD_SIZE:
+            let valLen = int(cast[ptr uint32](addr rec[attrOffset + 16])[])
+            entry.fileSize = int64(valLen)
+            entry.sizeOnDisk = int64(valLen)
         else:
-          if attrOffset + 48 <= MFT_RECORD_SIZE:
+          if attrLen >= 56'u32 and attrOffset + 56 <= MFT_RECORD_SIZE:
             let allocatedSizeHdr = cast[ptr int64](addr rec[attrOffset + 40])[]
             let realSizeHdr = cast[ptr int64](addr rec[attrOffset + 48])[]
             entry.fileSize = realSizeHdr
 
             let runListOff = int(cast[ptr uint16](addr rec[attrOffset + 32])[])
-            if runListOff > 0 and attrOffset + runListOff < MFT_RECORD_SIZE:
+            if runListOff > 0 and runListOff < int(attrLen) and attrOffset + runListOff < MFT_RECORD_SIZE:
               let maxRunBytes = min(int(attrLen) - runListOff, MFT_RECORD_SIZE - (attrOffset + runListOff))
               let allocatedClusters = calculateAllocatedClusters(rec, attrOffset + runListOff, maxRunBytes)
               if bytesPerCluster > 0'u32:
-                entry.sizeOnDisk = allocatedClusters * int64(bytesPerCluster)
+                let bpc = int64(bytesPerCluster)
+                if allocatedClusters <= high(int64) div bpc:
+                  entry.sizeOnDisk = allocatedClusters * bpc
+                else:
+                  entry.sizeOnDisk = high(int64)
               else:
                 entry.sizeOnDisk = allocatedSizeHdr
             else:
@@ -838,9 +865,11 @@ when defined(windows):
           let nLen = int(rec0[off + 9])
           if aType == ATTR_DATA and nLen == 0 and nonRes:
             let rOff = int(cast[ptr uint16](addr rec0[off + 32])[])
-            if rOff > 0 and off + rOff < MFT_RECORD_SIZE:
+            if rOff > 0 and rOff < int(aLen) and off + rOff < MFT_RECORD_SIZE:
               let maxRBytes = min(int(aLen) - rOff, MFT_RECORD_SIZE - (off + rOff))
-              discard parseRunList(rec0, off + rOff, maxRBytes, mftRuns)
+              let runsRes = parseRunList(rec0, off + rOff, maxRBytes, mftRuns)
+              if runsRes.isErr:
+                mftRuns.setLen(0)
               break
           off += int(aLen)
 

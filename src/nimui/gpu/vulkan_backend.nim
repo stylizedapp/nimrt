@@ -12,7 +12,6 @@ import ./vulkan_api
 import ./shaders
 import ./font_atlas
 import corex/result
-import corex/allocators
 
 const
   MaxFramesInFlight* = 2
@@ -88,9 +87,19 @@ type
     fontImageMemory*: VkDeviceMemory
     fontImageView*: VkImageView
     fontSampler*: VkSampler
+    fontTexWidth*: int
+    fontTexHeight*: int
 
+    hwnd*: pointer
     isInitialized*: bool
     needsResize*: bool
+    isMinimized*: bool
+    deviceLost*: bool
+    lastVkResult*: VkResult
+    lastError*: string
+    validationEnabled*: bool
+    validationActive*: bool
+    dpiScale*: float32
 
 # Static Unit Quad Vertices (4 vertices, 6 indices)
 const quadVertices: array[8, float32] = [
@@ -115,6 +124,52 @@ static:
 
 proc destroy*(backend: var VulkanBackend) {.raises: [].}
 proc recreateSwapchain*(backend: var VulkanBackend, width, height: uint32): bool {.raises: [].}
+
+proc recordVkError*(backend: var VulkanBackend, res: VkResult, op: string) {.raises: [].} =
+  backend.lastVkResult = res
+  if res == VK_SUCCESS:
+    return
+  if res == VK_ERROR_DEVICE_LOST:
+    backend.deviceLost = true
+    backend.lastError = "VK_ERROR_DEVICE_LOST in " & op
+  else:
+    backend.lastError = op & " failed with VkResult " & $res
+
+proc checkVk*(backend: var VulkanBackend, res: VkResult, op: string): Result[void, string] {.raises: [].} =
+  backend.recordVkError(res, op)
+  if res == VK_SUCCESS:
+    return ok[void, string]()
+  err[void, string](backend.lastError)
+
+proc isDeviceLost*(backend: VulkanBackend): bool {.inline, raises: [].} =
+  backend.deviceLost
+
+proc setDpiScale*(backend: var VulkanBackend, dpiScale: float32) {.inline, raises: [].} =
+  backend.dpiScale = if dpiScale > 0.1f: dpiScale else: 1.0f
+
+proc logicalExtent*(backend: VulkanBackend): tuple[width, height: float32] {.inline, raises: [].} =
+  let scale = if backend.dpiScale > 0.1f: backend.dpiScale else: 1.0f
+  (float32(backend.swapchainExtent.width) / scale, float32(backend.swapchainExtent.height) / scale)
+
+proc hasValidationLayer(api: VulkanApi): bool {.raises: [].} =
+  if api.vkEnumerateInstanceLayerProperties.isNil:
+    return false
+  var count: uint32 = 0
+  if api.vkEnumerateInstanceLayerProperties(addr count, nil) != VK_SUCCESS or count == 0:
+    return false
+  var layers = newSeq[VkLayerProperties](count)
+  if api.vkEnumerateInstanceLayerProperties(addr count, addr layers[0]) != VK_SUCCESS:
+    return false
+  const target = "VK_LAYER_KHRONOS_validation"
+  for layer in layers:
+    var matched = true
+    for i in 0 ..< target.len:
+      if layer.layerName[i] != target[i]:
+        matched = false
+        break
+    if matched and layer.layerName[target.len] == '\0':
+      return true
+  false
 
 # =============================================================================
 # Memory Helper
@@ -197,10 +252,12 @@ proc cleanupSwapchain(backend: var VulkanBackend) {.raises: [].} =
 
 proc initSurfaceConfig*(backend: var VulkanBackend, width, height: uint32): bool {.raises: [].} =
   var surfCaps: VkSurfaceCapabilitiesKHR
-  if backend.api.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(backend.physicalDevice, backend.surface, addr surfCaps) != VK_SUCCESS:
+  let capRes = backend.api.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(backend.physicalDevice, backend.surface, addr surfCaps)
+  if capRes != VK_SUCCESS:
+    backend.recordVkError(capRes, "vkGetPhysicalDeviceSurfaceCapabilitiesKHR")
     return false
 
-  var desiredExtent = VkExtent2D(width: width, height: height)
+  var desiredExtent = VkExtent2D(width: max(1'u32, width), height: max(1'u32, height))
   if surfCaps.currentExtent.width != 0xFFFFFFFF'u32:
     desiredExtent = surfCaps.currentExtent
   else:
@@ -210,11 +267,11 @@ proc initSurfaceConfig*(backend: var VulkanBackend, width, height: uint32): bool
 
   # Query surface formats
   var formatCount: uint32 = 0
-  discard backend.api.vkGetPhysicalDeviceSurfaceFormatsKHR(backend.physicalDevice, backend.surface, addr formatCount, nil)
-  if formatCount == 0:
+  if backend.api.vkGetPhysicalDeviceSurfaceFormatsKHR(backend.physicalDevice, backend.surface, addr formatCount, nil) != VK_SUCCESS or formatCount == 0:
     return false
   var formats = newSeq[VkSurfaceFormatKHR](formatCount)
-  discard backend.api.vkGetPhysicalDeviceSurfaceFormatsKHR(backend.physicalDevice, backend.surface, addr formatCount, addr formats[0])
+  if backend.api.vkGetPhysicalDeviceSurfaceFormatsKHR(backend.physicalDevice, backend.surface, addr formatCount, addr formats[0]) != VK_SUCCESS:
+    return false
 
   var chosenFormat = formats[0]
   for f in formats:
@@ -225,8 +282,14 @@ proc initSurfaceConfig*(backend: var VulkanBackend, width, height: uint32): bool
   true
 
 proc createSwapchain(backend: var VulkanBackend, width, height: uint32, oldSwapchain: VkSwapchainKHR = 0): bool {.raises: [].} =
+  if width == 0 or height == 0:
+    backend.isMinimized = true
+    return false
+
   var surfCaps: VkSurfaceCapabilitiesKHR
-  if backend.api.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(backend.physicalDevice, backend.surface, addr surfCaps) != VK_SUCCESS:
+  let capRes = backend.api.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(backend.physicalDevice, backend.surface, addr surfCaps)
+  if capRes != VK_SUCCESS:
+    backend.recordVkError(capRes, "vkGetPhysicalDeviceSurfaceCapabilitiesKHR")
     return false
 
   var desiredExtent = VkExtent2D(width: width, height: height)
@@ -235,6 +298,12 @@ proc createSwapchain(backend: var VulkanBackend, width, height: uint32, oldSwapc
   else:
     desiredExtent.width = max(surfCaps.minImageExtent.width, min(surfCaps.maxImageExtent.width, desiredExtent.width))
     desiredExtent.height = max(surfCaps.minImageExtent.height, min(surfCaps.maxImageExtent.height, desiredExtent.height))
+
+  if desiredExtent.width == 0 or desiredExtent.height == 0:
+    backend.isMinimized = true
+    return false
+
+  backend.isMinimized = false
   backend.swapchainExtent = desiredExtent
 
   var imageCount = surfCaps.minImageCount + 1
@@ -243,9 +312,11 @@ proc createSwapchain(backend: var VulkanBackend, width, height: uint32, oldSwapc
 
   # Query surface formats
   var formatCount: uint32 = 0
-  discard backend.api.vkGetPhysicalDeviceSurfaceFormatsKHR(backend.physicalDevice, backend.surface, addr formatCount, nil)
+  if backend.api.vkGetPhysicalDeviceSurfaceFormatsKHR(backend.physicalDevice, backend.surface, addr formatCount, nil) != VK_SUCCESS or formatCount == 0:
+    return false
   var formats = newSeq[VkSurfaceFormatKHR](formatCount)
-  discard backend.api.vkGetPhysicalDeviceSurfaceFormatsKHR(backend.physicalDevice, backend.surface, addr formatCount, addr formats[0])
+  if backend.api.vkGetPhysicalDeviceSurfaceFormatsKHR(backend.physicalDevice, backend.surface, addr formatCount, addr formats[0]) != VK_SUCCESS:
+    return false
 
   var chosenFormat = formats[0]
   for f in formats:
@@ -256,9 +327,11 @@ proc createSwapchain(backend: var VulkanBackend, width, height: uint32, oldSwapc
 
   # Present mode (Prefer Mailbox for low latency, FIFO for standard vsync)
   var presentModeCount: uint32 = 0
-  discard backend.api.vkGetPhysicalDeviceSurfacePresentModesKHR(backend.physicalDevice, backend.surface, addr presentModeCount, nil)
+  if backend.api.vkGetPhysicalDeviceSurfacePresentModesKHR(backend.physicalDevice, backend.surface, addr presentModeCount, nil) != VK_SUCCESS or presentModeCount == 0:
+    return false
   var presentModes = newSeq[uint32](presentModeCount)
-  discard backend.api.vkGetPhysicalDeviceSurfacePresentModesKHR(backend.physicalDevice, backend.surface, addr presentModeCount, addr presentModes[0])
+  if backend.api.vkGetPhysicalDeviceSurfacePresentModesKHR(backend.physicalDevice, backend.surface, addr presentModeCount, addr presentModes[0]) != VK_SUCCESS:
+    return false
 
   var chosenPresentMode: uint32 = VK_PRESENT_MODE_FIFO_KHR
   for pm in presentModes:
@@ -289,14 +362,18 @@ proc createSwapchain(backend: var VulkanBackend, width, height: uint32, oldSwapc
     swapchainInfo.queueFamilyIndexCount = 2
     swapchainInfo.pQueueFamilyIndices = addr queueFamilies[0]
 
-  if backend.api.vkCreateSwapchainKHR(backend.device, addr swapchainInfo, nil, addr backend.swapchain) != VK_SUCCESS:
+  let scRes = backend.api.vkCreateSwapchainKHR(backend.device, addr swapchainInfo, nil, addr backend.swapchain)
+  if scRes != VK_SUCCESS:
+    backend.recordVkError(scRes, "vkCreateSwapchainKHR")
     return false
 
   # Retrieve swapchain images
   var actualImageCount: uint32 = 0
-  discard backend.api.vkGetSwapchainImagesKHR(backend.device, backend.swapchain, addr actualImageCount, nil)
+  if backend.api.vkGetSwapchainImagesKHR(backend.device, backend.swapchain, addr actualImageCount, nil) != VK_SUCCESS or actualImageCount == 0:
+    return false
   backend.swapchainImages.setLen(actualImageCount)
-  discard backend.api.vkGetSwapchainImagesKHR(backend.device, backend.swapchain, addr actualImageCount, addr backend.swapchainImages[0])
+  if backend.api.vkGetSwapchainImagesKHR(backend.device, backend.swapchain, addr actualImageCount, addr backend.swapchainImages[0]) != VK_SUCCESS:
+    return false
 
   # Create image views
   backend.swapchainImageViews.setLen(actualImageCount)
@@ -320,7 +397,9 @@ proc createSwapchain(backend: var VulkanBackend, width, height: uint32, oldSwapc
         layerCount: 1
       )
     )
-    if backend.api.vkCreateImageView(backend.device, addr viewInfo, nil, addr backend.swapchainImageViews[i]) != VK_SUCCESS:
+    let ivRes = backend.api.vkCreateImageView(backend.device, addr viewInfo, nil, addr backend.swapchainImageViews[i])
+    if ivRes != VK_SUCCESS:
+      backend.recordVkError(ivRes, "vkCreateImageView")
       return false
 
   # Create framebuffers
@@ -336,16 +415,35 @@ proc createSwapchain(backend: var VulkanBackend, width, height: uint32, oldSwapc
       height: desiredExtent.height,
       layers: 1
     )
-    if backend.api.vkCreateFramebuffer(backend.device, addr fbInfo, nil, addr backend.framebuffers[i]) != VK_SUCCESS:
+    let fbRes = backend.api.vkCreateFramebuffer(backend.device, addr fbInfo, nil, addr backend.framebuffers[i])
+    if fbRes != VK_SUCCESS:
+      backend.recordVkError(fbRes, "vkCreateFramebuffer")
       return false
 
   true
 
 proc recreateSwapchain*(backend: var VulkanBackend, width, height: uint32): bool {.raises: [].} =
-  if backend.device.isNil or width == 0 or height == 0:
+  if backend.device.isNil or backend.deviceLost:
+    return false
+  if width == 0 or height == 0:
+    backend.isMinimized = true
     return false
 
-  discard backend.api.vkDeviceWaitIdle(backend.device)
+  # Check surface capabilities BEFORE tearing down active swapchain resources
+  var surfCaps: VkSurfaceCapabilitiesKHR
+  let capRes = backend.api.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(backend.physicalDevice, backend.surface, addr surfCaps)
+  if capRes != VK_SUCCESS:
+    backend.recordVkError(capRes, "vkGetPhysicalDeviceSurfaceCapabilitiesKHR")
+    return false
+  if surfCaps.currentExtent.width != 0xFFFFFFFF'u32 and
+     (surfCaps.currentExtent.width == 0 or surfCaps.currentExtent.height == 0):
+    backend.isMinimized = true
+    return false
+
+  let waitIdleRes = backend.api.vkDeviceWaitIdle(backend.device)
+  if waitIdleRes == VK_ERROR_DEVICE_LOST:
+    backend.recordVkError(waitIdleRes, "vkDeviceWaitIdle")
+    return false
 
   let oldSwapchain = backend.swapchain
   backend.swapchain = 0
@@ -440,7 +538,10 @@ proc createPipeline(backend: var VulkanBackend, atlas: FontAtlas): bool {.raises
   )
   if backend.api.vkAllocateMemory(backend.device, addr imgAlloc, nil, addr backend.fontImageMemory) != VK_SUCCESS:
     return false
-  discard backend.api.vkBindImageMemory(backend.device, backend.fontImage, backend.fontImageMemory, 0)
+  if backend.api.vkBindImageMemory(backend.device, backend.fontImage, backend.fontImageMemory, 0) != VK_SUCCESS:
+    return false
+  backend.fontTexWidth = atlas.width
+  backend.fontTexHeight = atlas.height
 
   # Staging buffer to upload pixels
   let imageBytes = VkDeviceSize(atlas.width * atlas.height)
@@ -452,7 +553,10 @@ proc createPipeline(backend: var VulkanBackend, atlas: FontAtlas): bool {.raises
     return false
 
   var pData: pointer = nil
-  discard backend.api.vkMapMemory(backend.device, stagingMem, 0, imageBytes, 0, addr pData)
+  if backend.api.vkMapMemory(backend.device, stagingMem, 0, imageBytes, 0, addr pData) != VK_SUCCESS:
+    backend.api.vkDestroyBuffer(backend.device, stagingBuf, nil)
+    backend.api.vkFreeMemory(backend.device, stagingMem, nil)
+    return false
   if not pData.isNil and atlas.pixels.len > 0:
     copyMem(pData, unsafeAddr atlas.pixels[0], int(imageBytes))
   backend.api.vkUnmapMemory(backend.device, stagingMem)
@@ -465,12 +569,19 @@ proc createPipeline(backend: var VulkanBackend, atlas: FontAtlas): bool {.raises
     commandBufferCount: 1
   )
   var oneShotCmd: VkCommandBuffer
-  discard backend.api.vkAllocateCommandBuffers(backend.device, addr allocInfo, addr oneShotCmd)
+  if backend.api.vkAllocateCommandBuffers(backend.device, addr allocInfo, addr oneShotCmd) != VK_SUCCESS:
+    backend.api.vkDestroyBuffer(backend.device, stagingBuf, nil)
+    backend.api.vkFreeMemory(backend.device, stagingMem, nil)
+    return false
   var beginInfo = VkCommandBufferBeginInfo(
     sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
     flags: 0x00000001 # ONE_TIME_SUBMIT
   )
-  discard backend.api.vkBeginCommandBuffer(oneShotCmd, addr beginInfo)
+  if backend.api.vkBeginCommandBuffer(oneShotCmd, addr beginInfo) != VK_SUCCESS:
+    backend.api.vkFreeCommandBuffers(backend.device, backend.commandPool, 1, addr oneShotCmd)
+    backend.api.vkDestroyBuffer(backend.device, stagingBuf, nil)
+    backend.api.vkFreeMemory(backend.device, stagingMem, nil)
+    return false
 
   # Transition UNDEFINED -> TRANSFER_DST_OPTIMAL
   var barrier = VkImageMemoryBarrier(
@@ -527,17 +638,23 @@ proc createPipeline(backend: var VulkanBackend, atlas: FontAtlas): bool {.raises
     0, 0, nil, 0, nil, 1, addr barrier
   )
 
-  discard backend.api.vkEndCommandBuffer(oneShotCmd)
+  if backend.api.vkEndCommandBuffer(oneShotCmd) != VK_SUCCESS:
+    backend.api.vkFreeCommandBuffers(backend.device, backend.commandPool, 1, addr oneShotCmd)
+    backend.api.vkDestroyBuffer(backend.device, stagingBuf, nil)
+    backend.api.vkFreeMemory(backend.device, stagingMem, nil)
+    return false
   var submitInfo = VkSubmitInfo(
     sType: VK_STRUCTURE_TYPE_SUBMIT_INFO,
     commandBufferCount: 1,
     pCommandBuffers: addr oneShotCmd
   )
-  discard backend.api.vkQueueSubmit(backend.graphicsQueue, 1, addr submitInfo, 0)
-  discard backend.api.vkQueueWaitIdle(backend.graphicsQueue)
+  let subRes = backend.api.vkQueueSubmit(backend.graphicsQueue, 1, addr submitInfo, 0)
+  let waitRes = backend.api.vkQueueWaitIdle(backend.graphicsQueue)
   backend.api.vkFreeCommandBuffers(backend.device, backend.commandPool, 1, addr oneShotCmd)
   backend.api.vkDestroyBuffer(backend.device, stagingBuf, nil)
   backend.api.vkFreeMemory(backend.device, stagingMem, nil)
+  if subRes != VK_SUCCESS or waitRes != VK_SUCCESS:
+    return false
 
   # Font Image View & Sampler
   var fontViewInfo = VkImageViewCreateInfo(
@@ -795,8 +912,17 @@ proc createPipeline(backend: var VulkanBackend, atlas: FontAtlas): bool {.raises
 # Initialization & Setup
 # =============================================================================
 
-proc initVulkanBackend*(hwnd: pointer, width, height: uint32, fontAtlas: FontAtlas): Result[VulkanBackend, string] {.raises: [].} =
+proc initVulkanBackend*(
+  hwnd: pointer,
+  width, height: uint32,
+  fontAtlas: FontAtlas,
+  enableValidation: bool = defined(nimuiValidation),
+  dpiScale: float32 = 1.0f
+): Result[VulkanBackend, string] {.raises: [].} =
   var b: VulkanBackend
+  b.hwnd = hwnd
+  b.dpiScale = if dpiScale > 0.1f: dpiScale else: 1.0f
+  b.validationEnabled = enableValidation
   b.api = loadVulkanApi()
   if b.api.lib.isNil:
     return err[VulkanBackend, string]("Could not load Vulkan driver (vulkan-1.dll / libvulkan.so)")
@@ -816,9 +942,15 @@ proc initVulkanBackend*(hwnd: pointer, width, height: uint32, fontAtlas: FontAtl
   else:
     var extNames = [cstring"VK_KHR_surface", cstring"VK_KHR_xlib_surface"]
 
+  var validationLayers = [cstring"VK_LAYER_KHRONOS_validation"]
+  let useValidation = enableValidation and hasValidationLayer(b.api)
+  b.validationActive = useValidation
+
   var instInfo = VkInstanceCreateInfo(
     sType: VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
     pApplicationInfo: addr appInfo,
+    enabledLayerCount: if useValidation: 1'u32 else: 0'u32,
+    ppEnabledLayerNames: if useValidation: cast[cstringArray](addr validationLayers[0]) else: nil,
     enabledExtensionCount: uint32(extNames.len),
     ppEnabledExtensionNames: cast[cstringArray](addr extNames[0])
   )
@@ -846,15 +978,18 @@ proc initVulkanBackend*(hwnd: pointer, width, height: uint32, fontAtlas: FontAtl
 
   # 3. Physical Device Selection
   var devCount: uint32 = 0
-  discard b.api.vkEnumeratePhysicalDevices(b.instance, addr devCount, nil)
-  if devCount == 0:
+  if b.api.vkEnumeratePhysicalDevices(b.instance, addr devCount, nil) != VK_SUCCESS or devCount == 0:
     b.api.vkDestroySurfaceKHR(b.instance, b.surface, nil)
     b.api.vkDestroyInstance(b.instance, nil)
     b.api.unload()
     return err[VulkanBackend, string]("No Vulkan physical devices found")
 
   var physicalDevices = newSeq[VkPhysicalDevice](devCount)
-  discard b.api.vkEnumeratePhysicalDevices(b.instance, addr devCount, addr physicalDevices[0])
+  if b.api.vkEnumeratePhysicalDevices(b.instance, addr devCount, addr physicalDevices[0]) != VK_SUCCESS:
+    b.api.vkDestroySurfaceKHR(b.instance, b.surface, nil)
+    b.api.vkDestroyInstance(b.instance, nil)
+    b.api.unload()
+    return err[VulkanBackend, string]("vkEnumeratePhysicalDevices failed")
 
   var bestDevice: VkPhysicalDevice = nil
   var bestScore = -1
@@ -877,8 +1012,7 @@ proc initVulkanBackend*(hwnd: pointer, width, height: uint32, fontAtlas: FontAtl
       if (qProps[i].queueFlags and VK_QUEUE_GRAPHICS_BIT) != 0:
         gfxIdx = int32(i)
       var supported: uint32 = 0
-      discard b.api.vkGetPhysicalDeviceSurfaceSupportKHR(dev, uint32(i), b.surface, addr supported)
-      if supported != 0:
+      if b.api.vkGetPhysicalDeviceSurfaceSupportKHR(dev, uint32(i), b.surface, addr supported) == VK_SUCCESS and supported != 0:
         presentIdx = int32(i)
       if gfxIdx >= 0 and presentIdx >= 0:
         break
@@ -971,7 +1105,9 @@ proc initVulkanBackend*(hwnd: pointer, width, height: uint32, fontAtlas: FontAtl
     return err[VulkanBackend, string]("Failed to allocate quad vertex buffer")
 
   var pVtx: pointer = nil
-  discard b.api.vkMapMemory(b.device, b.quadVertexMemory, 0, quadVtxBytes, 0, addr pVtx)
+  if b.api.vkMapMemory(b.device, b.quadVertexMemory, 0, quadVtxBytes, 0, addr pVtx) != VK_SUCCESS or pVtx.isNil:
+    b.destroy()
+    return err[VulkanBackend, string]("Failed to map quad vertex buffer")
   copyMem(pVtx, unsafeAddr quadVertices[0], int(quadVtxBytes))
   b.api.vkUnmapMemory(b.device, b.quadVertexMemory)
 
@@ -983,7 +1119,9 @@ proc initVulkanBackend*(hwnd: pointer, width, height: uint32, fontAtlas: FontAtl
     return err[VulkanBackend, string]("Failed to allocate quad index buffer")
 
   var pIdx: pointer = nil
-  discard b.api.vkMapMemory(b.device, b.quadIndexMemory, 0, quadIdxBytes, 0, addr pIdx)
+  if b.api.vkMapMemory(b.device, b.quadIndexMemory, 0, quadIdxBytes, 0, addr pIdx) != VK_SUCCESS or pIdx.isNil:
+    b.destroy()
+    return err[VulkanBackend, string]("Failed to map quad index buffer")
   copyMem(pIdx, unsafeAddr quadIndices[0], int(quadIdxBytes))
   b.api.vkUnmapMemory(b.device, b.quadIndexMemory)
 
@@ -1039,12 +1177,168 @@ proc initVulkanBackend*(hwnd: pointer, width, height: uint32, fontAtlas: FontAtl
 # Rendering & Frame Submission
 # =============================================================================
 
+proc uploadFontAtlas*(backend: var VulkanBackend, atlas: FontAtlas): Result[void, string] {.raises: [].} =
+  ## Re-uploads FontAtlas pixel data (e.g., after dynamic LRU eviction or DPI rebuild) to the GPU texture.
+  if not backend.isInitialized or backend.device.isNil:
+    return err[void, string]("Backend not initialized")
+  if backend.deviceLost:
+    return err[void, string]("VK_ERROR_DEVICE_LOST: cannot upload font atlas")
+  if atlas.width <= 0 or atlas.height <= 0 or atlas.pixels.len < atlas.width * atlas.height:
+    return err[void, string]("Invalid FontAtlas dimensions or pixel buffer")
+  if atlas.width != backend.fontTexWidth or atlas.height != backend.fontTexHeight:
+    return err[void, string]("FontAtlas dimensions changed; full pipeline/image recreate required")
+
+  let idleRes = backend.api.vkDeviceWaitIdle(backend.device)
+  let idleChk = backend.checkVk(idleRes, "vkDeviceWaitIdle(uploadFontAtlas)")
+  if idleChk.isErr:
+    return idleChk
+
+  let imageBytes = VkDeviceSize(atlas.width * atlas.height)
+  var stagingBuf: VkBuffer
+  var stagingMem: VkDeviceMemory
+  if not createBuffer(backend, imageBytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT or VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                      stagingBuf, stagingMem):
+    return err[void, string]("Failed to allocate staging buffer for font atlas upload")
+
+  var pData: pointer = nil
+  let mapRes = backend.checkVk(backend.api.vkMapMemory(backend.device, stagingMem, 0, imageBytes, 0, addr pData), "vkMapMemory(uploadFontAtlas)")
+  if mapRes.isErr:
+    backend.api.vkDestroyBuffer(backend.device, stagingBuf, nil)
+    backend.api.vkFreeMemory(backend.device, stagingMem, nil)
+    return mapRes
+  if not pData.isNil:
+    copyMem(pData, unsafeAddr atlas.pixels[0], int(imageBytes))
+  backend.api.vkUnmapMemory(backend.device, stagingMem)
+
+  var allocInfo = VkCommandBufferAllocateInfo(
+    sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+    commandPool: backend.commandPool,
+    level: 0,
+    commandBufferCount: 1
+  )
+  var oneShotCmd: VkCommandBuffer
+  let allocRes = backend.checkVk(backend.api.vkAllocateCommandBuffers(backend.device, addr allocInfo, addr oneShotCmd), "vkAllocateCommandBuffers(uploadFontAtlas)")
+  if allocRes.isErr:
+    backend.api.vkDestroyBuffer(backend.device, stagingBuf, nil)
+    backend.api.vkFreeMemory(backend.device, stagingMem, nil)
+    return allocRes
+
+  var beginInfo = VkCommandBufferBeginInfo(
+    sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+    flags: 0x00000001
+  )
+  let beginRes = backend.checkVk(backend.api.vkBeginCommandBuffer(oneShotCmd, addr beginInfo), "vkBeginCommandBuffer(uploadFontAtlas)")
+  if beginRes.isErr:
+    backend.api.vkFreeCommandBuffers(backend.device, backend.commandPool, 1, addr oneShotCmd)
+    backend.api.vkDestroyBuffer(backend.device, stagingBuf, nil)
+    backend.api.vkFreeMemory(backend.device, stagingMem, nil)
+    return beginRes
+
+  var barrier = VkImageMemoryBarrier(
+    sType: 45,
+    oldLayout: VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+    newLayout: VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+    srcQueueFamilyIndex: 0xFFFFFFFF'u32,
+    dstQueueFamilyIndex: 0xFFFFFFFF'u32,
+    image: backend.fontImage,
+    subresourceRange: VkImageSubresourceRange(
+      aspectMask: VK_IMAGE_ASPECT_COLOR_BIT,
+      baseMipLevel: 0,
+      levelCount: 1,
+      baseArrayLayer: 0,
+      layerCount: 1
+    ),
+    srcAccessMask: VK_ACCESS_SHADER_READ_BIT,
+    dstAccessMask: VK_ACCESS_TRANSFER_WRITE_BIT
+  )
+  backend.api.vkCmdPipelineBarrier(
+    oneShotCmd,
+    VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+    VK_PIPELINE_STAGE_TRANSFER_BIT,
+    0, 0, nil, 0, nil, 1, addr barrier
+  )
+
+  var copyRegion = VkBufferImageCopy(
+    bufferOffset: 0,
+    bufferRowLength: 0,
+    bufferImageHeight: 0,
+    imageSubresource: VkImageSubresourceLayers(
+      aspectMask: VK_IMAGE_ASPECT_COLOR_BIT,
+      mipLevel: 0,
+      baseArrayLayer: 0,
+      layerCount: 1
+    ),
+    imageOffset: VkOffset3D(x: 0, y: 0, z: 0),
+    imageExtent: VkExtent3D(width: uint32(atlas.width), height: uint32(atlas.height), depth: 1)
+  )
+  backend.api.vkCmdCopyBufferToImage(
+    oneShotCmd, stagingBuf, backend.fontImage,
+    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, addr copyRegion
+  )
+
+  barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
+  barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+  barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT
+  barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT
+  backend.api.vkCmdPipelineBarrier(
+    oneShotCmd,
+    VK_PIPELINE_STAGE_TRANSFER_BIT,
+    VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+    0, 0, nil, 0, nil, 1, addr barrier
+  )
+
+  let endRes = backend.checkVk(backend.api.vkEndCommandBuffer(oneShotCmd), "vkEndCommandBuffer(uploadFontAtlas)")
+  if endRes.isErr:
+    backend.api.vkFreeCommandBuffers(backend.device, backend.commandPool, 1, addr oneShotCmd)
+    backend.api.vkDestroyBuffer(backend.device, stagingBuf, nil)
+    backend.api.vkFreeMemory(backend.device, stagingMem, nil)
+    return endRes
+
+  var submitInfo = VkSubmitInfo(
+    sType: VK_STRUCTURE_TYPE_SUBMIT_INFO,
+    commandBufferCount: 1,
+    pCommandBuffers: addr oneShotCmd
+  )
+  let subRes = backend.checkVk(backend.api.vkQueueSubmit(backend.graphicsQueue, 1, addr submitInfo, 0), "vkQueueSubmit(uploadFontAtlas)")
+  let waitRes = backend.checkVk(backend.api.vkQueueWaitIdle(backend.graphicsQueue), "vkQueueWaitIdle(uploadFontAtlas)")
+  backend.api.vkFreeCommandBuffers(backend.device, backend.commandPool, 1, addr oneShotCmd)
+  backend.api.vkDestroyBuffer(backend.device, stagingBuf, nil)
+  backend.api.vkFreeMemory(backend.device, stagingMem, nil)
+  if subRes.isErr: return subRes
+  waitRes
+
+proc recoverFromDeviceLost*(
+  backend: var VulkanBackend,
+  hwnd: pointer,
+  width, height: uint32,
+  fontAtlas: FontAtlas
+): Result[void, string] {.raises: [].} =
+  ## Tears down a lost Vulkan device cleanly and attempts full backend re-initialization.
+  let useVal = backend.validationEnabled
+  let dpi = backend.dpiScale
+  backend.destroy()
+  let reinit = initVulkanBackend(hwnd, max(1'u32, width), max(1'u32, height), fontAtlas, useVal, dpi)
+  if reinit.isErr:
+    return err[void, string](reinit.error)
+  backend = reinit.val
+  ok[void, string]()
+
 proc beginFrame*(backend: var VulkanBackend, width, height: uint32): Result[uint32, string] {.raises: [].} =
   if not backend.isInitialized:
     return err[uint32, string]("Backend not initialized")
+  if backend.deviceLost:
+    return err[uint32, string]("VK_ERROR_DEVICE_LOST: Vulkan device is lost")
+  if width == 0 or height == 0:
+    backend.isMinimized = true
+    return err[uint32, string]("Window minimized (0x0 extent); skipping frame")
+  backend.isMinimized = false
 
   let fence = backend.inFlightFences[backend.currentFrame]
-  discard backend.api.vkWaitForFences(backend.device, 1, unsafeAddr fence, 1, 1_000_000_000'u64) # 1 sec timeout
+  let waitRes = backend.api.vkWaitForFences(backend.device, 1, unsafeAddr fence, 1, 1_000_000_000'u64) # 1 sec timeout
+  if waitRes != VK_SUCCESS:
+    let chk = backend.checkVk(waitRes, "vkWaitForFences")
+    return err[uint32, string](chk.error)
 
   var imageIndex: uint32 = 0
   let acqRes = backend.api.vkAcquireNextImageKHR(
@@ -1056,26 +1350,48 @@ proc beginFrame*(backend: var VulkanBackend, width, height: uint32): Result[uint
     addr imageIndex
   )
 
+  if acqRes == VK_ERROR_DEVICE_LOST:
+    backend.recordVkError(acqRes, "vkAcquireNextImageKHR")
+    return err[uint32, string]("VK_ERROR_DEVICE_LOST during vkAcquireNextImageKHR")
+
+  if acqRes == VK_ERROR_SURFACE_LOST_KHR:
+    backend.recordVkError(acqRes, "vkAcquireNextImageKHR")
+    return err[uint32, string]("VK_ERROR_SURFACE_LOST_KHR during vkAcquireNextImageKHR")
+
   if acqRes == VK_ERROR_OUT_OF_DATE_KHR or acqRes == VK_SUBOPTIMAL_KHR or backend.needsResize:
     if not recreateSwapchain(backend, width, height):
+      if backend.deviceLost:
+        return err[uint32, string]("VK_ERROR_DEVICE_LOST during swapchain recreation")
+      if backend.isMinimized:
+        return err[uint32, string]("Window minimized (0x0 swapchain extent); skipping frame")
       return err[uint32, string]("Swapchain recreation failed on acquire")
     return err[uint32, string]("Swapchain out of date, recreated")
 
   if acqRes != VK_SUCCESS:
+    backend.recordVkError(acqRes, "vkAcquireNextImageKHR")
     return err[uint32, string]("vkAcquireNextImageKHR failed with code: " & $acqRes)
 
-  discard backend.api.vkResetFences(backend.device, 1, unsafeAddr fence)
+  let resetRes = backend.api.vkResetFences(backend.device, 1, unsafeAddr fence)
+  if resetRes != VK_SUCCESS:
+    let chk = backend.checkVk(resetRes, "vkResetFences")
+    return err[uint32, string](chk.error)
   ok[uint32, string](imageIndex)
 
-proc renderInstances*(
+proc renderInstancesResult*(
   backend: var VulkanBackend,
   imageIndex: uint32,
   instances: ptr UiDrawInstance,
   count: int,
   clearColor: uint32 = 0x121214FF
-) {.raises: [].} =
+): Result[void, string] {.raises: [].} =
+  if not backend.isInitialized:
+    return err[void, string]("Backend not initialized")
+  if backend.deviceLost:
+    return err[void, string]("VK_ERROR_DEVICE_LOST: Vulkan device is lost")
+  if backend.isMinimized or backend.swapchainExtent.width == 0 or backend.swapchainExtent.height == 0:
+    return ok[void, string]()
   if count <= 0 or instances.isNil:
-    return
+    return ok[void, string]()
 
   let frameIdx = backend.currentFrame
   let drawCount = min(count, MaxInstancesPerFrame)
@@ -1084,13 +1400,17 @@ proc renderInstances*(
   copyMem(backend.mappedInstances[frameIdx], instances, drawCount * sizeof(UiDrawInstance))
 
   let cmdBuf = backend.commandBuffers[frameIdx]
-  discard backend.api.vkResetCommandBuffer(cmdBuf, 0)
+  let rstCmdRes = backend.checkVk(backend.api.vkResetCommandBuffer(cmdBuf, 0), "vkResetCommandBuffer")
+  if rstCmdRes.isErr:
+    return rstCmdRes
 
   var beginInfo = VkCommandBufferBeginInfo(
     sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
     flags: 0x00000001 # ONE_TIME_SUBMIT
   )
-  discard backend.api.vkBeginCommandBuffer(cmdBuf, addr beginInfo)
+  let begCmdRes = backend.checkVk(backend.api.vkBeginCommandBuffer(cmdBuf, addr beginInfo), "vkBeginCommandBuffer")
+  if begCmdRes.isErr:
+    return begCmdRes
 
   # Unpack clear color (0xRRGGBBAA)
   let cr = float32((clearColor shr 24) and 0xFF'u32) / 255.0f
@@ -1163,7 +1483,9 @@ proc renderInstances*(
   )
 
   backend.api.vkCmdEndRenderPass(cmdBuf)
-  discard backend.api.vkEndCommandBuffer(cmdBuf)
+  let endCmdRes = backend.checkVk(backend.api.vkEndCommandBuffer(cmdBuf), "vkEndCommandBuffer")
+  if endCmdRes.isErr:
+    return endCmdRes
 
   # Submit Command Buffer
   var waitStages: array[1, VkFlags] = [VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT]
@@ -1178,7 +1500,12 @@ proc renderInstances*(
     pSignalSemaphores: addr backend.renderFinishedSemaphores[frameIdx]
   )
 
-  discard backend.api.vkQueueSubmit(backend.graphicsQueue, 1, addr submitInfo, backend.inFlightFences[frameIdx])
+  let subRes = backend.checkVk(
+    backend.api.vkQueueSubmit(backend.graphicsQueue, 1, addr submitInfo, backend.inFlightFences[frameIdx]),
+    "vkQueueSubmit"
+  )
+  if subRes.isErr:
+    return subRes
 
   # Present Swapchain Image
   var swapchains = [backend.swapchain]
@@ -1195,29 +1522,51 @@ proc renderInstances*(
   let presRes = backend.api.vkQueuePresentKHR(backend.presentQueue, addr presentInfo)
   if presRes == VK_ERROR_OUT_OF_DATE_KHR or presRes == VK_SUBOPTIMAL_KHR:
     backend.needsResize = true
+  elif presRes == VK_ERROR_DEVICE_LOST:
+    return backend.checkVk(presRes, "vkQueuePresentKHR")
+  elif presRes != VK_SUCCESS:
+    return backend.checkVk(presRes, "vkQueuePresentKHR")
 
   backend.currentFrame = (backend.currentFrame + 1) mod MaxFramesInFlight
+  ok[void, string]()
+
+proc renderInstances*(
+  backend: var VulkanBackend,
+  imageIndex: uint32,
+  instances: ptr UiDrawInstance,
+  count: int,
+  clearColor: uint32 = 0x121214FF
+) {.raises: [].} =
+  let res = backend.renderInstancesResult(imageIndex, instances, count, clearColor)
+  if res.isErr:
+    backend.lastError = res.error
 
 # =============================================================================
 # Clean Shutdown & Resource Deallocation
 # =============================================================================
 
 proc destroy*(backend: var VulkanBackend) {.raises: [].} =
-  if not backend.isInitialized:
+  if not backend.isInitialized and backend.device.isNil and backend.instance.isNil and backend.api.lib.isNil:
     return
   backend.isInitialized = false
 
   if not backend.device.isNil:
-    discard backend.api.vkDeviceWaitIdle(backend.device)
+    if not backend.deviceLost:
+      let idleRes = backend.api.vkDeviceWaitIdle(backend.device)
+      if idleRes == VK_ERROR_DEVICE_LOST:
+        backend.deviceLost = true
 
     # 1. Sync primitives
     for i in 0 ..< MaxFramesInFlight:
       if backend.inFlightFences[i] != 0:
         backend.api.vkDestroyFence(backend.device, backend.inFlightFences[i], nil)
+        backend.inFlightFences[i] = 0
       if backend.imageAvailableSemaphores[i] != 0:
         backend.api.vkDestroySemaphore(backend.device, backend.imageAvailableSemaphores[i], nil)
+        backend.imageAvailableSemaphores[i] = 0
       if backend.renderFinishedSemaphores[i] != 0:
         backend.api.vkDestroySemaphore(backend.device, backend.renderFinishedSemaphores[i], nil)
+        backend.renderFinishedSemaphores[i] = 0
 
     # 2. Command pool & buffers
     if backend.commandPool != 0:
