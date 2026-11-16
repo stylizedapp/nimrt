@@ -3,7 +3,7 @@
 Самодостаточная системная, алгоритмическая и графическая UI-экосистема на **Nim 2.x** (**Windows-first**, без Chromium/WebView2), включающая практическое подмножество HTML5/CSS3 поверх **Vulkan 1.1+ SDF**, опциональный sandboxed движок **QuickJS** и экспериментальный memory-safe компилятор **`nim_safe`**.
 
 Проект сочетает три инженерных принципа:
-- **Безопасный высокоуровневый API поверх явного низкоуровневого ядра:** строгие типы ошибок `Result[T, E]` / `Option[T]`, контракт `{.raises: [].}`, детерминированная память `--mm:orc --threads:on --panics:on` поверх явного низкоуровневого ядра (`cast`/`ptr`/`importc`, `{.push checks: off.}` в release-сборках `algx`), экспериментально проверяемого с помощью `nim_safe` (`--mem-safe` / `--safe-mode` / `--check-safe-atf`). Аудит утечек в `corex`-аллокаторах выполняется через `TrackingAllocator` (`0 bytes leaked`), а управляемая куча ORC (`seq`/`string`/`ref`) проверяется через `GC_fullCollect()` + `getOccupiedMem()`.
+- **Безопасный высокоуровневый API поверх явного низкоуровневого ядра:** строгие типы ошибок `Result[T, E]` / `Option[T]`, контракт `{.raises: [].}` для пользовательских ошибок (фатальные инварианты и `--panics:on` используют `Defect`), детерминированная память `--mm:orc --threads:on --panics:on` поверх явного низкоуровневого ядра (`cast`/`ptr`/`importc`, `{.push checks: off.}` только в release/danger-сборках `algx` и отключается флагом `-d:algxChecked`), экспериментально проверяемого с помощью `nim_safe` (`--mem-safe` / `--safe-mode` / `--check-safe-atf`). Аудит утечек в `corex`-аллокаторах выполняется через `TrackingAllocator` (`0 bytes leaked`), а управляемая куча ORC (`seq`/`string`/`ref`) проверяется через `GC_fullCollect()` + `getOccupiedMem()` — проверяется тестами [`tests/test_leak_check.nim`](tests/test_leak_check.nim), [`tests/test_ecosystem.nim`](tests/test_ecosystem.nim), [`tests/test_nimui_layout.nim`](tests/test_nimui_layout.nim) и [`tests/test_nimui_quickjs.nim`](tests/test_nimui_quickjs.nim).
 - **Явность (в духе Zig):** явная передача аллокаторов (`Allocator`, `Arena`, `Slab[T]`), явная изоляция платформенных слоёв, явный реестр привязок `HtmlBindingRegistry` и явные разрешения возможностей `<script data-caps="...">` без скрытого `eval`.
 - **Лаконичность (в духе Python):** декларативный UI DSL на Nim, практическое подмножество HTML5/CSS3 поверх **Vulkan 1.1+ Instanced SDF** (Zero-JS по умолчанию при `allowJs = false`), а также опциональный гибридный слой **QuickJS** (`ui.*`, `Nim.*`).
 
@@ -43,7 +43,7 @@ nim/
 - `result.nim`, `adt.nim`, `traits.nim` — `Result[T, E]`, `Option[T]`, алгебраические типы и явная обработка ошибок без исключений (`{.raises: [].}`).
 - `signals.nim` — реактивный DAG-движок (`ReactiveRuntime`, `Signal[T]`, `Computed[T]`, `effect`) без утечек и лишних пересчётов.
 - `unicode.nim` — декодирование UTF-8, графемные/руновые утилиты и безопасный рендер Кириллицы и ASCII без `std/unicode`.
-- `concurrency.nim` (фасад над `src/corex/concurrency/{primitives,pool,parallel}.nim`), `async.nim`, `workstealing.nim`, `mft.nim`, `fs.nim`, `platform/windows/` — IOCP-реактор, work-stealing пул потоков (`setDefaultPool`/`hasDefaultPool`/`trySpawn`/`tryParallelFor`), прямой парсер NTFS MFT.
+- `concurrency.nim` (фасад над `src/corex/concurrency/{primitives,pool,parallel}.nim`), `async.nim`, `workstealing.nim`, `mft.nim`, `fs.nim`, `platform/windows/` — IOCP-реактор, work-stealing пул потоков (`setDefaultPool`/`hasDefaultPool`/`trySpawn`/`tryParallelFor`), прямой парсер NTFS MFT. Глобальное состояние ограничено явными атомарными синглтонами ленивой инициализации (`gDefaultPool` в `pool.nim`, `gDefaultReactor` в `async.nim` на `Atomic[pointer]`).
 
 ### 2. `src/algx/` — Высокопроизводительные алгоритмы
 *(В debug/тестовых сборках работают полные runtime-проверки границ; `{.push checks: off.}` включается только при `-d:release` или `-d:danger`.)*
@@ -54,9 +54,9 @@ nim/
 
 ### 3. `src/nimui/` — Графический UI-движок, HTML5/CSS3 и QuickJS Hybrid
 - `layout.nim` — быстрый O(N) Flexbox-движок (`LayoutPool`, `UiTree`, `UiNode`) с кэшем измерения текста и поддержкой прокрутки (`clipChildren`).
-- `controls.nim` (фасад над `controls/{common,checkbox,radio,slider,dropdown,tooltip}.nim`), `dsl.nim`, `multiline.nim`, `clipboard.nim` (контекст `ClipboardContext` в `threadvar`) — декларативный DSL (`Box`, `VStack`, `HStack`, `Text`, `Button`, `TextInput`, `VirtualList` на 1 000 000+ строк) и нативные виджеты: `Checkbox`, `RadioGroup`, `Slider`, `Dropdown`, `Tooltip`, многострочный `TextArea`.
+- `controls.nim` (фасад над `controls/{common,checkbox,radio,slider,dropdown,tooltip}.nim`), `dsl.nim`, `multiline.nim`, `clipboard.nim` (потоково-локальный контекст `gThreadClipboard` / `ClipboardContext` в `{.threadvar.}`) — декларативный DSL (`Box`, `VStack`, `HStack`, `Text`, `Button`, `TextInput`, `VirtualList` на 1 000 000+ строк) и нативные виджеты: `Checkbox`, `RadioGroup`, `Slider`, `Dropdown`, `Tooltip`, многострочный `TextArea`.
 - `html_css.nim` (фасад над `src/nimui/html/{types,parser,cascade,compiler}.nim`) — встроенный парсер практического подмножества HTML5 и каскада CSS3, Zero-JS санитайзер (`allowJs = false` по умолчанию) и компилятор HTML-документов прямо в `UiTree` с реактивной привязкой к Nim через `HtmlBindingRegistry`.
-- `js/js_validator.nim`, `js/js_engine.nim`, `js/html_js_bridge.nim`, `js/qjs_bridge.c` — опциональный встроенный движок **QuickJS** (активируется при `allowJs = true`), маршрутизирующий всю память через `corex/allocators.Allocator` (`TrackingAllocator`: `0 bytes leaked`), со статическими/рантайм-проверками (запрет `var`, `==`/`!=`, `eval`/`Function`/`with`/`__proto__`, лимиты памяти/стека/шагов; явные `data-caps="dom,timers,nim,console"`; `ui.*` и `Nim.*` API).
+- `js/js_validator.nim`, `js/js_engine.nim`, `js/html_js_bridge.nim`, `js/qjs_bridge.c` — опциональный встроенный движок **QuickJS** (активируется при `allowJs = true`), маршрутизирующий всю память через `corex/allocators.Allocator` (`TrackingAllocator`: `0 bytes leaked`, проверяется в [`tests/test_nimui_quickjs.nim`](tests/test_nimui_quickjs.nim)), со статическими/рантайм-проверками (запрет `var`, `==`/`!=`, `eval`/`Function`/`with`/`__proto__`, лимиты памяти/стека/шагов; явные `data-caps="dom,timers,nim,console"`; `ui.*` и `Nim.*` API).
 - `gpu/vulkan_backend.nim`, `gpu/font_atlas.nim`, `gpu/shaders.nim`, `rasterizer.nim`, `window.nim` — аппаратный бэкенд **Vulkan 1.1+ (Instanced SDF для боксов/рамок)** за один `vkCmdDrawIndexed`, атлас глифов (Win32 GDI `GetGlyphOutlineW`, 65-уровневые coverage-битмапы — текст не SDF; LRU-вытеснение, tofu-глиф `U+FFFD`, масштабирование по DPI) и детерминированный **CPU Software Rasterizer** для headless-тестов и экспорта PNG.
 
 ### 4. `compiler/` — Экспериментальный гибридный Memory-Safe компилятор (`bin/nim_safe.exe`)
@@ -161,16 +161,19 @@ nimble test_showcase
 nim c -r tests/test_fuzz_mft.nim
 nim c -r tests/test_fuzz_html_css.nim
 
-# Бенчмарки против Rust (генерирует benchmarks/showcase.html)
+# Негативная и позитивная проверка детекторов утечек (TrackingAllocator + ORC)
+nim c -r tests/test_leak_check.nim
+
+# Бенчмарки против Rust (генерирует benchmarks/showcase.html; машина-специфично, не в CI)
 nimble bench
 nimble showcase_html
 ```
 
 ---
 
-## Бенчмарки CoreX + AlgX против Rust (`--mm:orc`)
+## Бенчмарки CoreX + AlgX против Rust (`--mm:orc`, машина-специфично, не в CI)
 
-Симметричное сравнение (`Warmup = 2`, `Runs = 11`, простаивающая машина AMD Ryzen 3 3200U 2C/4T, Windows x64): **Nim 2.2.12** (`-d:danger --mm:orc -march=native -O3 -flto`, MinGW GCC `11.1.0`) против **Rust 1.96.0** (`lto=fat`, `target-cpu=native`, MSVC / LLVM `22.1.2`).
+Симметричное сравнение (`Warmup = 2`, `Runs = 11`, простаивающая машина AMD Ryzen 3 3200U 2C/4T, Windows x64; результаты привязаны к конкретному железу и не запускаются как CI-гейт): **Nim 2.2.12** (`-d:danger --mm:orc -march=native -O3 -flto`, MinGW GCC `11.1.0`) против **Rust 1.96.0** (`lto=fat`, `target-cpu=native`, MSVC / LLVM `22.1.2`).
 
 | Дисциплина | Реализация | Min (мс) | Median (мс) | Mean (мс) | Max (мс) |
 | :--- | :--- | :---: | :---: | :---: | :---: |
@@ -219,6 +222,17 @@ nimble showcase_html
 
 ---
 
+## Поддерживается / Не поддерживается (сводная матрица v0.1.0)
+
+| Область | Поддерживается | Не поддерживается / Ограничения |
+| :--- | :--- | :--- |
+| **CSS / HTML5** | Flexbox (`flex`, `flex-direction`, `flex-wrap`, `justify-content`, `align-items`, `gap`, `margin`, `padding`), селекторы (`*`, tag, `#id`, `.class`, потомки `>`/` `, `:root`, `:hover`, `:active`, `:focus`, `:disabled`), `@media`, `var(--x)` с fallback, `linear-gradient`, `box-shadow`, `border-radius`, `transition`, стандартные именованные CSS-цвета, hex/`rgb`/`hsl`. | CSS Grid, `float`, браузерный табличный layout, `@keyframes`, `calc()`, `fetch`, `<script src="...">`. Нестандартные цвета темы (`slate`, `indigo`, `emerald`, `rose`, `amber`, `obsidian`, `midnight`) отключены в обычном CSS и доступны только как **opt-in** через `parseThemeColor` (`src/nimui/html/cascade.nim`). |
+| **Платформы** | **Windows 10/11 (x64)**: полный цикл (Vulkan 1.1+, IOCP, MFT, `nim_safe`, все тесты и CI).<br>**Ubuntu Linux (CI)**: компиляционная проверка `nim check` для `src/corex.nim` и `src/algx.nim`. | Полноценный runtime/CI для `nimui` (windowing/Vulkan/GDI), `corex/async.nim` (IOCP) и `corex/mft.nim` на Linux/macOS; `src/corex/platform/posix/posix_fs.nim` не верифицирован в runtime CI. |
+| **Шрифты и рендеринг текста** | На Windows: **GDI `GetGlyphOutlineW`** (`GGO_GRAY8_BITMAP`, 65-уровневые coverage-битмапы в `1024×1024 R8_UNORM` атласе) для ASCII, Latin-1/Extended-A/B (`U+00A0..U+024F`), кириллицы (`U+0400..U+04FF`), fallback-шрифты, tofu `U+FFFD`, LRU-вытеснение, Per-Monitor v2 DPI (`WM_DPICHANGED` → `rebuildForDpi`). | **Текст не использует SDF** (аналитический SDF в `ui.frag` применяется только к боксам/рамкам). Крупные числа **64+pt** выглядят мягче, так как атлас растеризуется на `baseSize` (по умолчанию `32px * dpiScale`) и билинейно масштабируется (`fontSize / baseSize`). Нет HarfBuzz/BiDi/Arabic/Indic shaping и цветных emoji (`COLR`/`sbix`). |
+| **IME и доступность** | Базовая обработка `WM_IME_COMPOSITION` (UTF-16 → UTF-8 вставка скомпонованного текста в `TextInput` / `TextArea`). | Inline-окно кандидатов IME (позиционирование/предпросмотр композиции), системное дерево доступности (Windows UI Automation / screen readers). |
+
+---
+
 ## Ограничения (Limitations)
 
 1. **Windows-first в v0.1.0:**
@@ -257,7 +271,7 @@ nim doc --project --index:on --outdir:htmldocs src/algx.nim
 nim doc --project --index:on --outdir:htmldocs src/nimui.nim
 ```
 
-> **Языковая заметка по документации:** `README.md`, [`docs/STATE.md`](docs/STATE.md), [`docs/BENCHMARK_SHOWCASE.md`](docs/BENCHMARK_SHOWCASE.md) и [`docs/NIM_ROADMAP_FEATURES.md`](docs/NIM_ROADMAP_FEATURES.md) ведутся на русском языке; архитектурные спецификации [`docs/MANIFEST.md`](docs/MANIFEST.md), [`docs/PROJECT.md`](docs/PROJECT.md) и [`docs/DECISIONS.md`](docs/DECISIONS.md) ведутся на английском языке.
+> **Языковая заметка по документации:** `README.md`, [`docs/STATE.md`](docs/STATE.md), [`docs/BENCHMARK_SHOWCASE.md`](docs/BENCHMARK_SHOWCASE.md), [`docs/NIM_ROADMAP_FEATURES.md`](docs/NIM_ROADMAP_FEATURES.md) и [`docs/MANUAL_CHECKLIST.md`](docs/MANUAL_CHECKLIST.md) ведутся на русском языке; архитектурные спецификации [`docs/MANIFEST.md`](docs/MANIFEST.md), [`docs/PROJECT.md`](docs/PROJECT.md) и [`docs/DECISIONS.md`](docs/DECISIONS.md) ведутся на английском языке.
 
 ---
 
@@ -268,6 +282,7 @@ nim doc --project --index:on --outdir:htmldocs src/nimui.nim
 - [`docs/MANIFEST.md`](docs/MANIFEST.md) — философский и технический манифест экосистемы.
 - [`docs/DECISIONS.md`](docs/DECISIONS.md) — журнал архитектурных решений.
 - [`docs/STATE.md`](docs/STATE.md) — состояние модулей и спринтов.
+- [`docs/MANUAL_CHECKLIST.md`](docs/MANUAL_CHECKLIST.md) — ручной чек-лист аппаратных и интерактивных проверок (Vulkan device lost, minimize `0×0`, DPI, IME, права администратора `$MFT`).
 - [`docs/BENCHMARK_SHOWCASE.md`](docs/BENCHMARK_SHOWCASE.md) — методика и результаты сравнения `CoreX`/`AlgX` с Rust.
 - [`docs/NIM_ROADMAP_FEATURES.md`](docs/NIM_ROADMAP_FEATURES.md) — дорожная карта развития.
 

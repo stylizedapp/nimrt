@@ -51,12 +51,14 @@
 | `tests/test_fuzz_html_css.nim` | ✅ 100,000 входов | Детерминированный фаззинг HTML/CSS парсера, `var()` циклов и JS-валидатора |
 | `tests/test_nimui_quickjs.nim` | ✅ 4/4 сьюта QuickJS | Валидатор философии, `Allocator` bridge (`TrackingAllocator`), 30-cycle стресс, Pomodoro |
 | `tests/test_safe_compiler.nim` | ✅ 5/5 сьютов `nim_safe` | `--mem-safe`, `--safe-mode`, `--check-safe-atf` + ATF проверка C-кода (требует `nimble build_compiler`) |
+| `tests/test_leak_check.nim` | ✅ Негативный + позитивный | Самопроверка `--trigger-alloc-leak` (`[LEAK DETECTED]`) и `--trigger-orc-leak` (`[ORC LEAK DETECTED]`), ненулевой exit code |
+| `tests/test_algx_checked.nim` (`-d:algxChecked`) | ✅ Runtime-проверки `algx` | При `-d:algxChecked` отключает `{.push checks: off.}` и ловит выход за границы в `algx` |
 | `tests/test_showcase_apps.nim` | ✅ Headless Showcase (4/4) | Headless-сборка (изолированный `--nimcache`) и экспорт 9 PNG всех 4 витринных приложений |
 | `apps/nimui_demo/src/main.nim` (`--screenshot`) | ✅ Singularity Lab | Текущее демо на Vulkan 1.1+ (`~5 MB` trimmed WS после `EmptyWorkingSet()`); заменило M14 Raycast `--bench` |
 
 ---
 
-## Актуальные результаты бенчмарков WizTree Engine (1,000,000 Nodes)
+## Актуальные результаты бенчмарков WizTree Engine (1,000,000 Nodes, машина-специфично, не в CI)
 
 Запуск: `nim c -d:danger --opt:speed --mm:orc --threads:on -r benchmarks/bench_wiztree.nim`.
 
@@ -74,9 +76,9 @@
 
 ---
 
-## Актуальные результаты бенчмарков CoreX / AlgX vs Rust (`--mm:orc`, idle machine)
+## Актуальные результаты бенчмарков CoreX / AlgX vs Rust (`--mm:orc`, машина-специфично, не в CI)
 
-Запуск: `nimble bench` (`benchmarks/run_benchmarks.ps1`: 2 прогрева + 11 замеров на простаивающем AMD Ryzen 3 3200U 2C/4T; Nim 2.2.12 `-d:danger --mm:orc -march=native -O3 -flto` MinGW GCC vs Rust 1.96.0 `lto=fat`, `target-cpu=native` MSVC). Подробнее: [`docs/BENCHMARK_SHOWCASE.md`](BENCHMARK_SHOWCASE.md) и [`benchmarks/showcase.html`](../benchmarks/showcase.html).
+Запуск: `nimble bench` (`benchmarks/run_benchmarks.ps1`: 2 прогрева + 11 замеров на простаивающем AMD Ryzen 3 3200U 2C/4T; Nim 2.2.12 `-d:danger --mm:orc -march=native -O3 -flto` MinGW GCC vs Rust 1.96.0 `lto=fat`, `target-cpu=native` MSVC; показатели привязаны к конкретной машине и не проверяются в CI). Подробнее: [`docs/BENCHMARK_SHOWCASE.md`](BENCHMARK_SHOWCASE.md) и [`benchmarks/showcase.html`](../benchmarks/showcase.html).
 
 | Бенчмарк | Реализация | Min (ms) | Med (ms) | Mean (ms) | Max (ms) | Примечание |
 |---|---|---|---|---|---|---|
@@ -89,9 +91,9 @@
 
 ---
 
-## Актуальные результаты бенчмарков NimUI Framework & M14 Microbenchmark
+## Актуальные результаты бенчмарков NimUI Framework & M14 Microbenchmark (машина-специфично, не в CI)
 
-Запуск: `tests/test_nimui_layout.nim` и `apps/nimui_demo/src/main.nim --screenshot ...` (в раннем M14 также использовался `runHeadlessBenchmark` из Raycast Spotlight до замены на Singularity Lab).
+Запуск: `tests/test_nimui_layout.nim` и `apps/nimui_demo/src/main.nim --screenshot ...` (в раннем M14 также использовался `runHeadlessBenchmark` из Raycast Spotlight до замены на Singularity Lab; числовые тайминги/память зависят от железа и не являются CI-гейтом).
 
 | Бенчмарк / Сценарий | Объем / Параметры | Измеренная метрика | Пояснение / Охват | Статус |
 |---|---|---|---|---|
@@ -132,7 +134,8 @@
 
 ## Принятые решения и архитектурные контракты
 
-- **Ошибки через `Result`/`?`/`errdefer`, а не исключения.** Ошибка видна в сигнатуре, нет скрытого раскрутчика стека, перенос идиом из Rust и Zig.
+- **Ошибки через `Result`/`?`/`errdefer`, а не исключения.** Ошибка видна в сигнатуре (`{.raises: [].}`), нет скрытого раскрутчика стека, перенос идиом из Rust и Zig. Фатальные нарушения инвариантов и детекторы утечек (`doAssert`, `testWithLeakCheck`) используют `Defect` и завершаются паникой (`--panics:on`).
+- **Явное управление глобальным и потоковым состоянием.** По умолчанию контейнеры и аллокаторы не используют скрытый глобал; исключения явно документированы: `gDefaultPool` (`src/corex/concurrency/pool.nim`) и `gDefaultReactor` (`src/corex/async.nim`) реализованы как `Atomic[pointer]`-синглтоны с ленивой инициализацией, а `gThreadClipboard` / `ClipboardContext` (`src/nimui/clipboard.nim`) — как `{.threadvar.}`.
 - **Явный `Allocator` (vtable из 3 указателей) у контейнеров.** Позволяет использовать арены для миллионов узлов без фрагментации: освобождение всего пула за один системный вызов.
 - **`--mm:orc` + `--threads:on` по умолчанию на весь проект.** Детерминированные деструкторы, потокобезопасность без отдельной сборки.
 - **Платформенный код только в `src/corex/platform/{windows,posix}`.** Наружу смотрит единый фасад `fs.nim`, а Win32-ускорения (`FindFirstFileExW` + `FindExInfoBasic` + `FIND_FIRST_EX_LARGE_FETCH`) не протекают в публичный API.
@@ -156,4 +159,8 @@
    - Портирование `corex/async.nim` (`epoll` / `io_uring` / `kqueue`) и `nimui` windowing/GPU бэкендов (X11/Wayland/Metal/Vulkan) за рамки Windows-first релиза v0.1.0.
 3. **Доступность (Accessibility), IME и типографика:**
    - Интеграция с Windows UI Automation (screen readers), расширенная поддержка IME и сложных скриптов (shaping/BiDi/emoji).
+
+---
+
+> **Языковая заметка:** `docs/STATE.md`, `docs/BENCHMARK_SHOWCASE.md`, `docs/NIM_ROADMAP_FEATURES.md`, `docs/MANUAL_CHECKLIST.md` и `README.md` ведутся на русском языке; `docs/MANIFEST.md`, `docs/PROJECT.md` и `docs/DECISIONS.md` — на английском. Ручные аппаратные/интерактивные проверки вынесены в [`docs/MANUAL_CHECKLIST.md`](MANUAL_CHECKLIST.md).
 
