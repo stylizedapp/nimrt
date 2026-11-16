@@ -6,7 +6,7 @@
 ##    из плоских примитивов (POD), и копирует целые массивы структур за ОДНУ инструкцию `copyMem`!
 ## 3. Генерирует JSON напрямую в преаллоцированный буфер без создания `JsonNode` дерева в куче.
 
-import std/[typetraits, strutils]
+import std/typetraits
 
 when defined(release) or defined(danger):
   {.push checks: off, optimization: speed.}

@@ -289,10 +289,11 @@ type
     stats*: ScanStats               ## Execution metrics and scan throughput
 
 proc `=destroy`*(tree: var Tree) {.raises: [].} =
-  ## Deterministic RAII destruction for Tree: frees string arena and node buffer.
+  ## Deterministic RAII destruction for Tree: frees string arena, node buffer, map, and parent FRNs.
   tree.stringArena.deinit()
   `=destroy`(tree.nodes)
-  # tree.frnMap and parentFrns are managed automatically by ARC/ORC
+  `=destroy`(tree.frnMap)
+  `=destroy`(tree.parentFrns)
 
 proc `=wasMoved`*(tree: var Tree) {.inline, raises: [].} =
   ## ARC/ORC move hook resets all internal handles to moved state.

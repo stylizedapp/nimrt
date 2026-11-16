@@ -24,7 +24,6 @@
 import std/widestrs
 import ../../result
 import ../../memory
-import ./win32_fs
 
 const
   MFT_RECORD_SIZE* = 1024

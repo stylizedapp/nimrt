@@ -3,7 +3,6 @@
 ## Partitions `[start, end)` across `ThreadPool` workers with cooperative caller execution
 ## and `Result`-based error handling (`tryParallelFor`) without catching `Defect`.
 
-import std/atomics
 import ./primitives
 import ./pool
 import ../workstealing
