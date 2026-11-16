@@ -13,7 +13,7 @@
 import std/[os, times, strutils]
 import corex
 import corex/[allocators, result, testing]
-import corex/platform/windows/win32_fs
+import corex/platform/windows/[win32_fs, win32_volume]
 import ../apps/everything/src/[indexer, search, cli]
 
 proc makeMockUsnRecord(name: string, parentFrn: uint64, frn: uint64, isDir: bool): seq[byte] =
@@ -93,15 +93,29 @@ proc runCliTests() =
     doAssert runCli(@["invalid_command_xyz"]) == 1
     echo "[OK] 03: Missing arguments and invalid commands return code 1"
 
-  # Test 4: Non-admin error handling (exit code 1)
+  # Test 4: Volume access error handling & Admin/Non-admin indexing
   block:
-    # On Windows without elevated privileges, opening volume C: fails with error 5.
-    # The CLI must catch this, print the required guidance, and return code 1.
-    let code = runIndex("C", outPath = testIdxPath, showProgress = false)
-    doAssert code == 1, "Expected runIndex to return exit code 1 in non-elevated environment"
-    let cliCode = runCli(@["index", "C", "--out=" & testIdxPath])
-    doAssert cliCode == 1, "Expected runCli index to return code 1"
-    echo "[OK] 04: Non-admin volume access caught gracefully with exit code 1"
+    # Unavailable drive must always return exit code 1
+    let badCode = runIndex("Z", outPath = testIdxPath, showProgress = false)
+    doAssert badCode == 1, "Expected runIndex('Z') to return exit code 1"
+    let badCliCode = runCli(@["index", "Z", "--out=" & testIdxPath])
+    doAssert badCliCode == 1, "Expected runCli index Z to return code 1"
+
+    let volCheck = openVolume('C')
+    if volCheck.isOk:
+      var vh = volCheck.unwrap()
+      closeVolume(vh)
+      let code = runIndex("C", outPath = testIdxPath, showProgress = false)
+      doAssert code == 0, "Expected runIndex('C') to succeed in elevated environment"
+      doAssert fileExists(testIdxPath), "Expected index file to be created"
+      removeFile(testIdxPath)
+      echo "[OK] 04: Admin volume access succeeded and unavailable volume returned exit code 1"
+    else:
+      let code = runIndex("C", outPath = testIdxPath, showProgress = false)
+      doAssert code == 1, "Expected runIndex to return exit code 1 in non-elevated environment"
+      let cliCode = runCli(@["index", "C", "--out=" & testIdxPath])
+      doAssert cliCode == 1, "Expected runCli index to return code 1"
+      echo "[OK] 04: Non-admin volume access caught gracefully with exit code 1"
 
   # Test 5: Mock volume indexing and index persistence
   block:
