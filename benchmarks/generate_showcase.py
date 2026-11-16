@@ -1,7 +1,7 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
-Генератор интерактивной темной HTML-витрины: Nim (CoreX/AlgX) vs Rust.
-Выходной файл: showcase.html (автономный, без интернета).
+Р“РµРЅРµСЂР°С‚РѕСЂ РёРЅС‚РµСЂР°РєС‚РёРІРЅРѕР№ С‚РµРјРЅРѕР№ HTML-РІРёС‚СЂРёРЅС‹: Nim (CoreX/AlgX) vs Rust.
+Р’С‹С…РѕРґРЅРѕР№ С„Р°Р№Р»: showcase.html (Р°РІС‚РѕРЅРѕРјРЅС‹Р№, Р±РµР· РёРЅС‚РµСЂРЅРµС‚Р°).
 """
 
 from pathlib import Path
@@ -155,51 +155,64 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   <div class="container">
     <header>
       <div>
-        <h1>Differential Performance & Ergonomics Suite</h1>
-        <p style="color: var(--muted); font-size: 14px; margin-top: 4px;">Сортировка 10,000,000 элементов int64 (80 MB) в оперативной памяти</p>
+        <h1>Differential Performance &amp; Ergonomics Suite</h1>
+        <p style="color: var(--muted); font-size: 14px; margin-top: 4px;">РЎРѕСЂС‚РёСЂРѕРІРєР° 10,000,000 СЌР»РµРјРµРЅС‚РѕРІ int64 (80 MB) РІ РѕРїРµСЂР°С‚РёРІРЅРѕР№ РїР°РјСЏС‚Рё вЂ” --mm:orc</p>
       </div>
-      <div class="badge">AMD Ryzen 3 3200U • LTO on</div>
+      <div class="badge">AMD Ryzen 3 3200U (2C/4T) вЂў MinGW GCC 11.1 vs Rust MSVC вЂў LTO on</div>
     </header>
 
     <div class="kpi-grid">
       <div class="kpi-card">
-        <div class="kpi-title">Peak Sort Time (Nim)</div>
-        <div class="kpi-value kpi-val-nim">59.34 ms</div>
-        <div class="kpi-diff">Быстрее Rust (61.23 ms) на ~3.1%</div>
+        <div class="kpi-title">Min Sort Time (Nim, замер --mm:arc)</div>
+        <div class="kpi-value kpi-val-nim">~77 ms</div>
+        <div class="kpi-diff">РџР°СЂРёС‚РµС‚ СЃ Rust (~78 ms) РЅР° РѕРґРЅРѕРј СЃС‚РµРЅРґРµ (Warmup=2, Runs=11)</div>
       </div>
       <div class="kpi-card">
         <div class="kpi-title">Binary Footprint</div>
         <div class="kpi-value">131 KB</div>
-        <div class="kpi-diff">На 21% компактнее Rust (166 KB)</div>
+        <div class="kpi-diff">РќР° ~21% РєРѕРјРїР°РєС‚РЅРµРµ Rust (166 KB) РїСЂРё -flto -s</div>
       </div>
       <div class="kpi-card">
         <div class="kpi-title">Algorithm LOC</div>
-        <div class="kpi-value">312 строк</div>
-        <div class="kpi-diff">На 30% меньше Rust (443 строки)</div>
+        <div class="kpi-value">307 СЃС‚СЂРѕРє</div>
+        <div class="kpi-diff">РќР° ~30% РјРµРЅСЊС€Рµ Rust (442 СЃС‚СЂРѕРєРё РІ rust_ultra_showcase.rs)</div>
       </div>
       <div class="kpi-card">
-        <div class="kpi-title">Unsafe / Pointer Casts</div>
+        <div class="kpi-title">Call-Site Unsafe</div>
         <div class="kpi-value" style="color: var(--success);">0</div>
-        <div class="kpi-diff">Rust требует 78+ вызовов unsafe/ptr</div>
+        <div class="kpi-diff">РќРёР·РєРѕСѓСЂРѕРІРЅРµРІС‹Р№ РєРѕРґ (cast/ptr/checks:off) РёР·РѕР»РёСЂРѕРІР°РЅ РІ algx</div>
       </div>
     </div>
 
     <div class="panel">
       <div class="panel-header">
-        <span>Время выполнения (меньше — лучше)</span>
-        <span style="font-size: 13px; color: var(--muted); font-family: var(--font-mono);">10M int64</span>
+        <span>РџСЂРёРјРµС‡Р°РЅРёРµ Рє РјРµС‚РѕРґРёРєРµ Р·Р°РјРµСЂРѕРІ (Single-Machine Caveat)</span>
+        <span style="font-size: 13px; color: var(--muted); font-family: var(--font-mono);">Windows 10/11 x64</span>
+      </div>
+      <p style="color: var(--muted); font-size: 13.5px; line-height: 1.6;">
+        Р’СЃРµ СЃСЂР°РІРЅРµРЅРёСЏ РІС‹РїРѕР»РЅРµРЅС‹ РЅР° РѕРґРЅРѕР№ РјР°С€РёРЅРµ (AMD Ryzen 3 3200U, 2 СЏРґСЂР° / 4 РїРѕС‚РѕРєР°, ~6 Р“Р‘ РћР—РЈ).
+        Nim РєРѕРјРїРёР»РёСЂСѓРµС‚СЃСЏ С‡РµСЂРµР· MinGW-W64 GCC 11.1.0 (<code>--mm:orc</code>), Rust вЂ” С‡РµСЂРµР· <code>x86_64-pc-windows-msvc</code> (LLVM 22.1.2).
+        РР·-Р·Р° 2 С„РёР·РёС‡РµСЃРєРёС… СЏРґРµСЂ Р°Р±СЃРѕР»СЋС‚РЅС‹Рµ РјРёР»Р»РёСЃРµРєСѓРЅРґС‹ С‡СѓРІСЃС‚РІРёС‚РµР»СЊРЅС‹ Рє С„РѕРЅРѕРІРѕР№ РЅР°РіСЂСѓР·РєРµ РћРЎ; РґРѕРІРµСЂРёС‚РµР»СЊРЅС‹Рµ РёРЅС‚РµСЂРІР°Р»С‹ РїРѕ РјРЅРѕР¶РµСЃС‚РІРµРЅРЅС‹Рј РјР°С€РёРЅР°Рј РЅРµ СЃС‚СЂРѕРёР»РёСЃСЊ.
+        РџРѕРґСЂРѕР±РЅР°СЏ С‚Р°Р±Р»РёС†Р° РїРѕ РІСЃРµРј 4 РґРёСЃС†РёРїР»РёРЅР°Рј (РІРєР»СЋС‡Р°СЏ РѕС‚СЃС‚Р°РІР°РЅРёРµ СЃРєР°Р»СЏСЂРЅРѕРіРѕ <code>FastMap</code> РѕС‚ <code>hashbrown</code> СЃ 16-Р±Р°Р№С‚РЅС‹Рј SSE2) РїСЂРёРІРµРґРµРЅР° РІ <code>docs/BENCHMARK_SHOWCASE.md</code>.
+      </p>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <span>Р’СЂРµРјСЏ РІС‹РїРѕР»РЅРµРЅРёСЏ (РјРµРЅСЊС€Рµ вЂ” Р»СѓС‡С€Рµ, symmetric suite min)</span>
+        <span style="font-size: 13px; color: var(--muted); font-family: var(--font-mono);">10M int64 (4 РїРѕС‚РѕРєР°)</span>
       </div>
       <div class="chart-container">
         <div class="chart-row">
-          <div class="chart-label"><span>Nim CoreX (Hybrid MSD Radix + L1 Insertion)</span><span>59.34 ms</span></div>
-          <div class="chart-bar-bg"><div class="chart-bar bar-nim" style="width: 12.6%;">59.34 ms</div></div>
+          <div class="chart-label"><span>Nim algx/ultrasort (Hybrid MSD Radix + L1 Insertion)</span><span>76.98 ms</span></div>
+          <div class="chart-bar-bg"><div class="chart-bar bar-nim" style="width: 16.4%;">76.98 ms</div></div>
         </div>
         <div class="chart-row">
-          <div class="chart-label"><span>Rust Ultra (Rayon + L1 MSD Radix)</span><span>61.23 ms</span></div>
-          <div class="chart-bar-bg"><div class="chart-bar bar-rust" style="width: 13.0%;">61.23 ms</div></div>
+          <div class="chart-label"><span>Rust Ultra (std::thread + Barrier + L1 MSD Radix)</span><span>78.07 ms</span></div>
+          <div class="chart-bar-bg"><div class="chart-bar bar-rust" style="width: 16.6%;">78.07 ms</div></div>
         </div>
         <div class="chart-row">
-          <div class="chart-label"><span>Rust std::slice::sort_unstable (PDQSort)</span><span>469.00 ms</span></div>
+          <div class="chart-label"><span>Rust std::slice::sort_unstable (PDQSort, 1T baseline)</span><span>469.00 ms</span></div>
           <div class="chart-bar-bg"><div class="chart-bar" style="background: #444c56; color: #fff; width: 100%;">469.00 ms</div></div>
         </div>
       </div>
@@ -207,17 +220,16 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
     <div class="panel">
       <div class="panel-header">
-        <span>Side-by-Side: Развертка суперскалярного 4-way подсчета гистограммы</span>
+        <span>Side-by-Side: Р Р°Р·РІРµСЂС‚РєР° СЃСѓРїРµСЂСЃРєР°Р»СЏСЂРЅРѕРіРѕ 4-way РїРѕРґСЃС‡РµС‚Р° РіРёСЃС‚РѕРіСЂР°РјРјС‹</span>
       </div>
       <div class="code-grid">
         <div class="code-box">
           <div class="code-topbar">
-            <span style="color: var(--accent-nim);">Nim (ultrasort.nim) — Чистый AST шаблон</span>
-            <span class="badge">1 строка вызова</span>
+            <span style="color: var(--accent-nim);">Nim (ultrasort.nim) вЂ” Р§РёСЃС‚С‹Р№ AST С€Р°Р±Р»РѕРЅ</span>
+            <span class="badge">1 РІС‹Р·РѕРІ С€Р°Р±Р»РѕРЅР°</span>
           </div>
-          <pre><code><span class="cm"># Высокоуровневая декларация:
-# Шаблон времени компиляции разворачивает
-# машинный код без небезопасных указателей</span>
+          <pre><code><span class="cm"># РЁР°Р±Р»РѕРЅ РІСЂРµРјРµРЅРё РєРѕРјРїРёР»СЏС†РёРё СЂР°Р·РІРѕСЂР°С‡РёРІР°РµС‚ 4x С†РёРєР»
+# РїРѕРІРµСЂС… РІРЅСѓС‚СЂРµРЅРЅРµРіРѕ ptr UncheckedArray[int64] РІ algx</span>
 
 <span class="fn">unrollHist4</span>(
   sIdx, eIdx, 
@@ -228,10 +240,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
         <div class="code-box">
           <div class="code-topbar">
-            <span style="color: var(--accent-rust);">Rust (rust_ultra_showcase.rs) — Ручной unsafe</span>
-            <span class="badge">Бойлерплейт указателей</span>
+            <span style="color: var(--accent-rust);">Rust (rust_ultra_showcase.rs) вЂ” Р СѓС‡РЅРѕР№ unsafe</span>
+            <span class="badge">Р‘РѕР№Р»РµСЂРїР»РµР№С‚ СѓРєР°Р·Р°С‚РµР»РµР№</span>
           </div>
-          <pre><code><span class="cm">// Приходится обходить проверки компилятора:</span>
+          <pre><code><span class="cm">// РџСЂРёС…РѕРґРёС‚СЃСЏ РѕР±С…РѕРґРёС‚СЊ РїСЂРѕРІРµСЂРєРё РєРѕРјРїРёР»СЏС‚РѕСЂР°:</span>
 <span class="kw">let</span> data_addr = data.<span class="fn">as_mut_ptr</span>() <span class="kw">as</span> <span class="kw">usize</span>;
 <span class="kw">let</span> cur_ptr = (data_addr + s * <span class="num">8</span>) <span class="kw">as</span> *<span class="kw">const</span> <span class="kw">i64</span>;
 
@@ -239,7 +251,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   <span class="kw">let</span> v = *cur_ptr;
   <span class="kw">let</span> b = ((v <span class="kw">as</span> <span class="kw">u64</span> >> Shift1) ^ SignFlip) <span class="kw">as</span> <span class="kw">usize</span>;
   *my_hist.<span class="fn">get_unchecked_mut</span>(b) += <span class="num">1</span>;
-  <span class="cm">// ... дублируется 4 раза вручную</span>
+  <span class="cm">// ... РґСѓР±Р»РёСЂСѓРµС‚СЃСЏ 4 СЂР°Р·Р° РІСЂСѓС‡РЅСѓСЋ</span>
 }</code></pre>
         </div>
       </div>
@@ -252,7 +264,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 def main():
     output_path = Path(__file__).parent / "showcase.html"
     output_path.write_text(HTML_TEMPLATE, encoding="utf-8")
-    print(f"[OK] Витрина успешно сгенерирована: {output_path.resolve()}")
+    print(f"[OK] Р’РёС‚СЂРёРЅР° СѓСЃРїРµС€РЅРѕ СЃРіРµРЅРµСЂРёСЂРѕРІР°РЅР°: {output_path.resolve()}")
 
 if __name__ == "__main__":
     main()

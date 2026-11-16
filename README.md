@@ -1,11 +1,11 @@
-# Nim Native Ecosystem & NimUI (MVP v0.1.0)
+# Nim Native Ecosystem & NimUI (MVP v0.1.0, Windows-first)
 
-Самодостаточная системная, алгоритмическая и графическая UI-экосистема на чистом **Nim 2.x** без внешних C/C++ UI/рендер-фреймворков, Chromium/WebView2 и JavaScript.
+Самодостаточная системная, алгоритмическая и графическая UI-экосистема на **Nim 2.x** (**Windows-first**, без Chromium/WebView2), включающая практическое подмножество HTML5/CSS3 поверх **Vulkan 1.1+ SDF**, опциональный sandboxed движок **QuickJS** и экспериментальный memory-safe компилятор **`nim_safe`**.
 
 Проект сочетает три инженерных принципа:
-- **Безопасность (как в Rust):** строгие типы ошибок `Result[T, E]` / `Option[T]`, контракт `{.raises: [].}`, детерминированная память `--mm:orc --threads:on --panics:on` и автоматический аудит утечек через `TrackingAllocator` (`0 bytes leaked`).
-- **Явность (как в Zig):** явная передача аллокаторов (`Allocator`, `Arena`, `Slab[T]`), отсутствие скрытых глобальных состояний, явный реестр привязок `HtmlBindingRegistry` и явные разрешения возможностей `<script data-caps="...">` без скрытого `eval`.
-- **Простота (как в Python):** лаконичный декларативный UI DSL на Nim, нативный HTML5/CSS3 рендеринг поверх **Vulkan 1.1+ Instanced SDF**, а также опциональный гибридный слой **QuickJS** (`ui.*`, `Nim.*`) с проверками в духе философии проекта.
+- **Безопасный высокоуровневый API поверх явного низкоуровневого ядра:** строгие типы ошибок `Result[T, E]` / `Option[T]`, контракт `{.raises: [].}`, детерминированная память `--mm:orc --threads:on --panics:on` поверх явного низкоуровневого ядра (`cast`/`ptr`/`importc`, `{.push checks: off.}` в release-сборках `algx`), экспериментально проверяемого с помощью `nim_safe` (`--mem-safe` / `--safe-mode` / `--check-safe-atf`). Аудит утечек в `corex`-аллокаторах выполняется через `TrackingAllocator` (`0 bytes leaked`), а управляемая куча ORC (`seq`/`string`/`ref`) проверяется через `GC_fullCollect()` + `getOccupiedMem()`.
+- **Явность (в духе Zig):** явная передача аллокаторов (`Allocator`, `Arena`, `Slab[T]`), явная изоляция платформенных слоёв, явный реестр привязок `HtmlBindingRegistry` и явные разрешения возможностей `<script data-caps="...">` без скрытого `eval`.
+- **Лаконичность (в духе Python):** декларативный UI DSL на Nim, практическое подмножество HTML5/CSS3 поверх **Vulkan 1.1+ Instanced SDF** (Zero-JS по умолчанию при `allowJs = false`), а также опциональный гибридный слой **QuickJS** (`ui.*`, `Nim.*`).
 
 ---
 
@@ -26,7 +26,7 @@ nim/
 │   ├── everything/          # Мгновенный поиск файлов по NTFS MFT + USN Journal
 │   ├── wiztree/             # Высокопроизводительный анализатор диска через NTFS MFT
 │   └── mini-browser/        # Изолированный прототип браузерного пайплайна HTML/CSS -> PNG
-├── tests/                   # Модульные, интеграционные и визуальные тесты (0 leaks)
+├── tests/                   # Модульные, интеграционные и визуальные тесты (TrackingAllocator + ORC)
 ├── benchmarks/              # Бенчмарки CoreX/AlgX против Rust и генератор HTML-витрины
 ├── docs/                    # Документация архитектуры, манифест, решения и дорожная карта
 ├── tools/                   # Вспомогательные инструменты (SPIR-V -> Nim, shaders)
@@ -54,11 +54,11 @@ nim/
 ### 3. `src/nimui/` — Графический UI-движок, HTML5/CSS3 и QuickJS Hybrid
 - `layout.nim` — быстрый O(N) Flexbox-движок (`LayoutPool`, `UiTree`, `UiNode`) с кэшем измерения текста и поддержкой прокрутки (`clipChildren`).
 - `controls.nim`, `dsl.nim`, `multiline.nim`, `clipboard.nim` — декларативный DSL (`Box`, `VStack`, `HStack`, `Text`, `Button`, `TextInput`, `VirtualList` на 1 000 000+ строк) и нативные виджеты: `Checkbox`, `RadioGroup`, `Slider`, `Dropdown`, `Tooltip`, многострочный `TextArea`.
-- `html_css.nim` — встроенный парсер HTML5 и каскада CSS3, Zero-JS санитайзер (`allowJs = false` по умолчанию) и компилятор HTML-документов прямо в `UiTree` с реактивной привязкой к Nim через `HtmlBindingRegistry`.
-- `js/js_validator.nim`, `js/js_engine.nim`, `js/html_js_bridge.nim`, `js/qjs_bridge.c` — встроенный движок **QuickJS**, маршрутизирующий всю память через `corex/allocators.Allocator` (`0 bytes leaked`), со статическими/рантайм-проверками философии проекта (Rust: запрет `var`, `==`/`!=`, `eval`/`Function`/`with`/`__proto__`, лимит памяти, стека и шагов; Zig: явные `data-caps="dom,timers,nim,console"`; Python: `ui.*` и `Nim.*` API), позволяющий писать логику как на Nim, так и на JavaScript.
-- `gpu/vulkan_backend.nim`, `gpu/font_atlas.nim`, `gpu/shaders.nim`, `rasterizer.nim`, `window.nim` — аппаратный бэкенд **Vulkan 1.1+ (Instanced SDF)** за минимальное число Draw Call, LRU-атлас глифов (GDI/ClearType с фолбэком) и детерминированный **CPU Software Rasterizer** для headless-тестов и экспорта PNG.
+- `html_css.nim` (фасад над `src/nimui/html/{types,parser,cascade,compiler}.nim`) — встроенный парсер практического подмножества HTML5 и каскада CSS3, Zero-JS санитайзер (`allowJs = false` по умолчанию) и компилятор HTML-документов прямо в `UiTree` с реактивной привязкой к Nim через `HtmlBindingRegistry`.
+- `js/js_validator.nim`, `js/js_engine.nim`, `js/html_js_bridge.nim`, `js/qjs_bridge.c` — опциональный встроенный движок **QuickJS** (активируется при `allowJs = true`), маршрутизирующий всю память через `corex/allocators.Allocator` (`TrackingAllocator`: `0 bytes leaked`), со статическими/рантайм-проверками (запрет `var`, `==`/`!=`, `eval`/`Function`/`with`/`__proto__`, лимиты памяти/стека/шагов; явные `data-caps="dom,timers,nim,console"`; `ui.*` и `Nim.*` API).
+- `gpu/vulkan_backend.nim`, `gpu/font_atlas.nim`, `gpu/shaders.nim`, `rasterizer.nim`, `window.nim` — аппаратный бэкенд **Vulkan 1.1+ (Instanced SDF)** за один `vkCmdDrawIndexed`, атлас глифов (Win32 GDI `GetGlyphOutlineW` + фолбэк) и детерминированный **CPU Software Rasterizer** для headless-тестов и экспорта PNG.
 
-### 4. `compiler/` — Гибридный Memory-Safe компилятор (`bin/nim_safe.exe`)
+### 4. `compiler/` — Экспериментальный гибридный Memory-Safe компилятор (`bin/nim_safe.exe`)
 - `nim_safe.nim`, `safety_config.nim` — обёртка поверх компилятора Nim 2.2.12 с флагами `--mem-safe`, `--safe-mode`, `--check-safe-atf` и `--atf-report:<path>`, принудительно включающая `--mm:orc`, `--threads:on`, `--threadAnalysis:on`, `--panics:on`, runtime checks и `strictFuncs`.
 - `mem_safe_pass.nim` — AST/семантический проход безопасности: запрещает `cast` (`[MEM-SAFE-001]`), сырые `ptr`/`pointer` (`[MEM-SAFE-002]`), сырые `alloc`/`dealloc`/`copyMem` (`[MEM-SAFE-003]`), `{.emit.}` (`[MEM-SAFE-004]`), мутабельные глобалы (`[MEM-SAFE-005]`), утечки стековых адресов (`[MEM-SAFE-006]`), выполняет borrow checking через `varpartitions` и требует `{.raises: [].}` + `Result[T, E]` в `--safe-mode` (`[SAFE-MODE-001/002]`). Разрешает явно размеченный `{.trustedUnsafe.}` / `block trustedUnsafe:`.
 - `atf_c_checker.nim` — **After-Codegen-Finish (ATF)** верификатор сгенерированного C-кода (`--check-safe-atf`), проверяющий `.c` файлы до вызова GCC на запрещённые небезопасные вызовы CRT (`malloc`/`free`/`strcpy` и др., `[ATF-001]`), сырую арифметику указателей (`[ATF-002]`), корректность ORC-хуков (`[ATF-003]`), возврат адресов стека (`[ATF-004]`) и наличие проверок границ/переполнения (`[ATF-005]`).
@@ -67,10 +67,10 @@ nim/
 
 ## Витринные приложения (Showcase MVP)
 
-### 1. `apps/html_desktop` — Нативный HTML5/CSS3 Desktop Runner (Замена Tauri/Electron)
-Рендерит автономные `.html` файлы (по умолчанию [`apps/html_desktop/ui/showcase.html`](apps/html_desktop/ui/showcase.html)) напрямую через **Vulkan 1.1+ SDF** без Chromium, WebView2 и Node.js. Логика и обработчики написаны на чистом Nim и связываются через `HtmlBindingRegistry`.
+### 1. `apps/html_desktop` — Нативный HTML/CSS Desktop Runner (альтернатива Tauri/Electron для подмножества HTML/CSS)
+Рендерит автономные `.html` файлы (по умолчанию [`apps/html_desktop/ui/showcase.html`](apps/html_desktop/ui/showcase.html)) напрямую через **Vulkan 1.1+ SDF** без Chromium, WebView2 и Node.js. Логика и обработчики пишутся на чистом Nim (`HtmlBindingRegistry`) или на опциональном sandboxed QuickJS (`--allow-js` / `--pomodoro`).
 
-Поддерживает флаг `--file <путь.html>` для загрузки произвольных Zero-JS `.html` страниц, а также headless-экспорт PNG (`--headless-test --screenshot <out.png>`).
+Поддерживает флаг `--file <путь.html>` для загрузки произвольных `.html` страниц (Zero-JS по умолчанию, либо с `--allow-js`), а также headless-экспорт PNG (`--headless-test --screenshot <out.png>`).
 
 ### 2. `apps/html_css_studio` — HTML5/CSS3 Zero-JS Studio
 Интерактивная студия с 4 вкладками:
@@ -89,9 +89,9 @@ nim/
 
 ## Быстрый старт
 
-### Требования
-- **Nim `>= 2.0`** (проверено на `2.2.12`) + компилятор C (MinGW-W64 GCC / Clang) в `PATH`.
-- **Windows 10/11 (x64)**: для интерактивных окон нужен драйвер **Vulkan 1.1+**; headless-тесты и генерация PNG работают на любом CPU через программный SDF-растеризатор.
+### Требования и поддерживаемые платформы
+- **Платформа (Windows-first в v0.1.0):** **Windows 10/11 (x64)**. Для интерактивных окон нужен драйвер и GPU с поддержкой **Vulkan 1.1+** (`vulkan-1.dll`); headless-тесты и генерация PNG работают на любом CPU через программный SDF-растеризатор. Поддержка Linux/macOS (`corex/platform/posix/posix_fs.nim` не верифицирован в CI, а `corex/async.nim` и `nimui` сейчас ориентированы на Windows) находится в **бэклоге**.
+- **Инструментарий:** **Nim `>= 2.0`** (проверено на `2.2.12`) + компилятор C (MinGW-W64 GCC `11.1.0` / Clang) в `PATH`. Для генерации HTML-витрины бенчмарков нужен `python`, для сборки статической библиотеки QuickJS (`src/nimui/js/libquickjs.a`, не отслеживается в git) — `powershell -ExecutionPolicy Bypass -File tools/build_quickjs.ps1`, для пересборки шейдеров — `tools/glslang`.
 
 ### Запуск приложений через Nimble
 
@@ -152,16 +152,79 @@ nimble showcase_html
 
 ---
 
-## Поддерживаемые возможности HTML5 / CSS3 (`src/nimui/html_css.nim`)
+## Поддерживаемые возможности HTML5 / CSS3 (практическое подмножество) и QuickJS Hybrid (`src/nimui/html_css.nim`, `src/nimui/js/`)
 
 | Категория | Поддержка в MVP v0.1.0 |
 | :--- | :--- |
-| **HTML-теги** | `html`, `body`, `div`, `section`, `header`, `footer`, `nav`, `main`, `aside`, `article`, `h1`–`h3`, `p`, `span`, `label`, `strong`, `em`, `a`, `button`, `input` (`type="text"` / `hidden`, `value`, `placeholder`), `head`, `style`, `meta`, `link`, `title` |
-| **CSS-селекторы** | `*`, по тегу (`div`), `#id`, `.class`, комбинированные селекторы (`div.card`), потомки (`.row .btn`, `.row > .btn`), псевдоклассы `:hover`, `:active` |
-| **Раскладка (Layout)** | `display`: `flex`, `block`, `inline`, `inline-block`, `none`; `flex-direction`: `row`, `column`; `justify-content`, `align-items` (`stretch`, `center`, `flex-end`); `width`/`height` (`px`, `%`), `flex-grow`, `flex`, `padding`, `padding-top/right/bottom/left`, `gap`, `overflow`/`overflow-y`, `text-align` |
-| **Визуальный стиль (SDF)** | `color`, `background` / `background-color` (hex `#RGB`/`#RRGGBB`/`#RRGGBBAA` и именованные цвета), `border`, `border-width`, `border-color`, `border-radius`, `font-size` |
-| **Реактивность без JS** | `data-click` (привязка к `HtmlClickProc`), `data-text` / `data-bind` (привязка к `Signal[string]` или `HtmlTextProc`), `data-model` / `data-input` (двусторонняя привязка `<input>`) |
-| **Безопасность (Zero-JS)** | Строгий отказ (`Result.err`) при обнаружении `<script>`, любых `on*`-атрибутов (`onclick`, `onload` и т.д.) и `javascript:` URI |
+| **HTML-теги** | `html`, `body`, `div`, `section`, `header`, `footer`, `nav`, `main`, `aside`, `article`, `h1`–`h3`, `p`, `span`, `label`, `strong`, `em`, `a`, `button`, `input` (`type="text"` / `hidden`, `value`, `placeholder`), `textarea`, `select`/`option`, `ul`/`ol`/`li` (`list-style`), `table`/`thead`/`tbody`/`tr`/`th`/`td`, `img`, `br`, `hr`, `svg` (`viewBox` bounding box), `head`, `style`, `meta`, `link`, `title` |
+| **CSS-селекторы и `@`-правила** | `*`, по тегу (`div`), `#id`, `.class`, комбинированные (`div.card`), потомки (`.row .btn`, `.row > .btn`), `:root`, `:hover`, `:active`, `:focus`, `:disabled` (стиль + блокировка обработчиков), `@media` (`min/max-width`, `min/max-height`, `prefers-color-scheme`) |
+| **Раскладка (Layout)** | `display`: `flex`, `block`, `inline`, `inline-block`, `none`; `flex-direction`, `flex-wrap`, `justify-content`, `align-items`, `align-self`, `flex-grow`, `flex-shrink`, `flex-basis`, `flex`, `width`/`height` (`px`, `%`), `min-width`/`max-width`, `min-height`/`max-height`, `margin` (+ `-top/right/bottom/left`, `auto`), `padding` (+ `-top/right/bottom/left`), `gap`, `row-gap`, `column-gap`, `position`, `z-index`, `overflow`/`overflow-y`, `text-align` |
+| **Визуальный стиль (SDF)** | `color`, `background`/`background-color`, `linear-gradient(...)`, hex `#RGB`/`#RGBA`/`#RRGGBB`/`#RRGGBBAA`, `rgb()`/`rgba()`, `hsl()`/`hsla()`, стандартные именованные CSS-цвета (плюс opt-in тема `parseThemeColor` / `NimUiThemePaletteCss`), `var(--x)` с fallback, `opacity`, `box-shadow`, `border`/`border-width`/`border-color`/`border-radius`, `font-size`, `font-weight`, `font-family`, `line-height`, `cursor`, `text-overflow`, `white-space`, `transition` |
+| **Реактивность Nim (`data-*`)** | `data-click` (`HtmlClickProc`), `data-text` / `data-bind` (`Signal[string]` или `HtmlTextProc`), `data-model` / `data-bind` (`Signal[string]` двусторонняя привязка `<input>`), `data-input` (`HtmlInputProc`) |
+| **Режим Zero-JS vs QuickJS** | По умолчанию (`allowJs = false`): строгий отказ (`Result.err`) при `<script>`, любых `on*`-атрибутах (`onclick`, `onload` и т.д.) и `javascript:` URI. При `allowJs = true` (`HtmlJsSession`): встроенный **QuickJS** с запретом `var`/`==`/`!=`/`eval`/`Function`/`with`/`__proto__`, лимитами памяти (8 MB), стека (512 KB) и шагов (250k) и явными `<script data-caps="dom,timers,nim,console">` |
+
+### Справочник API привязок (`HtmlBindingRegistry` и `data-*`)
+
+Модули [`src/nimui/html_css.nim`](src/nimui/html_css.nim) и [`src/nimui/js/html_js_bridge.nim`](src/nimui/js/html_js_bridge.nim) предоставляют явный реестр привязок без рефлексии:
+
+- **Типы колбэков (`html_css.nim`):**
+  - `HtmlClickProc* = proc() {.closure, gcsafe, raises: [].}`
+  - `HtmlInputProc* = proc(text: string) {.closure, gcsafe, raises: [].}`
+  - `HtmlTextProc* = proc(): string {.closure, gcsafe, raises: [].}`
+- **Реестр `HtmlBindingRegistry` (`html_css.nim`):**
+  - `initHtmlBindingRegistry*(): HtmlBindingRegistry` / `destroy*(reg: var HtmlBindingRegistry)`
+  - `onClick*(reg: var HtmlBindingRegistry, name: string, cb: HtmlClickProc)` — связывается с атрибутом `data-click="<name>"`
+  - `onInput*(reg: var HtmlBindingRegistry, name: string, cb: HtmlInputProc)` — связывается с `data-input="<name>"` (для `<input>`)
+  - `bindTextSignal*(reg: var HtmlBindingRegistry, name: string, sig: Signal[string])` и `bindText*(reg, name, sig)` / `bindText*(reg, name, fn: HtmlTextProc)` — связываются с `data-text="<name>"` (или fallback `data-bind="<name>"`)
+  - `bindInputSignal*(reg: var HtmlBindingRegistry, name: string, sig: Signal[string])` — двусторонняя привязка `<input>` через `data-bind="<name>"` или `data-model="<name>"`
+  - `getNodeById*(reg: HtmlBindingRegistry, id: string): Option[SlabId]` — поиск `SlabId` по HTML `id="..."`
+- **Монтирование и QuickJS-мост:**
+  - `parseHtmlDoc*(html: string, allowJs: bool = false): Result[HtmlDoc, string]`
+  - `mountHtml*(tree: var UiTree, rt: ptr ReactiveRuntime, doc: HtmlDoc, sheet: CssStylesheet, bindings: var HtmlBindingRegistry, parentId: SlabId = SlabId(-1)): Result[SlabId, string]`
+  - `mountHtmlString*(tree: var UiTree, rt: ptr ReactiveRuntime, html, extraCss: string, bindings: var HtmlBindingRegistry, parentId: SlabId = SlabId(-1)): Result[SlabId, string]`
+  - `initHtmlJsSession*(alloc: Allocator, tree: var UiTree, rt: var ReactiveRuntime, bindings: var HtmlBindingRegistry, cfg: QuickJsConfig = defaultQuickJsConfig()): Result[HtmlJsSession, string]`
+  - `registerNimFunc*(s: var HtmlJsSession, name: string, fn: NimJsHostProc)` (`NimJsHostProc* = proc(arg1, arg2: string): string {.closure, gcsafe, raises: [].}`), `mountHtmlWithJs*(s: var HtmlJsSession, html: string, extraCss: string = "", parentId: SlabId = SlabId(-1'i32)): Result[SlabId, string]`, `tick*(s: var HtmlJsSession, dtMs: int): Result[int, string]`
+  - JS-способности в `<script data-caps="...">`: `dom` (`document.getElementById`, `document.querySelector`, `ui.*`), `timers` (`setTimeout`/`setInterval`/`clearTimeout`/`clearInterval`), `nim` (`Nim.call`, `Nim.get`, `Nim.set`), `console` (`console.log/warn/error`), а также `all` / `none` (при пустом `data-caps` по умолчанию даются `{jcDom, jcConsole}`).
+
+---
+
+## Ограничения (Limitations)
+
+1. **Windows-first в v0.1.0:**
+   - Интерактивное окно (`src/nimui/window.nim`), асинхронный IOCP-рантайм (`src/corex/async.nim`) и парсер MFT (`src/corex/mft.nim` / `win32_mft.nim`) рассчитаны на Windows x64.
+   - `src/corex/platform/posix/posix_fs.nim` предоставлен как заготовка для POSIX, но **не верифицирован в CI**; полноценная поддержка Linux и macOS вынесена в бэклог.
+2. **Права администратора для прямого чтения `$MFT` (`apps/wiztree`, `corex/mft`):**
+   - Прямой потоковый доступ к тому `\\.\<drive>:` через `FSCTL_ENUM_USN_DATA` (`scanMftDirect` в [`apps/wiztree/scanner.nim`](apps/wiztree/scanner.nim)) и сырые чтения `$MFT` требуют **прав Администратора** и файловой системы NTFS.
+   - При отсутствии прав администратора (или для не-NTFS томов / отдельных подпапок) `scanVolume` прозрачно переключается на fallback `scanWin32Fast` (пакетный обход через `FindFirstFileExW` + `FindExInfoBasic` + `FIND_FIRST_EX_LARGE_FETCH` в `corex/fs`), который работает под обычным пользователем, но медленнее прямого чтения MFT.
+3. **Требование Vulkan 1.1+ GPU:**
+   - Интерактивный рендер `nimui` динамически загружает `vulkan-1.dll` и требует драйвер и GPU с поддержкой **Vulkan 1.1+**. При отсутствии Vulkan GPU работают только headless-сценарии и экспорт PNG на базе CPU-растеризатора (`src/nimui/rasterizer.nim`).
+4. **Границы HTML5/CSS3 и QuickJS:**
+   - `html_css` реализует практическое подмножество HTML/CSS поверх `UiTree` Flexbox-движка — это **не** полноценный браузерный движок (отсутствуют CSS Grid, `float`, табличный layout уровня браузеров, Web Audio/Canvas/DOM Range, `fetch`, внешние `<script src="...">`).
+   - QuickJS-слой опционален (`allowJs = true`), допускает только встроенные `<script>` с явными `data-caps` и строгим подмножеством JS без `eval`/`var`/`==`/`__proto__`.
+5. **Шрифты, IME и доступность (Accessibility):**
+   - Растеризация шрифтов на Windows выполняется через GDI `GetGlyphOutlineW` в фиксированный 1024×1024 `R8_UNORM` атлас (`src/nimui/gpu/font_atlas.nim`, для не-Windows используется минимальный fallback-генератор). Сложный text shaping (HarfBuzz/Arabic/Indic BiDi), цветные emoji (COLR/sbix) и системное дерево доступности (Windows UI Automation / screen readers) в v0.1.0 отсутствуют; поддержка IME находится на базовом уровне Win32.
+6. **Пересборка SPIR-V шейдеров (`tools/glslang` + `tools/spv_to_nim.nim`):**
+   - В репозитории хранятся GLSL-исходники ([`tools/shaders/ui.vert`](tools/shaders/ui.vert), [`tools/shaders/ui.frag`](tools/shaders/ui.frag)), предсобранные бинарники `.spv` и сгенерированный Nim-массив [`src/nimui/gpu/shaders.nim`](src/nimui/gpu/shaders.nim).
+   - Если вы меняете шейдеры, установите `glslangValidator` в `tools/glslang/` (каталог в `.gitignore`) и выполните:
+     ```powershell
+     tools\glslang\glslangValidator.exe -V tools/shaders/ui.vert -o tools/shaders/ui.vert.spv
+     tools\glslang\glslangValidator.exe -V tools/shaders/ui.frag -o tools/shaders/ui.frag.spv
+     nim c -r tools/spv_to_nim.nim
+     ```
+
+---
+
+## Генерация API-документации (`nim doc`)
+
+Для локальной генерации HTML-документации по исходным модулям (каталог `htmldocs/` добавлен в `.gitignore`):
+
+```powershell
+nim doc --project --index:on --outdir:htmldocs src/corex.nim
+nim doc --project --index:on --outdir:htmldocs src/algx.nim
+nim doc --project --index:on --outdir:htmldocs src/nimui.nim
+```
+
+> **Языковая заметка по документации:** `README.md`, [`docs/STATE.md`](docs/STATE.md), [`docs/BENCHMARK_SHOWCASE.md`](docs/BENCHMARK_SHOWCASE.md) и [`docs/NIM_ROADMAP_FEATURES.md`](docs/NIM_ROADMAP_FEATURES.md) ведутся на русском языке; архитектурные спецификации [`docs/MANIFEST.md`](docs/MANIFEST.md), [`docs/PROJECT.md`](docs/PROJECT.md) и [`docs/DECISIONS.md`](docs/DECISIONS.md) ведутся на английском языке.
 
 ---
 
