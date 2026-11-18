@@ -12,6 +12,10 @@ type
   JsCapability* = enum
     jcDom = "dom"
     jcTimers = "timers"
+    jcStorage = "storage"
+    jcNetwork = "network"
+    jcFs = "fs"
+    jcProcess = "process"
     jcNimBridge = "nim"
     jcConsole = "console"
 
@@ -21,6 +25,7 @@ type
     forbidVar*: bool
     forbidLooseEquality*: bool
     forbidEvalAndWith*: bool
+    forbidDynamicImports*: bool
     requireExplicitCaps*: bool
     allowedCaps*: JsCapabilities
 
@@ -31,6 +36,7 @@ proc defaultJsValidationConfig*(
     forbidVar: true,
     forbidLooseEquality: true,
     forbidEvalAndWith: true,
+    forbidDynamicImports: true,
     requireExplicitCaps: true,
     allowedCaps: caps
   )
@@ -78,6 +84,10 @@ proc parseScriptCaps*(capsStr: string): Result[JsCapabilities, string] {.raises:
       case tok
       of "dom": caps.incl(jcDom)
       of "timers": caps.incl(jcTimers)
+      of "storage": caps.incl(jcStorage)
+      of "network": caps.incl(jcNetwork)
+      of "fs": caps.incl(jcFs)
+      of "process": caps.incl(jcProcess)
       of "nim", "nimbridge": caps.incl(jcNimBridge)
       of "console": caps.incl(jcConsole)
       of "all": caps = {jcDom, jcTimers, jcNimBridge, jcConsole}
@@ -85,7 +95,7 @@ proc parseScriptCaps*(capsStr: string): Result[JsCapabilities, string] {.raises:
       else:
         return err[JsCapabilities, string](
           "Zig-Explicitness Violation [JS-Z00]: unknown capability '" & tok &
-          "' (expected dom, timers, nim, console, all, none)"
+          "' (expected dom, timers, storage, network, fs, process, nim, console, all, none)"
         )
     inc i
   ok[JsCapabilities, string](caps)
@@ -263,10 +273,10 @@ proc validateJsPhilosophy*(
         inc i
       let ident = code[start ..< i]
 
-      if cfg.forbidEvalAndWith and ident == "__proto__":
+      if cfg.forbidEvalAndWith and (ident == "__proto__" or ident == "setPrototypeOf"):
         return err[void, string](
           "Rust-Safety Violation [JS-R03] (line " & $line &
-          "): prototype mutation via '__proto__' is forbidden"
+          "): prototype mutation via '" & ident & "' is forbidden"
         )
 
       var k = i
@@ -280,10 +290,15 @@ proc validateJsPhilosophy*(
             "Rust-Safety Violation [JS-R01] (line " & $line &
             "): 'var' is forbidden; use immutable 'const' or block-scoped 'let'"
           )
-        if cfg.forbidEvalAndWith and (ident == "eval" or ident == "Function" or ident == "with"):
+        if cfg.forbidEvalAndWith and (ident in ["eval", "Function", "with", "Proxy", "Reflect"]):
           return err[void, string](
             "Rust-Safety Violation [JS-R03] (line " & $line &
             "): dynamic/unsafe construct '" & ident & "' is forbidden"
+          )
+        if cfg.forbidDynamicImports and ident == "import":
+          return err[void, string](
+            "Rust-Safety Violation [JS-R04] (line " & $line &
+            "): module/dynamic 'import' is forbidden in sandboxed scripts"
           )
 
         if cfg.requireExplicitCaps:
@@ -310,6 +325,30 @@ proc validateJsPhilosophy*(
               return err[void, string](
                 "Zig-Explicitness Violation [JS-Z04] (line " & $line &
                 "): 'console' used without explicit 'console' capability"
+              )
+          elif ident in ["localStorage", "sessionStorage", "storage"]:
+            if jcStorage notin cfg.allowedCaps:
+              return err[void, string](
+                "Zig-Explicitness Violation [JS-Z06] (line " & $line &
+                "): '" & ident & "' used without explicit 'storage' capability"
+              )
+          elif ident in ["fetch", "XMLHttpRequest", "WebSocket", "network"]:
+            if jcNetwork notin cfg.allowedCaps:
+              return err[void, string](
+                "Zig-Explicitness Violation [JS-Z07] (line " & $line &
+                "): '" & ident & "' used without explicit 'network' capability"
+              )
+          elif ident in ["fs", "readFile", "writeFile"]:
+            if jcFs notin cfg.allowedCaps:
+              return err[void, string](
+                "Zig-Explicitness Violation [JS-Z08] (line " & $line &
+                "): '" & ident & "' used without explicit 'fs' capability"
+              )
+          elif ident in ["process", "child_process", "exec", "spawn"]:
+            if jcProcess notin cfg.allowedCaps:
+              return err[void, string](
+                "Zig-Explicitness Violation [JS-Z09] (line " & $line &
+                "): '" & ident & "' used without explicit 'process' capability"
               )
 
       afterDot = false

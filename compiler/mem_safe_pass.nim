@@ -354,16 +354,54 @@ proc auditNode*(
   of nkPragma:
     if not inTrusted and not nodeFromStdlib:
       for i in 0 ..< n.safeLen:
-        if gSafety.memSafeEnabled and whichPragma(n[i]) == wEmit:
+        let pw = whichPragma(n[i])
+        if gSafety.memSafeEnabled and pw == wEmit:
           reportSafetyError(
             conf, n[i].info, "MEM-SAFE-004",
             "Inline C/ASM '{.emit.}' is forbidden in --mem-safe mode (annotate with {.trustedUnsafe.} if audited)"
+          )
+        elif gSafety.memSafeEnabled and pw in {wCompile, wPassc, wPassl, wDynlib, wHeader, wImportc}:
+          reportSafetyError(
+            conf, n[i].info, "MEM-SAFE-008",
+            "External C / FFI pragma '" & renderTree(n[i], {renderNoComments}) &
+            "' is forbidden in --mem-safe mode (annotate with {.trustedUnsafe.} if audited)"
           )
         elif isCheckSuppressionPragmaItem(n[i]):
           recordCheckSuppression(
             conf, n[i].info,
             "Disabling runtime safety checks via pragma ('" & renderTree(n[i], {renderNoComments}) & "') is forbidden in safe mode"
           )
+    return
+
+  of nkImportStmt, nkImportExceptStmt, nkFromStmt:
+    if gSafety.memSafeEnabled and not inTrusted and not nodeFromStdlib:
+      const BannedUnsafeImports = ["dynlib", "osproc", "memfiles", "winlean", "posix", "ansi_c"]
+      proc checkImportExpr(imp: PNode) =
+        if imp == nil: return
+        case imp.kind
+        of nkIdent:
+          if imp.ident != nil and imp.ident.s in BannedUnsafeImports:
+            reportSafetyError(
+              conf, imp.info, "MEM-SAFE-008",
+              "Unsafe low-level import '" & imp.ident.s & "' is forbidden in --mem-safe mode"
+            )
+        of nkSym:
+          if imp.sym != nil and imp.sym.name.s in BannedUnsafeImports:
+            reportSafetyError(
+              conf, imp.info, "MEM-SAFE-008",
+              "Unsafe low-level import '" & imp.sym.name.s & "' is forbidden in --mem-safe mode"
+            )
+        of nkInfix:
+          if imp.len >= 3:
+            checkImportExpr(imp[2])
+        of nkBracket:
+          for k in 0 ..< imp.safeLen:
+            checkImportExpr(imp[k])
+        else:
+          for k in 0 ..< imp.safeLen:
+            checkImportExpr(imp[k])
+      for i in 0 ..< n.safeLen:
+        checkImportExpr(n[i])
     return
 
   of nkCast:

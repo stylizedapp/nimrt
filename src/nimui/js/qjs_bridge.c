@@ -146,6 +146,98 @@ static void capture_js_exception(JSContext* ctx, char* err_buf, int32_t err_cap)
     JS_FreeValue(ctx, exc);
 }
 
+static JSModuleDef* qjs_blocked_module_loader(
+    JSContext* ctx,
+    const char* module_name,
+    void* opaque
+) {
+    (void)opaque;
+    JS_ThrowReferenceError(
+        ctx,
+        "Security Violation: dynamic import('%s') and module loading are disabled",
+        module_name ? module_name : ""
+    );
+    return NULL;
+}
+
+static JSValue qjs_disabled_eval(
+    JSContext* ctx,
+    JSValueConst this_val,
+    int argc,
+    JSValueConst* argv
+) {
+    (void)this_val;
+    (void)argc;
+    (void)argv;
+    return JS_ThrowTypeError(ctx, "Security Violation: dynamic eval() is disabled");
+}
+
+static JSValue qjs_disabled_function(
+    JSContext* ctx,
+    JSValueConst this_val,
+    int argc,
+    JSValueConst* argv
+) {
+    (void)this_val;
+    (void)argc;
+    (void)argv;
+    return JS_ThrowTypeError(ctx, "Security Violation: dynamic Function() constructor is disabled");
+}
+
+static JSValue qjs_disabled_set_proto(
+    JSContext* ctx,
+    JSValueConst this_val,
+    int argc,
+    JSValueConst* argv
+) {
+    (void)this_val;
+    (void)argc;
+    (void)argv;
+    return JS_ThrowTypeError(ctx, "Security Violation: prototype mutation via Object.setPrototypeOf() is disabled");
+}
+
+static void qjs_harden_context(JSContext* ctx) {
+    JSValue global_obj = JS_GetGlobalObject(ctx);
+
+    /* Replace globalThis.eval and globalThis.Function with throwing stubs */
+    JSValue eval_stub = JS_NewCFunction(ctx, qjs_disabled_eval, "eval", 1);
+    JS_DefinePropertyValueStr(ctx, global_obj, "eval", eval_stub, JS_PROP_CONFIGURABLE);
+
+    JSValue fn_stub = JS_NewCFunction(ctx, qjs_disabled_function, "Function", 1);
+    JS_DefinePropertyValueStr(ctx, global_obj, "Function", JS_DupValue(ctx, fn_stub), JS_PROP_CONFIGURABLE);
+
+    /* Neutralize Function.prototype.constructor so (()=>{})["constructor"](...) cannot bypass */
+    JSValue arrow_fn = JS_Eval(ctx, "(function(){})", 14, "<harden>", JS_EVAL_TYPE_GLOBAL);
+    if (!JS_IsException(arrow_fn)) {
+        JSValue fn_proto = JS_GetPrototype(ctx, arrow_fn);
+        if (JS_IsObject(fn_proto)) {
+            JS_DefinePropertyValueStr(ctx, fn_proto, "constructor", JS_DupValue(ctx, fn_stub), JS_PROP_CONFIGURABLE);
+        }
+        JS_FreeValue(ctx, fn_proto);
+    }
+    JS_FreeValue(ctx, arrow_fn);
+    JS_FreeValue(ctx, fn_stub);
+
+    /* Neutralize Object.setPrototypeOf */
+    JSValue obj_ctor = JS_GetPropertyStr(ctx, global_obj, "Object");
+    if (JS_IsObject(obj_ctor)) {
+        JSValue set_proto_stub = JS_NewCFunction(ctx, qjs_disabled_set_proto, "setPrototypeOf", 2);
+        JS_DefinePropertyValueStr(ctx, obj_ctor, "setPrototypeOf", set_proto_stub, JS_PROP_CONFIGURABLE);
+    }
+    JS_FreeValue(ctx, obj_ctor);
+
+    /* Remove Proxy and Reflect to prevent meta-programming / hidden traps */
+    JSAtom proxy_atom = JS_NewAtom(ctx, "Proxy");
+    JS_DeleteProperty(ctx, global_obj, proxy_atom, 0);
+    JS_FreeAtom(ctx, proxy_atom);
+
+    JSAtom reflect_atom = JS_NewAtom(ctx, "Reflect");
+    JS_DeleteProperty(ctx, global_obj, reflect_atom, 0);
+    JS_FreeAtom(ctx, reflect_atom);
+
+    JS_FreeValue(ctx, global_obj);
+}
+
 static JSValue js_nim_host_dispatch(
     JSContext* ctx,
     JSValueConst this_val,
@@ -238,6 +330,7 @@ QjsBridgeRuntime* qjs_bridge_new(
         JS_SetMaxStackSize(brt->rt, max_stack_bytes);
     }
     JS_SetInterruptHandler(brt->rt, qjs_interrupt_cb, (void*)brt);
+    JS_SetModuleLoaderFunc(brt->rt, NULL, qjs_blocked_module_loader, NULL);
 
     brt->ctx = JS_NewContext(brt->rt);
     if (!brt->ctx) {
@@ -246,6 +339,7 @@ QjsBridgeRuntime* qjs_bridge_new(
         return NULL;
     }
     JS_SetContextOpaque(brt->ctx, (void*)brt);
+    qjs_harden_context(brt->ctx);
 
     JSValue global_obj = JS_GetGlobalObject(brt->ctx);
     JS_SetPropertyStr(

@@ -309,6 +309,102 @@ proc testPomodoroEndToEndAndStress(atlas: FontAtlas) =
       rt.destroy()
     echo "  [PASS] 4.2 30-cycle QuickJS HTML mount/tick/destroy leaked 0 bytes."
 
+proc testSecurityBypassResourceAndAudit(atlas: FontAtlas) =
+  echo "\n================================================================="
+  echo ">>> [SUITE 5] QUICKJS BYPASS, CAPABILITIES, EXHAUSTION & AUDIT <<<"
+  echo "================================================================="
+
+  testWithLeakCheck("5.1 Static & Runtime Bypass Prevention (eval, Function, import, proto, Proxy, Reflect)"):
+    # Opt-in isolation: default parseHtmlDoc rejects <script>
+    let optInRes = parseHtmlDoc("<div><script>const x = 1;</script></div>")
+    doAssert optInRes.isErr(), "parseHtmlDoc must reject <script> unless allowJs=true"
+
+    # Static checks for dynamic import, Proxy, Reflect, setPrototypeOf, and new capabilities
+    let cfg = defaultJsValidationConfig()
+    for snippet in [
+      ("import('foo.js');", "[JS-R04]"),
+      ("import x from 'foo.js';", "[JS-R04]"),
+      ("const p = new Proxy({}, {});", "[JS-R03]"),
+      ("Reflect.get({}, 'a');", "[JS-R03]"),
+      ("Object.setPrototypeOf({}, null);", "[JS-R03]"),
+      ("storage.getItem('k');", "[JS-Z06]"),
+      ("network.fetch('https://x');", "[JS-Z07]"),
+      ("fs.readFile('a.txt');", "[JS-Z08]"),
+      ("process.exec('whoami');", "[JS-Z09]")
+    ]:
+      let r = validateJsPhilosophy(snippet[0], cfg)
+      doAssert r.isErr() and r.error().find(snippet[1]) >= 0,
+        "Expected " & snippet[1] & " for: " & snippet[0] & ", got: " & (if r.isErr(): r.error() else: "ok")
+
+    # 'all' must NOT silently grant storage/network/fs/process
+    let allCaps = parseScriptCaps("all").get()
+    doAssert jcStorage notin allCaps and jcNetwork notin allCaps and
+             jcFs notin allCaps and jcProcess notin allCaps
+
+    # Runtime bypasses (even if static validator were bypassed via bracket/property indirection)
+    var rtCfg = defaultQuickJsConfig()
+    rtCfg.memLimitBytes = 1024 * 1024
+    rtCfg.maxStepsPerCall = 10_000'u64
+    var engRes = initQuickJsEngine(testAlloc, rtCfg)
+    doAssert engRes.isOk()
+    var eng = engRes.get()
+    defer: eng.destroy()
+
+    let evalBypass = eng.evalValidated("globalThis['ev' + 'al']('1+1');")
+    doAssert evalBypass.isErr() and evalBypass.error().find("disabled") >= 0
+
+    let fnBypass1 = eng.evalValidated("[].filter['construct' + 'or']('return 1')();")
+    doAssert fnBypass1.isErr() and fnBypass1.error().find("disabled") >= 0
+
+    let fnBypass2 = eng.evalValidated("(() => {})['construct' + 'or']('return 1')();")
+    doAssert fnBypass2.isErr() and fnBypass2.error().find("disabled") >= 0
+
+    let protoBypass = eng.evalValidated("Object['setProto' + 'typeOf']({}, null);")
+    doAssert protoBypass.isErr() and protoBypass.error().find("disabled") >= 0
+
+    let proxyGone = eng.evalValidated("typeof globalThis.Proxy === 'undefined' && typeof globalThis.Reflect === 'undefined';")
+    doAssert proxyGone.isOk() and proxyGone.get() == "true"
+
+    # Stack exhaustion check
+    let stackRes = eng.evalValidated("const f = () => f(); f();")
+    doAssert stackRes.isErr()
+
+    # Audit log must have recorded validation/eval/resource events
+    let logs = eng.getAuditLog()
+    doAssert logs.len >= 5
+    var sawResource = false
+    for ev in logs:
+      if ev.kind == jaResourceExhausted:
+        sawResource = true
+    doAssert sawResource, "Expected jaResourceExhausted in QuickJS audit log"
+    echo "  [PASS] 5.1 Bypass prevention, capability separation & audit log verified."
+
+  testWithLeakCheck("5.2 HtmlJsSession Fail-Closed Host Capabilities & Audit"):
+    var tree = initUiTree(testAlloc)
+    var rt = initReactiveRuntime(testAlloc)
+    var bindings = initHtmlBindingRegistry()
+    var cfg = defaultQuickJsConfig({jcDom, jcStorage, jcNetwork, jcFs, jcProcess})
+    var sessRes = initHtmlJsSession(testAlloc, tree, rt, bindings, cfg)
+    doAssert sessRes.isOk()
+    var sess = sessRes.get()
+    defer:
+      sess.destroy()
+      bindings.destroy()
+      tree.destroy()
+      rt.destroy()
+
+    for callCode in [
+      "storage.getItem('secret');",
+      "network.fetch('https://example.com');",
+      "fs.readFile('C:/Windows/win.ini');",
+      "process.exec('cmd.exe');"
+    ]:
+      let r = sess.executeScript(callCode, "<cap-test>", "storage,network,fs,process")
+      doAssert r.isErr(), "Host capability must fail closed when no backend is attached: " & callCode
+
+    doAssert sess.auditLog().len >= 4
+    echo "  [PASS] 5.2 HtmlJsSession fail-closed host capabilities & audit verified."
+
 proc main() =
   echo "================================================================="
   echo ">>> STARTING NIMUI + QUICKJS HYBRID ENGINE TEST SUITE <<<"
@@ -318,6 +414,7 @@ proc main() =
   testPhilosophyValidator()
   testHybridNimJsBridge(atlas)
   testPomodoroEndToEndAndStress(atlas)
+  testSecurityBypassResourceAndAudit(atlas)
   echo "\n================================================================="
   echo ">>> [SUCCESS] ALL QUICKJS HYBRID & POMODORO TESTS PASSED (0 LEAKS)! <<<"
   echo "================================================================="

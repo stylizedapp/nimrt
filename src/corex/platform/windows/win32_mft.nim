@@ -62,6 +62,10 @@ const
   INVALID_HANDLE_VALUE* = cast[pointer](-1)
 
 type
+  MftParseMode* = enum
+    mpmLenient
+    mpmStrict
+
   MftEntry* = object
     frn*: uint64
     parentFrn*: uint64
@@ -377,7 +381,8 @@ proc parseMftRecord*(
   entry: var MftEntry,
   recordIndex: uint64 = 0,
   bytesPerCluster: uint32 = 4096,
-  onlyInUse: bool = true
+  onlyInUse: bool = true,
+  parseMode: MftParseMode = mpmLenient
 ): Result[bool, IOError] {.raises: [].} =
   ## Parses a 1024-byte MFT record from `raw`, validates signature, applies fixup array,
   ## and extracts $STANDARD_INFORMATION, $FILE_NAME, and $DATA attributes into `entry`.
@@ -405,7 +410,14 @@ proc parseMftRecord*(
   let sequenceNumber = cast[ptr uint16](addr rec[16])[]
   let linkCount = cast[ptr uint16](addr rec[18])[]
   let firstAttrOffset = int(cast[ptr uint16](addr rec[20])[])
+  let bytesUsed = int(cast[ptr uint32](addr rec[24])[])
   let baseRecordFrn = cast[ptr uint64](addr rec[32])[]
+
+  if parseMode == mpmStrict:
+    if firstAttrOffset < 42 or firstAttrOffset > MFT_RECORD_SIZE - 8:
+      return err[bool, IOError](IOError(msg: "Strict MFT: invalid first attribute offset (" & $firstAttrOffset & ")"))
+    if bytesUsed < firstAttrOffset or bytesUsed > MFT_RECORD_SIZE:
+      return err[bool, IOError](IOError(msg: "Strict MFT: invalid bytes-in-use (" & $bytesUsed & ")"))
 
   var recNum = recordIndex
   if recNum == 0:
@@ -439,7 +451,11 @@ proc parseMftRecord*(
 
     let attrLen = cast[ptr uint32](addr rec[attrOffset + 4])[]
     if attrLen < 16'u32 or attrLen > uint32(MFT_RECORD_SIZE - attrOffset):
+      if parseMode == mpmStrict:
+        return err[bool, IOError](IOError(msg: "Strict MFT: out-of-bounds or truncated attribute length"))
       break # Corrupt or out-of-bounds attribute length
+    if parseMode == mpmStrict and (attrLen and 7'u32) != 0'u32:
+      return err[bool, IOError](IOError(msg: "Strict MFT: unaligned attribute length (" & $attrLen & ")"))
 
     let nonResident = rec[attrOffset + 8] != 0
     let nameLen = int(rec[attrOffset + 9])
@@ -510,6 +526,8 @@ proc parseMftRecord*(
           let nameBytesEnd = nameBytesStart + fnCharCount * 2
 
           if nameBytesEnd <= MFT_RECORD_SIZE and nameBytesEnd <= pOff + valLen:
+            if parseMode == mpmStrict and (fnRealSize < 0 or fnAllocSize < 0):
+              return err[bool, IOError](IOError(msg: "Strict MFT: negative $FILE_NAME size"))
             # Rank namespaces: Win32 (1) & Win32+DOS (3) -> rank 3; POSIX (0) -> rank 2; DOS (2) -> rank 1
             let rank = case fnNamespace
               of 1, 3: 3
@@ -542,11 +560,18 @@ proc parseMftRecord*(
           if attrLen >= 56'u32 and attrOffset + 56 <= MFT_RECORD_SIZE:
             let allocatedSizeHdr = cast[ptr int64](addr rec[attrOffset + 40])[]
             let realSizeHdr = cast[ptr int64](addr rec[attrOffset + 48])[]
+            if parseMode == mpmStrict and (allocatedSizeHdr < 0 or realSizeHdr < 0):
+              return err[bool, IOError](IOError(msg: "Strict MFT: negative $DATA size"))
             entry.fileSize = realSizeHdr
 
             let runListOff = int(cast[ptr uint16](addr rec[attrOffset + 32])[])
             if runListOff > 0 and runListOff < int(attrLen) and attrOffset + runListOff < MFT_RECORD_SIZE:
               let maxRunBytes = min(int(attrLen) - runListOff, MFT_RECORD_SIZE - (attrOffset + runListOff))
+              if parseMode == mpmStrict:
+                var tmpRuns: seq[MftDataRun] = @[]
+                let rlRes = parseRunList(rec, attrOffset + runListOff, maxRunBytes, tmpRuns)
+                if rlRes.isErr:
+                  return err[bool, IOError](rlRes.error)
               let allocatedClusters = calculateAllocatedClusters(rec, attrOffset + runListOff, maxRunBytes)
               if bytesPerCluster > 0'u32:
                 let bpc = int64(bytesPerCluster)
@@ -570,11 +595,43 @@ proc parseMftRecord*(
   entry: var MftEntry,
   recordIndex: uint64 = 0,
   bytesPerCluster: uint32 = 4096,
-  onlyInUse: bool = true
+  onlyInUse: bool = true,
+  parseMode: MftParseMode = mpmLenient
 ): Result[bool, IOError] {.inline, raises: [].} =
   if span.len < MFT_RECORD_SIZE:
     return err[bool, IOError](IOError(msg: "ByteSpan too small for MFT record (expected 1024 bytes)"))
-  parseMftRecord(toOpenArray(span.data, 0, span.len - 1), entry, recordIndex, bytesPerCluster, onlyInUse)
+  parseMftRecord(toOpenArray(span.data, 0, span.len - 1), entry, recordIndex, bytesPerCluster, onlyInUse, parseMode)
+
+proc parseMftBufferStrict*(
+  buf: openArray[byte],
+  startRecordIndex: uint64 = 0,
+  bytesPerCluster: uint32 = 4096,
+  onlyInUse: bool = true
+): tuple[entries: seq[MftEntry], errors: seq[string]] {.raises: [].} =
+  ## Strict-mode MFT buffer parser: returns all valid parsed entries (partial results)
+  ## alongside per-record corruption errors without crashing.
+  result.entries = @[]
+  result.errors = @[]
+  let count = buf.len div MFT_RECORD_SIZE
+  if buf.len mod MFT_RECORD_SIZE != 0:
+    result.errors.add("Trailing partial MFT record (" & $(buf.len mod MFT_RECORD_SIZE) & " bytes ignored)")
+  var entry: MftEntry
+  for i in 0 ..< count:
+    let offset = i * MFT_RECORD_SIZE
+    let recIdx = startRecordIndex + uint64(i)
+    let res = parseMftRecord(
+      buf.toOpenArray(offset, offset + MFT_RECORD_SIZE - 1),
+      entry,
+      recIdx,
+      bytesPerCluster,
+      onlyInUse,
+      mpmStrict
+    )
+    if res.isOk:
+      if res.get:
+        result.entries.add(entry)
+    else:
+      result.errors.add("Record " & $recIdx & ": " & res.error.msg)
 
 iterator parseMftBuffer*(
   buf: openArray[byte],
@@ -754,9 +811,20 @@ when defined(windows):
 
   proc openMftStreamer*(
     drive: char,
-    bufferSize: int = 1024 * 1024
+    bufferSize: int = 1024 * 1024,
+    explicitConsent: bool = false
   ): Result[MftStreamer, IOError] {.raises: [].} =
-    ## Opens raw volume `\\.\<drive>:` with FILE_FLAG_NO_BUFFERING and FILE_FLAG_SEQUENTIAL_SCAN.
+    ## Opens raw volume `\\.\<drive>:` strictly read-only (`GENERIC_READ`) with
+    ## FILE_FLAG_NO_BUFFERING and FILE_FLAG_SEQUENTIAL_SCAN.
+    ## Enforces explicit user consent and never performs silent admin escalation.
+    if not explicitConsent:
+      return err[MftStreamer, IOError](IOError(
+        msg: "Explicit user consent required before opening raw volume '" & $drive & ":' for read-only MFT streaming"
+      ))
+    if drive notin {'A'..'Z', 'a'..'z'}:
+      return err[MftStreamer, IOError](IOError(
+        msg: "Invalid drive letter '" & $drive & "' for raw MFT streaming"
+      ))
     ## Queries FSCTL_GET_NTFS_VOLUME_DATA for bytesPerCluster and MftStartLcn.
     ## Allocates sector-aligned buffer via VirtualAlloc.
     let path = "\\\\.\\" & $drive & ":"
@@ -940,8 +1008,13 @@ else:
 
   proc openMftStreamer*(
     drive: char,
-    bufferSize: int = 1024 * 1024
+    bufferSize: int = 1024 * 1024,
+    explicitConsent: bool = false
   ): Result[MftStreamer, IOError] {.raises: [].} =
+    if not explicitConsent:
+      return err[MftStreamer, IOError](IOError(
+        msg: "Explicit user consent required before opening raw volume '" & $drive & ":' for read-only MFT streaming"
+      ))
     err[MftStreamer, IOError](IOError(msg: "Raw MFT streaming only supported on Windows"))
 
   proc streamAll*(

@@ -14,6 +14,8 @@
 ## 6. Buffer iteration and zero-allocation recycling.
 ## 7. Streamer elevation and error handling.
 
+import std/strutils
+
 import corex/[allocators, result, memory, testing]
 import corex/platform/windows/win32_mft
 
@@ -348,15 +350,24 @@ proc testZeroAllocationBufferStream() =
   echo "  [OK] Successfully streamed records via parseMftBuffer iterator"
 
 proc testVolumeStreamerPrivilegeCheck() =
-  echo "--- 6. Volume Raw Streamer Privileges & Lifecycle ---"
+  echo "--- 6. Volume Raw Streamer Consent, Privileges & Lifecycle ---"
+
+  # Test 6.0: Explicit consent enforcement & invalid drive letter rejection
+  var noConsentRes = openMftStreamer('C')
+  doAssert noConsentRes.isErr and noConsentRes.error.msg.contains("Explicit user consent required")
+  echo "  [OK] openMftStreamer('C') without explicitConsent denied"
+
+  var badDriveRes = openMftStreamer('1', explicitConsent = true)
+  doAssert badDriveRes.isErr and badDriveRes.error.msg.contains("Invalid drive letter")
+  echo "  [OK] openMftStreamer('1') rejected invalid drive letter"
 
   # Test 6.1: Non-existent volume 'Z' fails gracefully
-  var zRes = openMftStreamer('Z')
+  var zRes = openMftStreamer('Z', explicitConsent = true)
   doAssert zRes.isErr, "Expected opening non-existent drive 'Z' to fail"
   echo "  [OK] openMftStreamer('Z') returned Result.err as expected"
 
-  # Test 6.2: Target volume 'C' check (Admin or Non-Admin permission handling)
-  var cRes = openMftStreamer('C')
+  # Test 6.2: Target volume 'C' check (Admin or Non-Admin permission handling, no silent escalation)
+  var cRes = openMftStreamer('C', explicitConsent = true)
   if cRes.isOk:
     var streamer = move(cRes.val)
     echo "  [OK] openMftStreamer('C') acquired raw volume handle with FILE_FLAG_NO_BUFFERING"
@@ -412,6 +423,29 @@ proc testLeakCheckAndStress() =
       doAssert entry.name == "benchmark_file.dat"
 
   echo "  [OK] 10,000 MFT records parsed with 0 memory leaks"
+
+  # Strict mode malformed record & partial buffer recovery checks
+  var badFirstAttr = createMockMftRecord(recordNumber = 1, isInUse = true)
+  cast[ptr uint16](addr badFirstAttr[20])[] = 10'u16
+  var strictEntry: MftEntry
+  let r1 = parseMftRecord(badFirstAttr, strictEntry, parseMode = mpmStrict)
+  doAssert r1.isErr and r1.error.msg.contains("invalid first attribute offset")
+
+  var unalignedAttr = createMockMftRecord(recordNumber = 2, isInUse = true)
+  cast[ptr uint32](addr unalignedAttr[56])[] = ATTR_STANDARD_INFORMATION
+  cast[ptr uint32](addr unalignedAttr[60])[] = 25'u32 # not 8-byte aligned
+  let r2 = parseMftRecord(unalignedAttr, strictEntry, parseMode = mpmStrict)
+  doAssert r2.isErr and r2.error.msg.contains("unaligned attribute length")
+
+  var goodRec = createMockMftRecord(recordNumber = 3, isInUse = true)
+  cast[ptr uint32](addr goodRec[56])[] = ATTR_END_MARKER
+  var mixedBuf = newSeq[byte](MFT_RECORD_SIZE * 2 + 17)
+  copyMem(addr mixedBuf[0], addr goodRec[0], MFT_RECORD_SIZE)
+  copyMem(addr mixedBuf[MFT_RECORD_SIZE], addr unalignedAttr[0], MFT_RECORD_SIZE)
+  let strictBuf = parseMftBufferStrict(mixedBuf)
+  doAssert strictBuf.entries.len == 1, "Expected 1 partial valid entry"
+  doAssert strictBuf.errors.len == 2, "Expected 2 errors (1 corrupt record + 1 trailing bytes)"
+  echo "  [OK] Strict MFT parsing mode & partial recovery verified"
 
 proc runAllMftTests() =
   echo "=== RUNNING WIN32 MFT RECORD PARSER & STREAMER TESTS ==="

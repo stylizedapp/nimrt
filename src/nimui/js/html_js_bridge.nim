@@ -326,8 +326,41 @@ proc makeHostDispatcher(core: ptr HtmlJsCore): JsHostDispatchProc {.trustedUnsaf
     of OpConsoleLog:
       if core.engine.config.validation.requireExplicitCaps and jcConsole notin caps:
         errMsg = "Zig-Explicitness Violation [JS-Z04]: console denied without 'console' capability"
+        core.engine.recordAudit(jaCapabilityDenied, "console", a0, errMsg)
         return ""
       core.consoleLogs.add("[" & a0 & "] " & a1)
+      return ""
+    of OpStorage:
+      if core.engine.config.validation.requireExplicitCaps and jcStorage notin caps:
+        errMsg = "Zig-Explicitness Violation [JS-Z06]: storage denied without 'storage' capability"
+        core.engine.recordAudit(jaCapabilityDenied, "storage", a0, errMsg)
+        return ""
+      core.engine.recordAudit(jaCapabilityDenied, "storage", a0, "No host storage backend attached (fail-closed)")
+      errMsg = "Security Policy: host storage backend is not enabled in isolated HTML/JS session"
+      return ""
+    of OpNetwork:
+      if core.engine.config.validation.requireExplicitCaps and jcNetwork notin caps:
+        errMsg = "Zig-Explicitness Violation [JS-Z07]: network denied without 'network' capability"
+        core.engine.recordAudit(jaCapabilityDenied, "network", a0, errMsg)
+        return ""
+      core.engine.recordAudit(jaCapabilityDenied, "network", a0, "No host network backend attached (fail-closed)")
+      errMsg = "Security Policy: host network backend is not enabled in isolated HTML/JS session"
+      return ""
+    of OpFs:
+      if core.engine.config.validation.requireExplicitCaps and jcFs notin caps:
+        errMsg = "Zig-Explicitness Violation [JS-Z08]: fs denied without 'fs' capability"
+        core.engine.recordAudit(jaCapabilityDenied, "fs", a0, errMsg)
+        return ""
+      core.engine.recordAudit(jaCapabilityDenied, "fs", a0, "No host fs backend attached (fail-closed)")
+      errMsg = "Security Policy: host filesystem backend is not enabled in isolated HTML/JS session"
+      return ""
+    of OpProcess:
+      if core.engine.config.validation.requireExplicitCaps and jcProcess notin caps:
+        errMsg = "Zig-Explicitness Violation [JS-Z09]: process denied without 'process' capability"
+        core.engine.recordAudit(jaCapabilityDenied, "process", a0, errMsg)
+        return ""
+      core.engine.recordAudit(jaCapabilityDenied, "process", a0, "No host process backend attached (fail-closed)")
+      errMsg = "Security Policy: host process execution is disabled in isolated HTML/JS session"
       return ""
     else:
       return ""
@@ -477,3 +510,8 @@ proc consoleLogs*(s: HtmlJsSession): seq[string] {.trustedUnsafe, raises: [].} =
 proc lastJsError*(s: HtmlJsSession): string {.trustedUnsafe, raises: [].} =
   if s.core.isNil: return ""
   s.core.lastJsError
+
+# Safe: s.core is nil-checked before deref; owned by HtmlJsSession.
+proc auditLog*(s: HtmlJsSession): seq[JsAuditEvent] {.trustedUnsafe, raises: [].} =
+  if s.core.isNil: return @[]
+  s.core.engine.getAuditLog()

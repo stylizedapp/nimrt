@@ -89,8 +89,28 @@ const
   OpNimSigGet* = 11'i32
   OpNimSigSet* = 12'i32
   OpConsoleLog* = 13'i32
+  OpStorage* = 14'i32
+  OpNetwork* = 15'i32
+  OpFs* = 16'i32
+  OpProcess* = 17'i32
 
 type
+  JsAuditEventKind* = enum
+    jaValidationDenied = "validation_denied"
+    jaCapabilityDenied = "capability_denied"
+    jaCapabilityAllowed = "capability_allowed"
+    jaEvalSuccess = "eval_success"
+    jaEvalError = "eval_error"
+    jaResourceExhausted = "resource_exhausted"
+
+  JsAuditEvent* = object
+    kind*: JsAuditEventKind
+    capability*: string
+    target*: string
+    detail*: string
+
+  JsAuditProc* = proc(ev: JsAuditEvent) {.closure, gcsafe, raises: [].}
+
   JsTimerEntry* = object
     id*: int32
     intervalMs*: int
@@ -112,6 +132,7 @@ type
     memLimitBytes*: int
     maxStackBytes*: int
     maxStepsPerCall*: uint64
+    isolated*: bool
     validation*: JsValidationConfig
 
   QuickJsEngine* = object
@@ -122,6 +143,8 @@ type
     config*: QuickJsConfig
     timers*: seq[JsTimerEntry]
     nextTimerId: int32
+    auditLog*: seq[JsAuditEvent]
+    onAudit*: JsAuditProc
     initialized*: bool
 
 proc defaultQuickJsConfig*(
@@ -131,6 +154,7 @@ proc defaultQuickJsConfig*(
     memLimitBytes: 8 * 1024 * 1024,
     maxStackBytes: 512 * 1024,
     maxStepsPerCall: 250_000'u64,
+    isolated: true,
     validation: defaultJsValidationConfig(caps)
   )
 
@@ -189,9 +213,6 @@ proc qjsHostTrampoline(
 const
   JsPreludeSource = """
 "use strict";
-globalThis.eval = function() {
-  throw new Error("Rust-Safety Violation: dynamic eval() is disabled at runtime");
-};
 const __qjs_callbacks = {};
 let __qjs_next_cb = 1;
 function __qjs_reg_cb(fn) {
@@ -320,6 +341,20 @@ const Nim = {
   get: function(sigName) { return __nim_host(11, String(sigName), "", ""); },
   set: function(sigName, val) { __nim_host(12, String(sigName), String(val), ""); }
 };
+const storage = {
+  getItem: function(k) { return __nim_host(14, "get", String(k), ""); },
+  setItem: function(k, v) { return __nim_host(14, "set", String(k), String(v)); }
+};
+const network = {
+  fetch: function(url) { return __nim_host(15, "fetch", String(url), ""); }
+};
+const fs = {
+  readFile: function(p) { return __nim_host(16, "read", String(p), ""); },
+  writeFile: function(p, d) { return __nim_host(16, "write", String(p), String(d)); }
+};
+const process = {
+  exec: function(cmd) { return __nim_host(17, "exec", String(cmd), ""); }
+};
 """
 
 # Safe: brt is an owned QjsBridgeRuntimePtr; outBuf/errBuf are sized stack-owned strings.
@@ -365,6 +400,31 @@ proc setHostHandler*(eng: var QuickJsEngine, handler: JsHostDispatchProc) {.trus
     if not eng.brt.isNil:
       qjs_bridge_set_host(eng.brt, qjsHostTrampoline, eng.hostBox)
 
+proc recordAudit*(
+  eng: var QuickJsEngine,
+  kind: JsAuditEventKind,
+  capability: string,
+  target: string,
+  detail: string
+) {.raises: [].} =
+  let ev = JsAuditEvent(
+    kind: kind,
+    capability: capability,
+    target: target,
+    detail: detail
+  )
+  if eng.auditLog.len >= 512:
+    eng.auditLog.delete(0)
+  eng.auditLog.add(ev)
+  if not eng.onAudit.isNil:
+    eng.onAudit(ev)
+
+proc getAuditLog*(eng: QuickJsEngine): seq[JsAuditEvent] {.inline, raises: [].} =
+  eng.auditLog
+
+proc clearAuditLog*(eng: var QuickJsEngine) {.inline, raises: [].} =
+  eng.auditLog.setLen(0)
+
 # Safe: frees owned QuickJS runtime, hostBox, and allocBox in reverse init order with nil guards.
 proc destroy*(eng: var QuickJsEngine) {.trustedUnsafe, raises: [].} =
   if not eng.brt.isNil:
@@ -379,6 +439,8 @@ proc destroy*(eng: var QuickJsEngine) {.trustedUnsafe, raises: [].} =
     eng.alloc.dealloc(eng.allocBox, sizeof(Allocator))
     eng.allocBox = nil
   eng.timers.setLen(0)
+  eng.auditLog.setLen(0)
+  reset(eng.onAudit)
   eng.initialized = false
 
 # Safe: allocates owned allocBox/hostBox/brt and cleans up on any allocation/init failure.
@@ -427,8 +489,15 @@ proc initQuickJsEngine*(
     config: cfg,
     timers: @[],
     nextTimerId: 1'i32,
+    auditLog: @[],
+    onAudit: nil,
     initialized: true
   ))
+
+proc isResourceExhaustionError(msg: string): bool {.inline, raises: [].} =
+  let low = toLowerAscii(msg)
+  low.contains("interrupted") or low.contains("out of memory") or
+    low.contains("maximum call stack") or low.contains("stack overflow")
 
 proc evalValidated*(
   eng: var QuickJsEngine,
@@ -442,12 +511,28 @@ proc evalValidated*(
   var valCfg = eng.config.validation
   if capsOverride.isSome:
     valCfg.allowedCaps = capsOverride.get()
+  if eng.config.isolated:
+    valCfg.forbidVar = true
+    valCfg.forbidEvalAndWith = true
+    valCfg.forbidDynamicImports = true
+    valCfg.requireExplicitCaps = true
+
   let valRes = validateJsPhilosophy(code, valCfg)
   if valRes.isErr():
+    eng.recordAudit(jaValidationDenied, "", filename, valRes.error())
     return err[string, string](valRes.error())
 
   qjs_bridge_reset_steps(eng.brt, eng.config.maxStepsPerCall)
-  evalRawInternal(eng.brt, code, filename)
+  let rawRes = evalRawInternal(eng.brt, code, filename)
+  if rawRes.isErr():
+    let errMsg = rawRes.error()
+    if isResourceExhaustionError(errMsg):
+      eng.recordAudit(jaResourceExhausted, "", filename, errMsg)
+    else:
+      eng.recordAudit(jaEvalError, "", filename, errMsg)
+    return rawRes
+  eng.recordAudit(jaEvalSuccess, "", filename, "ok")
+  rawRes
 
 proc invokeCallback*(
   eng: var QuickJsEngine,
