@@ -52,6 +52,12 @@ jobs:
         shell: pwsh
         run: nimble test_ui
 
+      - name: Run Layout Snapshot & Visual Diff Check
+        shell: pwsh
+        run: |
+          nim c -r tests/test_nimui_layout_snapshots.nim
+          nim c -r tests/test_nimui_manifest_golden.nim
+
       - name: Run QuickJS hybrid tests (nimble test_js)
         shell: pwsh
         run: nimble test_js

@@ -16,6 +16,7 @@ import nimui/controls
 import nimui/clipboard
 import nimui/multiline
 import nimui/rasterizer
+import nimui/renderer
 import nimui/html_css
 import nimui/js/js_validator
 import nimui/js/js_engine
@@ -34,6 +35,7 @@ export controls
 export clipboard
 export multiline
 export rasterizer
+export renderer
 export html_css
 export js_validator
 export js_engine

@@ -12,8 +12,10 @@ import ./html/types
 import ./html/parser
 import ./html/cascade
 import ./html/compiler
+import ./html/manifest
 
 export types
 export parser
 export cascade
 export compiler
+export manifest

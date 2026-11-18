@@ -315,3 +315,47 @@ proc savePng*(fb: SoftwareFramebuffer, path: string): bool {.raises: [].} =
     wrRes = fh.write(unsafeAddr bytes[0], bytes.len)
   let closeRes = fh.close()
   wrRes.isOk and wrRes.get == bytes.len and closeRes.isOk
+
+proc compareFramebuffers*(
+  a, b: SoftwareFramebuffer,
+  maxChannelDiff: int = 0
+): tuple[diffPixels: int, maxDiff: int, dimensionMismatch: bool] {.raises: [].} =
+  ## Compares two SoftwareFramebuffers pixel-by-pixel for visual diff / snapshot verification.
+  if a.width != b.width or a.height != b.height or a.pixels.len != b.pixels.len:
+    return (max(a.pixels.len, b.pixels.len), 255, true)
+  var diffCount = 0
+  var maxD = 0
+  for i in 0 ..< a.pixels.len:
+    let pa = a.pixels[i]
+    let pb = b.pixels[i]
+    if pa == pb:
+      continue
+    let dr = abs(int((pa shr 24) and 0xFF'u32) - int((pb shr 24) and 0xFF'u32))
+    let dg = abs(int((pa shr 16) and 0xFF'u32) - int((pb shr 16) and 0xFF'u32))
+    let db = abs(int((pa shr 8) and 0xFF'u32) - int((pb shr 8) and 0xFF'u32))
+    let da = abs(int(pa and 0xFF'u32) - int(pb and 0xFF'u32))
+    let d = max(max(dr, dg), max(db, da))
+    if d > maxD:
+      maxD = d
+    if d > maxChannelDiff:
+      inc diffCount
+  (diffCount, maxD, false)
+
+proc framebufferHash*(fb: SoftwareFramebuffer): uint64 {.raises: [].} =
+  ## Deterministic FNV-1a 64-bit hash over dimensions and RGBA pixels.
+  var h = 14695981039346656037'u64
+  template mixByte(b: uint8) =
+    h = h xor uint64(b)
+    h = h * 1099511628211'u64
+  let w = uint32(fb.width)
+  let ht = uint32(fb.height)
+  mixByte(uint8(w and 0xFF'u32))
+  mixByte(uint8((w shr 8) and 0xFF'u32))
+  mixByte(uint8(ht and 0xFF'u32))
+  mixByte(uint8((ht shr 8) and 0xFF'u32))
+  for px in fb.pixels:
+    mixByte(uint8((px shr 24) and 0xFF'u32))
+    mixByte(uint8((px shr 16) and 0xFF'u32))
+    mixByte(uint8((px shr 8) and 0xFF'u32))
+    mixByte(uint8(px and 0xFF'u32))
+  h

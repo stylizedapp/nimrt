@@ -65,6 +65,9 @@ task test_ui, "Run NimUI layout, widget, and Zero-JS HTML/CSS tests":
   exec "nim c -r tests/test_nimui_layout.nim"
   exec "nim c -r tests/test_nimui_widgets.nim"
   exec "nim c -r tests/test_nimui_html_css.nim"
+  exec "nim c -r tests/test_nimui_vulkan_fallback.nim"
+  exec "nim c -r tests/test_nimui_manifest_golden.nim"
+  exec "nim c -r tests/test_nimui_layout_snapshots.nim"
 
 task test_js, "Run NimUI + QuickJS hybrid engine, philosophy checks & Pomodoro tests":
   when defined(windows):
@@ -172,6 +175,9 @@ task test_all, "Run ALL ecosystem, UI, QuickJS, showcase, compiler, and disconne
   exec "nim c -r tests/test_nimui_layout.nim"
   exec "nim c -r tests/test_nimui_widgets.nim"
   exec "nim c -r tests/test_nimui_html_css.nim"
+  exec "nim c -r tests/test_nimui_vulkan_fallback.nim"
+  exec "nim c -r tests/test_nimui_manifest_golden.nim"
+  exec "nim c -r tests/test_nimui_layout_snapshots.nim"
   exec "nim c -r tests/test_nimui_quickjs.nim"
   exec "nim c -r tests/test_fuzz_mft.nim"
   exec "nim c -r tests/test_fuzz_html_css.nim"
