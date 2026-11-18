@@ -10,8 +10,8 @@ NimRT targets **Windows 10/11 x64** with a **hybrid distribution model** built a
 
 | Channel | Format | Target Audience | Update Mechanism |
 | :--- | :--- | :--- | :--- |
-| **Portable (Default v0.3.0)** | `nimrt-vX.Y.Z-win64-portable.zip` + standalone `.exe` binaries | Developers, power users, air-gapped / enterprise workstations | Manual replace or user-initiated update check against GitHub Releases + `SHA256SUMS.txt` |
-| **Installer (Roadmap v0.4+)** | Per-user MSI / Inno Setup (`%LOCALAPPDATA%\Programs\NimRT\`) | End-user desktop applications built on NimRT | Signed installer upgrade in-place without requiring Administrator elevation |
+| **Portable (Default v04.03.03)** | `nimrt-vX.Y.Z-win64-portable.zip` + standalone `.exe` binaries | Developers, power users, air-gapped / enterprise workstations | Manual replace or user-initiated update check against GitHub Releases + `SHA256SUMS.txt` |
+| **Installer (Roadmap v04.04.00+)** | Per-user MSI / Inno Setup (`%LOCALAPPDATA%\Programs\NimRT\`) | End-user desktop applications built on NimRT | Signed installer upgrade in-place without requiring Administrator elevation |
 | **Hybrid Mode** | Single `.exe` that detects `portable.flag` (or `.exe` directory writeability) | Utility apps (e.g. `wiztree`, `html_desktop`) | Stores config/cache next to `.exe` in portable mode, or under `%LOCALAPPDATA%\NimRT\<appId>\` when installed |
 
 ### Update Invariants
@@ -23,16 +23,16 @@ NimRT targets **Windows 10/11 x64** with a **hybrid distribution model** built a
 
 ## 2. Code Signing & Unsigned Binary Policy
 
-### Current Policy (v0.3.0)
-- Prebuilt GitHub Release binaries in v0.3.0 are **unsigned** open-source builds compiled directly on GitHub-hosted `windows-latest` runners.
+### Current Policy (v04.03.03)
+- Prebuilt GitHub Release binaries in v04.03.03 are **unsigned** open-source builds compiled directly on GitHub-hosted `windows-latest` runners.
 - Every release publishes **`SHA256SUMS.txt`** alongside the binaries so users can verify integrity before running:
   ```powershell
   Get-FileHash .\html_desktop.exe -Algorithm SHA256
   Get-Content .\SHA256SUMS.txt
   ```
-- **Windows SmartScreen Notice:** Because the v0.3.0 binaries are unsigned, Windows Defender SmartScreen may display *"Windows protected your PC"*. Users who have verified the `SHA256SUMS.txt` hash (or built from source via `nimble build_release`) can click **More info -> Run anyway**.
+- **Windows SmartScreen Notice:** Because the v04.03.03 binaries are unsigned, Windows Defender SmartScreen may display *"Windows protected your PC"*. Users who have verified the `SHA256SUMS.txt` hash (or built from source via `nimble build_release`) can click **More info -> Run anyway**.
 
-### Signed Release Roadmap (v0.4+)
+### Signed Release Roadmap (v04.04.00+)
 - Production releases of end-user installers and binaries will use **Azure Trusted Signing** or **EV/OV Authenticode** in `.github/workflows/release.yml` (via `signtool.exe` with RFC 3161 timestamping), eliminating SmartScreen warnings while keeping `SHA256SUMS.txt` published for reproducible verification.
 
 ---

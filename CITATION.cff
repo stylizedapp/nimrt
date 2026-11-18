@@ -4,7 +4,7 @@ authors:
   - family-names: "Sanalyny"
     given-names: "Sanal"
 title: "NimRT: High-Performance Systems Foundation & Vulkan SDF Native UI Ecosystem for Nim"
-version: 0.3.0
+version: "04.03.03"
 date-released: 2026-11-19
 url: "https://github.com/stylizedapp/nimrt"
 repository-code: "https://github.com/stylizedapp/nimrt"
