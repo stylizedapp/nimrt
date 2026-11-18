@@ -12,7 +12,6 @@ import std/[monotimes, times, os, strutils]
 import corex
 import corex/[allocators, result, testing, concurrency]
 import corex/platform/windows/win32_fs
-import corex/platform/windows/win32_volume
 import ../apps/everything/src/indexer
 import ../apps/everything/src/usn_monitor
 
@@ -230,6 +229,37 @@ proc runUsnSyncTests() =
 
     idx.deinit()
     echo "[OK] 05: Background monitor thread lifecycle, atomic processing, and rapid shutdown (", elapsedMs, "ms)"
+
+  # Regression test: returning UsnMonitor inside Result[UsnMonitor, IOError] and moving it out
+  block:
+    proc startMockMonitorResult(
+      idx: ptr Indexer,
+      buf: seq[byte],
+      lock: ptr SysLock
+    ): Result[UsnMonitor, IOError] =
+      var mon = startMockUsnMonitor(idx, buf, 0'i64, lock, pollIntervalMs = 10)
+      ok[UsnMonitor, IOError](mon)
+
+    var tracker = initTrackingAllocator()
+    var idx = newIndexer(tracker.allocator(), 4096).unwrap()
+    var lock = initSysLock()
+    let r = makeMockUsnRecord("moved_result.txt", 5'u64, 7001'u64, false, USN_REASON_FILE_CREATE, 1500'i64)
+    let rawBuf = makeMockUsnBuffer(1600'i64, @[r])
+
+    var monRes = startMockMonitorResult(addr idx, rawBuf, addr lock)
+    doAssert monRes.isOk
+    var m = move(monRes.val)
+    doAssert m.isRunning
+
+    let deadline = getMonoTime() + initDuration(milliseconds = 2000)
+    while m.recordsProcessed < 1 and getMonoTime() < deadline:
+      os.sleep(10)
+
+    doAssert m.recordsProcessed >= 1, "Moved Result UsnMonitor failed to process records"
+    m.stop()
+    doAssert not m.isRunning
+    idx.deinit()
+    echo "[OK] 05b: Result[UsnMonitor, IOError] move safety regression verified"
 
   # ---------------------------------------------------------------------------
   # Test 6: Non-Admin Privilege Detection & Descriptive Error Reporting

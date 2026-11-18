@@ -20,6 +20,7 @@ import ./indexer
 
 type
   UsnMonitorContext* = object
+    thread*: Thread[ptr UsnMonitorContext]
     idx*: ptr Indexer
     lock*: ptr SysLock
     stopFlag*: Atomic[bool]
@@ -35,7 +36,6 @@ type
     mockRawLen*: int
 
   UsnMonitor* = object
-    thread*: Thread[ptr UsnMonitorContext]
     ctx*: ptr UsnMonitorContext
     running*: bool
 
@@ -153,11 +153,14 @@ proc recordsProcessed*(m: UsnMonitor): int {.inline, raises: [].} =
 proc currentUsn*(m: UsnMonitor): USN {.inline, raises: [].} =
   if m.ctx.isNil: 0'i64 else: m.ctx.currentUsn
 
+template thread*(m: var UsnMonitor): var Thread[ptr UsnMonitorContext] =
+  m.ctx.thread
+
 proc stop*(m: var UsnMonitor) {.raises: [].} =
   ## Signals the monitor background thread to terminate and waits for join.
   if m.running and not m.ctx.isNil:
     m.ctx.stopFlag.store(true, moRelease)
-    joinThread(m.thread)
+    joinThread(m.ctx.thread)
     m.running = false
     if not m.ctx.isMock:
       when defined(windows):
@@ -184,7 +187,6 @@ proc `=sink`*(dest: var UsnMonitor, src: UsnMonitor) {.raises: [].} =
     deallocShared(dest.ctx)
     dest.ctx = nil
 
-  copyMem(addr dest.thread, unsafeAddr src.thread, sizeof(dest.thread))
   dest.ctx = src.ctx
   dest.running = src.running
 
@@ -232,7 +234,7 @@ proc startUsnMonitor*(
   mon.ctx = ctx
   mon.running = false
   try:
-    createThread(mon.thread, usnMonitorWorker, ctx)
+    createThread(ctx.thread, usnMonitorWorker, ctx)
     mon.running = true
   except CatchableError as e:
     ctx.vol.closeVolume()
@@ -263,7 +265,7 @@ proc startMockUsnMonitor*(
   result.ctx = ctx
   result.running = false
   try:
-    createThread(result.thread, usnMonitorWorker, ctx)
+    createThread(ctx.thread, usnMonitorWorker, ctx)
     result.running = true
   except CatchableError:
     discard
