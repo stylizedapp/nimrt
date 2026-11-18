@@ -617,6 +617,7 @@ proc parseSimpleSelector(raw: string): Option[CssSimpleSelector] {.raises: [].} 
     let marker = s[i]
     if marker == '[':
       # Consume attribute selector [...] cleanly; treat as non-matching unknown if unhandled
+      let attrStart = i
       inc i
       var inQ = '\0'
       while i < s.len:
@@ -631,15 +632,18 @@ proc parseSimpleSelector(raw: string): Option[CssSimpleSelector] {.raises: [].} 
             break
         inc i
       sel.pseudo = cpkUnknown
+      sel.rawPseudo = s[attrStart ..< min(i, attrStart + 64)]
       continue
 
     inc i
     if marker == ':' and i < s.len and s[i] == ':':
       # Pseudo-element ::before / ::after -> consume and mark unknown
+      let peStart = i - 1
       inc i
       while i < s.len and s[i] != '.' and s[i] != '#' and s[i] != ':' and s[i] != '[':
         inc i
       sel.pseudo = cpkUnknown
+      sel.rawPseudo = s[peStart ..< i]
       continue
 
     let start = i
@@ -669,7 +673,9 @@ proc parseSimpleSelector(raw: string): Option[CssSimpleSelector] {.raises: [].} 
       of "focus", "focus-visible", "focus-within": sel.pseudo = cpkFocus
       of "disabled": sel.pseudo = cpkDisabled
       of "root": sel.pseudo = cpkRoot
-      else: sel.pseudo = cpkUnknown
+      else:
+        sel.pseudo = cpkUnknown
+        sel.rawPseudo = ":" & ident
     else:
       discard
   some(sel)
@@ -1020,6 +1026,10 @@ proc parseCssSheetInternal(
     for d in decls:
       if not isSupportedCssProperty(d.prop):
         recordUnsupportedCssProperty(outUnsupported, d.prop)
+      elif d.prop == "display":
+        let dispVal = htmlToLowerAscii(htmlStripAscii(d.value))
+        if dispVal == "grid" or dispVal == "inline-grid":
+          recordUnsupportedCssProperty(outUnsupported, "display:" & dispVal)
 
     var sStart = 0
     for k in 0 .. selectorListStr.len:
@@ -1034,17 +1044,30 @@ proc parseCssSheetInternal(
           inc orderCounter
         sStart = k + 1
 
+proc collectUnsupportedSelectors(rules: seq[CssRule], outSelectors: var seq[string]) {.raises: [].} =
+  for r in rules:
+    for p in r.selector.parts:
+      if p.pseudo == cpkUnknown and p.rawPseudo.len > 0:
+        var found = false
+        for existing in outSelectors:
+          if existing == p.rawPseudo:
+            found = true
+            break
+        if not found:
+          outSelectors.add(p.rawPseudo)
+
 proc parseCssSheet*(
   css: string,
   media: CssMediaContext = defaultCssMediaContext()
 ): CssStylesheet {.raises: [].} =
-  result = CssStylesheet(rules: @[], unsupportedProperties: @[])
+  result = CssStylesheet(rules: @[], unsupportedProperties: @[], unsupportedSelectors: @[])
   let clean = stripCssComments(css)
   var orderCounter = 0
   parseCssSheetInternal(clean, media, orderCounter, result.rules, result.unsupportedProperties, 0)
+  collectUnsupportedSelectors(result.rules, result.unsupportedSelectors)
 
 proc mergeStylesheets*(a, b: CssStylesheet): CssStylesheet {.raises: [].} =
-  result = CssStylesheet(rules: @[], unsupportedProperties: @[])
+  result = CssStylesheet(rules: @[], unsupportedProperties: @[], unsupportedSelectors: @[])
   var order = 0
   for r in a.rules:
     var copyR = r
@@ -1060,6 +1083,12 @@ proc mergeStylesheets*(a, b: CssStylesheet): CssStylesheet {.raises: [].} =
     recordUnsupportedCssProperty(result.unsupportedProperties, u)
   for u in b.unsupportedProperties:
     recordUnsupportedCssProperty(result.unsupportedProperties, u)
+  for s in a.unsupportedSelectors:
+    if s notin result.unsupportedSelectors:
+      result.unsupportedSelectors.add(s)
+  for s in b.unsupportedSelectors:
+    if s notin result.unsupportedSelectors:
+      result.unsupportedSelectors.add(s)
 
 # =============================================================================
 # Selector Matching & Cascade
@@ -1190,6 +1219,9 @@ proc applyDeclaration*(style: var CssComputedStyle, prop, rawVal: string) {.rais
     of "none": style.display = cdNone
     of "flex": style.display = cdFlex
     of "inline", "inline-block": style.display = cdInline
+    of "grid", "inline-grid":
+      style.display = cdBlock
+      recordUnsupportedCssProperty(style.unsupportedProperties, "display:" & low)
     else: style.display = cdBlock
   of "position":
     case low

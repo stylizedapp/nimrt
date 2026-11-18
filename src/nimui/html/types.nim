@@ -55,6 +55,7 @@ type
     id*: string
     classes*: seq[string]
     pseudo*: CssPseudoKind
+    rawPseudo*: string
 
   CssSelector* = object
     parts*: seq[CssSimpleSelector]
@@ -78,6 +79,7 @@ type
   CssStylesheet* = object
     rules*: seq[CssRule]
     unsupportedProperties*: seq[string]
+    unsupportedSelectors*: seq[string]
 
   CssDisplay* = enum
     cdBlock

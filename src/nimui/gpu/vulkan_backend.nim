@@ -16,8 +16,26 @@ import corex/result
 const
   MaxFramesInFlight* = 2
   MaxInstancesPerFrame* = 16384 # 1MB per frame (2MB total ring buffer), supports 16K UI primitives per frame
+  MinVulkanApiMajor* = 1'u32
+  MinVulkanApiMinor* = 1'u32
+  MinVulkanApiVersion* = (MinVulkanApiMajor shl 22) or (MinVulkanApiMinor shl 12)
+  MinVulkanVersionString* = "1.1.0"
+  MinVulkanDeviceExtensions* = ["VK_KHR_swapchain"]
 
 type
+  VulkanDiagKind* = enum
+    vkdOk
+    vkdVulkanUnavailable
+    vkdDriverTooOld
+    vkdShaderCompilationFailed
+    vkdDeviceLost
+
+  VulkanDiagnostic* = object
+    kind*: VulkanDiagKind
+    message*: string
+    vkResult*: VkResult
+    driverApiVersion*: uint32
+    deviceName*: string
   UiDrawInstance* {.packed.} = object
     pos*: array[2, float32]         # Screen coords x, y (8B)
     size*: array[2, float32]        # Width, height (8B)
@@ -140,6 +158,64 @@ proc checkVk*(backend: var VulkanBackend, res: VkResult, op: string): Result[voi
   if res == VK_SUCCESS:
     return ok[void, string]()
   err[void, string](backend.lastError)
+
+proc formatVulkanVersion*(ver: uint32): string {.raises: [].} =
+  let major = (ver shr 22) and 0x7F'u32
+  let minor = (ver shr 12) and 0x3FF'u32
+  let patch = ver and 0xFFF'u32
+  $major & "." & $minor & "." & $patch
+
+proc containsAsciiIgnoreCase(haystack, needle: string): bool {.raises: [].} =
+  if needle.len == 0:
+    return true
+  if haystack.len < needle.len:
+    return false
+  for i in 0 .. (haystack.len - needle.len):
+    var matched = true
+    for j in 0 ..< needle.len:
+      var a = haystack[i + j]
+      var b = needle[j]
+      if a >= 'A' and a <= 'Z': a = chr(ord(a) + 32)
+      if b >= 'A' and b <= 'Z': b = chr(ord(b) + 32)
+      if a != b:
+        matched = false
+        break
+    if matched:
+      return true
+  false
+
+proc classifyVulkanDiagnostic*(errMsg: string, vkRes: VkResult = VK_SUCCESS): VulkanDiagKind {.raises: [].} =
+  if vkRes == VK_ERROR_DEVICE_LOST or containsAsciiIgnoreCase(errMsg, "device lost") or containsAsciiIgnoreCase(errMsg, "VK_ERROR_DEVICE_LOST"):
+    return vkdDeviceLost
+  if vkRes == VK_ERROR_INCOMPATIBLE_DRIVER or containsAsciiIgnoreCase(errMsg, "driver too old") or containsAsciiIgnoreCase(errMsg, "VK_ERROR_INCOMPATIBLE_DRIVER") or containsAsciiIgnoreCase(errMsg, "minimum required"):
+    return vkdDriverTooOld
+  if containsAsciiIgnoreCase(errMsg, "shader compilation failed") or containsAsciiIgnoreCase(errMsg, "vkCreateShaderModule") or containsAsciiIgnoreCase(errMsg, "vkCreateGraphicsPipelines") or containsAsciiIgnoreCase(errMsg, "SPIR-V"):
+    return vkdShaderCompilationFailed
+  if errMsg.len == 0 and vkRes == VK_SUCCESS:
+    return vkdOk
+  vkdVulkanUnavailable
+
+proc makeVulkanDiagnostic*(errMsg: string, vkRes: VkResult = VK_SUCCESS, driverApiVersion: uint32 = 0'u32, deviceName: string = ""): VulkanDiagnostic {.raises: [].} =
+  let kind = classifyVulkanDiagnostic(errMsg, vkRes)
+  let prefix = case kind
+    of vkdOk: "Vulkan active"
+    of vkdVulkanUnavailable: "Vulkan unavailable"
+    of vkdDriverTooOld: "driver too old"
+    of vkdShaderCompilationFailed: "shader compilation failed"
+    of vkdDeviceLost: "device lost"
+  let msg = if errMsg.len == 0:
+              prefix
+            elif containsAsciiIgnoreCase(errMsg, prefix):
+              errMsg
+            else:
+              prefix & ": " & errMsg
+  VulkanDiagnostic(
+    kind: kind,
+    message: msg,
+    vkResult: vkRes,
+    driverApiVersion: driverApiVersion,
+    deviceName: deviceName
+  )
 
 proc isDeviceLost*(backend: VulkanBackend): bool {.inline, raises: [].} =
   backend.deviceLost
@@ -768,13 +844,20 @@ proc createPipeline(backend: var VulkanBackend, atlas: FontAtlas): bool {.truste
     return false
 
   # 5. Shaders
+  if uiVertexShaderSpv.len == 0 or uiFragmentShaderSpv.len == 0:
+    backend.lastError = "shader compilation failed: embedded SPIR-V shader bytecode is empty"
+    return false
+
   var vertModuleInfo = VkShaderModuleCreateInfo(
     sType: VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
     codeSize: uint(uiVertexShaderSpv.len * sizeof(uint32)),
     pCode: unsafeAddr uiVertexShaderSpv[0]
   )
   var vertModule: VkShaderModule
-  if backend.api.vkCreateShaderModule(backend.device, addr vertModuleInfo, nil, addr vertModule) != VK_SUCCESS:
+  let vertRes = backend.api.vkCreateShaderModule(backend.device, addr vertModuleInfo, nil, addr vertModule)
+  if vertRes != VK_SUCCESS:
+    backend.recordVkError(vertRes, "vkCreateShaderModule(vert)")
+    backend.lastError = "shader compilation failed: vkCreateShaderModule(vertex) returned VkResult " & $vertRes
     return false
 
   var fragModuleInfo = VkShaderModuleCreateInfo(
@@ -783,8 +866,11 @@ proc createPipeline(backend: var VulkanBackend, atlas: FontAtlas): bool {.truste
     pCode: unsafeAddr uiFragmentShaderSpv[0]
   )
   var fragModule: VkShaderModule
-  if backend.api.vkCreateShaderModule(backend.device, addr fragModuleInfo, nil, addr fragModule) != VK_SUCCESS:
+  let fragRes = backend.api.vkCreateShaderModule(backend.device, addr fragModuleInfo, nil, addr fragModule)
+  if fragRes != VK_SUCCESS:
     backend.api.vkDestroyShaderModule(backend.device, vertModule, nil)
+    backend.recordVkError(fragRes, "vkCreateShaderModule(frag)")
+    backend.lastError = "shader compilation failed: vkCreateShaderModule(fragment) returned VkResult " & $fragRes
     return false
 
   var shaderStages = [
@@ -913,7 +999,11 @@ proc createPipeline(backend: var VulkanBackend, atlas: FontAtlas): bool {.truste
   backend.api.vkDestroyShaderModule(backend.device, vertModule, nil)
   backend.api.vkDestroyShaderModule(backend.device, fragModule, nil)
 
-  pipeRes == VK_SUCCESS
+  if pipeRes != VK_SUCCESS:
+    backend.recordVkError(pipeRes, "vkCreateGraphicsPipelines")
+    backend.lastError = "shader compilation failed: vkCreateGraphicsPipelines returned VkResult " & $pipeRes
+    return false
+  true
 
 # =============================================================================
 # Initialization & Setup
@@ -931,9 +1021,11 @@ proc initVulkanBackend*(
   b.hwnd = hwnd
   b.dpiScale = if dpiScale > 0.1f: dpiScale else: 1.0f
   b.validationEnabled = enableValidation
+  if hwnd.isNil:
+    return err[VulkanBackend, string]("Vulkan unavailable: native window handle (hwnd) is nil")
   b.api = loadVulkanApi()
   if b.api.lib.isNil:
-    return err[VulkanBackend, string]("Could not load Vulkan driver (vulkan-1.dll / libvulkan.so)")
+    return err[VulkanBackend, string]("Vulkan unavailable: could not load Vulkan driver (vulkan-1.dll / libvulkan.so)")
 
   # 1. VkInstance Creation
   var appInfo = VkApplicationInfo(
@@ -942,7 +1034,7 @@ proc initVulkanBackend*(
     applicationVersion: 1,
     pEngineName: "NimUI Engine",
     engineVersion: 1,
-    apiVersion: (1'u32 shl 22) or (1'u32 shl 12) # Vulkan 1.1
+    apiVersion: MinVulkanApiVersion # Vulkan 1.1
   )
 
   when defined(windows):
@@ -963,9 +1055,12 @@ proc initVulkanBackend*(
     ppEnabledExtensionNames: cast[cstringArray](addr extNames[0])
   )
 
-  if b.api.vkCreateInstance(addr instInfo, nil, addr b.instance) != VK_SUCCESS:
+  let instRes = b.api.vkCreateInstance(addr instInfo, nil, addr b.instance)
+  if instRes != VK_SUCCESS:
     b.api.unload()
-    return err[VulkanBackend, string]("vkCreateInstance failed")
+    if instRes == VK_ERROR_INCOMPATIBLE_DRIVER:
+      return err[VulkanBackend, string]("driver too old: Vulkan " & MinVulkanVersionString & "+ loader/driver required (VK_ERROR_INCOMPATIBLE_DRIVER)")
+    return err[VulkanBackend, string]("Vulkan unavailable: vkCreateInstance failed with VkResult " & $instRes)
 
   b.api.loadInstanceProcs(b.instance)
 
@@ -1003,10 +1098,18 @@ proc initVulkanBackend*(
   var bestScore = -1
   var bestGfxQueue = 0'u32
   var bestPresentQueue = 0'u32
+  var foundTooOldDevice = false
+  var tooOldVersion = 0'u32
 
   for dev in physicalDevices:
     var props: VkPhysicalDeviceProperties
     b.api.vkGetPhysicalDeviceProperties(dev, addr props)
+
+    if props.apiVersion < MinVulkanApiVersion:
+      foundTooOldDevice = true
+      if props.apiVersion > tooOldVersion:
+        tooOldVersion = props.apiVersion
+      continue
 
     var qCount: uint32 = 0
     b.api.vkGetPhysicalDeviceQueueFamilyProperties(dev, addr qCount, nil)
@@ -1041,7 +1144,9 @@ proc initVulkanBackend*(
     b.api.vkDestroySurfaceKHR(b.instance, b.surface, nil)
     b.api.vkDestroyInstance(b.instance, nil)
     b.api.unload()
-    return err[VulkanBackend, string]("No suitable Vulkan physical device with graphics & presentation support")
+    if foundTooOldDevice:
+      return err[VulkanBackend, string]("driver too old: GPU driver supports Vulkan " & formatVulkanVersion(tooOldVersion) & ", minimum required is " & MinVulkanVersionString)
+    return err[VulkanBackend, string]("Vulkan unavailable: no suitable Vulkan physical device with graphics & presentation support")
 
   b.physicalDevice = bestDevice
   b.graphicsQueueFamily = bestGfxQueue
@@ -1155,8 +1260,9 @@ proc initVulkanBackend*(
 
   # 9. Pipeline & Render Pass (Uses configured b.swapchainFormat)
   if not createPipeline(b, fontAtlas):
+    let pipeErr = if b.lastError.len > 0: b.lastError else: "shader compilation failed: could not create SDF graphics pipeline"
     b.destroy()
-    return err[VulkanBackend, string]("Failed to create SDF graphics pipeline")
+    return err[VulkanBackend, string](pipeErr)
 
   # 10. Swapchain & Framebuffers
   if not createSwapchain(b, width, height):

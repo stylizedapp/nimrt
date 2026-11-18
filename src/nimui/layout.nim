@@ -18,6 +18,9 @@ import ./gpu/font_atlas
 import ./gpu/vulkan_backend
 export unicode
 
+const
+  MaxLayoutDepth* = 256
+
 type
   FlexDirection* = enum
     fdRow
@@ -108,6 +111,7 @@ type
     computedRect*: tuple[x, y, w, h: float32]
     intrinsicSize*: tuple[w, h: float32]
     clipRect*: array[4, uint16] # [minX, minY, maxX, maxY]
+    zIndex*: int32
 
     # Flags
     isDirty*: bool
@@ -121,6 +125,8 @@ type
     pressedNode*: SlabId
     isDirty*: bool
     isLayoutDirty*: bool
+    layoutCycleDetected*: bool
+    layoutDepthExceeded*: bool
     dpiScale*: float32
     allocator*: Allocator
     arena*: ArenaAllocator
@@ -230,8 +236,29 @@ proc createNode*(tree: var UiTree, kind: NodeKind): SlabId {.raises: [].} =
   tree.isLayoutDirty = true
   id
 
+proc sanitizeNonNegFloat(v: float32): float32 {.inline, raises: [].} =
+  let c = classify(v)
+  if c == fcNan or c == fcInf or c == fcNegInf or v < 0.0f:
+    return 0.0f
+  v
+
+proc wouldCreateCycle*(tree: UiTree, parentId, childId: SlabId): bool {.raises: [].} =
+  if parentId == childId:
+    return true
+  var cur = parentId
+  var steps = 0
+  while cur != SlabId(-1'i32) and tree.nodes.contains(cur) and steps <= MaxLayoutDepth:
+    if cur == childId:
+      return true
+    cur = tree.nodes[cur].parent
+    inc steps
+  steps > MaxLayoutDepth
+
 proc addChild*(tree: var UiTree, parentId, childId: SlabId) {.raises: [].} =
   if tree.nodes.contains(parentId) and tree.nodes.contains(childId):
+    if wouldCreateCycle(tree, parentId, childId):
+      tree.layoutCycleDetected = true
+      return
     let addRes = tree.nodes[parentId].children.add(childId)
     doAssert addRes.isOk, "Failed to add child to UiNode children SmallVec"
     tree.nodes[childId].parent = parentId
@@ -244,8 +271,11 @@ proc addChild*(tree: var UiTree, parentId, childId: SlabId) {.raises: [].} =
 
 {.push stacktrace: off, linetrace: off.}
 
-proc measureNode*(tree: var UiTree, id: SlabId, atlas: FontAtlas) {.raises: [].} =
+proc measureNode*(tree: var UiTree, id: SlabId, atlas: FontAtlas, depth: int = 0) {.raises: [].} =
   if not tree.nodes.contains(id):
+    return
+  if depth > MaxLayoutDepth:
+    tree.layoutDepthExceeded = true
     return
 
   template nodePtr: untyped = tree.nodes[id]
@@ -280,7 +310,7 @@ proc measureNode*(tree: var UiTree, id: SlabId, atlas: FontAtlas) {.raises: [].}
 
     for i in 0 ..< childCount:
       let childId = nodePtr.children[i]
-      measureNode(tree, childId, atlas)
+      measureNode(tree, childId, atlas, depth + 1)
       template childNode: untyped = tree.nodes[childId]
 
       if nodePtr.direction == fdRow:
@@ -303,11 +333,11 @@ proc measureNode*(tree: var UiTree, id: SlabId, atlas: FontAtlas) {.raises: [].}
 
     nodePtr.contentHeight = intrinsicH
 
-  # Override with fixed size if configured
+  # Override with fixed size if configured (sanitized against NaN/Inf/negative)
   if nodePtr.widthMode.kind == smFixed:
-    intrinsicW = nodePtr.widthMode.val
+    intrinsicW = sanitizeNonNegFloat(nodePtr.widthMode.val)
   if nodePtr.heightMode.kind == smFixed:
-    intrinsicH = nodePtr.heightMode.val
+    intrinsicH = sanitizeNonNegFloat(nodePtr.heightMode.val)
 
   nodePtr.intrinsicSize = (intrinsicW, intrinsicH)
 
@@ -315,9 +345,13 @@ proc layoutNode*(
   tree: var UiTree,
   id: SlabId,
   x, y, availableW, availableH: float32,
-  parentClip: array[4, uint16]
+  parentClip: array[4, uint16],
+  depth: int = 0
 ) {.raises: [].} =
   if not tree.nodes.contains(id):
+    return
+  if depth > MaxLayoutDepth:
+    tree.layoutDepthExceeded = true
     return
 
   template nodePtr: untyped = tree.nodes[id]
@@ -326,20 +360,20 @@ proc layoutNode*(
   var actualW: float32
   case nodePtr.widthMode.kind
   of smFixed:
-    actualW = nodePtr.widthMode.val
+    actualW = sanitizeNonNegFloat(nodePtr.widthMode.val)
   of smFlexGrow:
-    actualW = availableW
+    actualW = sanitizeNonNegFloat(availableW)
   of smFitContent:
-    actualW = min(nodePtr.intrinsicSize.w, availableW)
+    actualW = min(nodePtr.intrinsicSize.w, sanitizeNonNegFloat(availableW))
 
   var actualH: float32
   case nodePtr.heightMode.kind
   of smFixed:
-    actualH = nodePtr.heightMode.val
+    actualH = sanitizeNonNegFloat(nodePtr.heightMode.val)
   of smFlexGrow:
-    actualH = availableH
+    actualH = sanitizeNonNegFloat(availableH)
   of smFitContent:
-    actualH = min(nodePtr.intrinsicSize.h, availableH)
+    actualH = min(nodePtr.intrinsicSize.h, sanitizeNonNegFloat(availableH))
 
   nodePtr.computedRect = (x, y, actualW, actualH)
 
@@ -430,7 +464,7 @@ proc layoutNode*(
         of aiEnd:
           childY = innerY + (innerH - childH)
 
-      layoutNode(tree, childId, curMain, childY, childW, childH, clip)
+      layoutNode(tree, childId, curMain, childY, childW, childH, clip, depth + 1)
       curMain += childW + effectiveGap
     else:
       if childNode.heightMode.kind == smFlexGrow and totalFlexWeight > 0.0f:
@@ -448,7 +482,7 @@ proc layoutNode*(
         of aiEnd:
           childX = innerX + (innerW - childW)
 
-      layoutNode(tree, childId, childX, curMain, childW, childH, clip)
+      layoutNode(tree, childId, childX, curMain, childW, childH, clip, depth + 1)
       curMain += childH + effectiveGap
 
 proc setDpiScale*(tree: var UiTree, dpiScale: float32) {.inline, raises: [].} =
@@ -462,12 +496,14 @@ proc layoutTree*(tree: var UiTree, screenWidth, screenHeight: float32, atlas: Fo
   if tree.rootId == SlabId(-1'i32) or not tree.nodes.contains(tree.rootId):
     return
 
+  tree.layoutDepthExceeded = false
+
   # Pass 1: Bottom-up intrinsic sizes
-  measureNode(tree, tree.rootId, atlas)
+  measureNode(tree, tree.rootId, atlas, 0)
 
   # Pass 2: Top-down geometry distribution
   let initialClip: array[4, uint16] = [0'u16, 0'u16, uint16(clamp(screenWidth, 0.0f, 65535.0f)), uint16(clamp(screenHeight, 0.0f, 65535.0f))]
-  layoutNode(tree, tree.rootId, 0.0f, 0.0f, screenWidth, screenHeight, initialClip)
+  layoutNode(tree, tree.rootId, 0.0f, 0.0f, screenWidth, screenHeight, initialClip, 0)
 
   tree.isLayoutDirty = false
   tree.isDirty = true
@@ -834,9 +870,36 @@ proc emitNodeInstances(
       thumbInst.pad = 0'u32
       instances.add(thumbInst)
 
-  # 3. Recursively emit children
+  # 3. Recursively emit children (sorted by zIndex when any child has zIndex != 0)
+  var hasZ = false
   for i in 0 ..< node.children.len:
-    emitNodeInstances(tree, node.children[i], instances, atlas)
+    let cid = node.children[i]
+    if tree.nodes.contains(cid) and tree.nodes[cid].zIndex != 0:
+      hasZ = true
+      break
+  if not hasZ:
+    for i in 0 ..< node.children.len:
+      emitNodeInstances(tree, node.children[i], instances, atlas)
+  else:
+    var order = newSeq[int](node.children.len)
+    for i in 0 ..< order.len:
+      order[i] = i
+    # Stable insertion sort by (zIndex, originalIndex)
+    for i in 1 ..< order.len:
+      let keyIdx = order[i]
+      let keyZ = if tree.nodes.contains(node.children[keyIdx]): tree.nodes[node.children[keyIdx]].zIndex else: 0'i32
+      var j = i - 1
+      while j >= 0:
+        let jIdx = order[j]
+        let jZ = if tree.nodes.contains(node.children[jIdx]): tree.nodes[node.children[jIdx]].zIndex else: 0'i32
+        if jZ > keyZ:
+          order[j + 1] = order[j]
+          dec j
+        else:
+          break
+      order[j + 1] = keyIdx
+    for idx in order:
+      emitNodeInstances(tree, node.children[idx], instances, atlas)
 
 proc scaleDrawInstancesForDpi*(
   instances: var openArray[UiDrawInstance],
@@ -895,11 +958,39 @@ proc hitTestNode*(tree: UiTree, id: SlabId, px, py: float32): SlabId {.raises: [
 
   # Check node rect
   if px >= x and px <= x + w and py >= y and py <= y + h:
-    # Recurse children in reverse Z-order
-    for i in countdown(node.children.len - 1, 0):
-      let hit = hitTestNode(tree, node.children[i], px, py)
-      if hit != SlabId(-1'i32):
-        return hit
+    # Recurse children in reverse Z-order (respecting zIndex)
+    var hasZ = false
+    for i in 0 ..< node.children.len:
+      let cid = node.children[i]
+      if tree.nodes.contains(cid) and tree.nodes[cid].zIndex != 0:
+        hasZ = true
+        break
+    if not hasZ:
+      for i in countdown(node.children.len - 1, 0):
+        let hit = hitTestNode(tree, node.children[i], px, py)
+        if hit != SlabId(-1'i32):
+          return hit
+    else:
+      var order = newSeq[int](node.children.len)
+      for i in 0 ..< order.len:
+        order[i] = i
+      for i in 1 ..< order.len:
+        let keyIdx = order[i]
+        let keyZ = if tree.nodes.contains(node.children[keyIdx]): tree.nodes[node.children[keyIdx]].zIndex else: 0'i32
+        var j = i - 1
+        while j >= 0:
+          let jIdx = order[j]
+          let jZ = if tree.nodes.contains(node.children[jIdx]): tree.nodes[node.children[jIdx]].zIndex else: 0'i32
+          if jZ > keyZ:
+            order[j + 1] = order[j]
+            dec j
+          else:
+            break
+        order[j + 1] = keyIdx
+      for i in countdown(order.len - 1, 0):
+        let hit = hitTestNode(tree, node.children[order[i]], px, py)
+        if hit != SlabId(-1'i32):
+          return hit
     return id
 
   SlabId(-1'i32)
@@ -1137,3 +1228,46 @@ proc handleKeyDown*(tree: var UiTree, keyCode: uint32, ctrlDown: bool = false, s
           tree.isLayoutDirty = true
       else:
         discard
+
+# =============================================================================
+# Deterministic UiTree Snapshot Serialization (for Snapshot & CI Diff Tests)
+# =============================================================================
+
+proc formatSnapshotFloat(v: float32): string {.raises: [].} =
+  let scaled = int(round(v * 100.0f))
+  let neg = scaled < 0
+  let absVal = abs(scaled)
+  let whole = absVal div 100
+  let frac = absVal mod 100
+  let fracStr = (if frac < 10: "0" else: "") & $frac
+  (if neg: "-" else: "") & $whole & "." & fracStr
+
+proc snapshotNodeRecursive(tree: UiTree, id: SlabId, depth: int, outStr: var string) {.raises: [].} =
+  if depth > MaxLayoutDepth or not tree.nodes.contains(id):
+    return
+  let node = tree.nodes[id]
+  for _ in 0 ..< depth:
+    outStr.add("  ")
+  outStr.add($node.kind)
+  outStr.add(" rect=(" & formatSnapshotFloat(node.computedRect.x) & "," &
+             formatSnapshotFloat(node.computedRect.y) & "," &
+             formatSnapshotFloat(node.computedRect.w) & "," &
+             formatSnapshotFloat(node.computedRect.h) & ")")
+  outStr.add(" clip=[" & $node.clipRect[0] & "," & $node.clipRect[1] & "," &
+             $node.clipRect[2] & "," & $node.clipRect[3] & "]")
+  if node.zIndex != 0:
+    outStr.add(" z=" & $node.zIndex)
+  if node.isScrollable:
+    outStr.add(" scroll=" & formatSnapshotFloat(node.scrollOffset))
+  if node.text.len > 0:
+    outStr.add(" text=\"" & node.text & "\"")
+  outStr.add("\n")
+  for i in 0 ..< node.children.len:
+    snapshotNodeRecursive(tree, node.children[i], depth + 1, outStr)
+
+proc snapshotUiTree*(tree: UiTree): string {.raises: [].} =
+  ## Produces a deterministic, human-readable snapshot of the laid-out UiTree.
+  result = ""
+  if tree.rootId == SlabId(-1'i32) or not tree.nodes.contains(tree.rootId):
+    return "<empty>\n"
+  snapshotNodeRecursive(tree, tree.rootId, 0, result)

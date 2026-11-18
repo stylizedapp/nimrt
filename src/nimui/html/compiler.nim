@@ -685,6 +685,7 @@ proc mountElementRecursive(
   tree.nodes[boxSlab].radius = style.borderRadius
   tree.nodes[boxSlab].fontSize = style.fontSize
   tree.nodes[boxSlab].isScrollable = style.overflowY
+  tree.nodes[boxSlab].zIndex = int32(style.zIndex)
 
   if node.id.len > 0:
     bindings.idToSlab.put(node.id, boxSlab)
