@@ -15,7 +15,20 @@ requires "nim >= 2.0.0"
 # - glslangValidator (optional, tools/glslang/): Only needed if regenerating `tools/shaders/*.spv`;
 #   precompiled `.spv` binaries and `src/nimui/gpu/shaders.nim` are checked in.
 
+proc ensureQuickJs() =
+  when defined(windows):
+    if not fileExists("src/nimui/js/libquickjs.a"):
+      echo "[first-run] src/nimui/js/libquickjs.a not found; building QuickJS static library..."
+      exec "powershell -ExecutionPolicy Bypass -File tools/build_quickjs.ps1"
+
 # Tasks
+task doctor, "Check Nim, GCC/MinGW, Vulkan driver, QuickJS, fonts, permissions, and cache":
+  exec "nim c -r tools/doctor.nim"
+
+task bench_canonical, "Build and run canonical UI + CoreX/AlgX benchmark in release headless mode":
+  ensureQuickJs()
+  exec "nim c -d:release --opt:speed --nimcache:nimcache/canonical_bench -o:bin/canonical_bench.exe benchmarks/canonical_bench.nim"
+  exec (when defined(windows): "bin\\canonical_bench.exe --headless" else: "./bin/canonical_bench.exe --headless")
 task build_quickjs, "Build embedded QuickJS static library (requires PowerShell + gcc/ar)":
   echo "[tool] Building src/nimui/js/libquickjs.a via PowerShell + MinGW gcc/ar..."
   exec "powershell -ExecutionPolicy Bypass -File tools/build_quickjs.ps1"
@@ -79,12 +92,15 @@ task test_showcase, "Run automated headless verification of all 4 showcase apps"
   exec "nim c -r tests/test_showcase_apps.nim"
 
 task html_desktop, "Run standalone HTML5/CSS3 Desktop Renderer (Tauri alternative)":
+  ensureQuickJs()
   exec "nim c -r apps/html_desktop/src/main.nim"
 
 task pomodoro, "Run interactive 1-3s Pomodoro Debug Timer (Nim + QuickJS + Vulkan SDF)":
+  ensureQuickJs()
   exec "nim c -r apps/html_desktop/src/main.nim --pomodoro"
 
 task pomodoro_test, "Run headless verification of 1-3s Pomodoro Timer":
+  ensureQuickJs()
   exec "nim c -r apps/html_desktop/src/main.nim --pomodoro-test"
 
 task build_compiler, "Build Hybrid Memory-Safe Nim Compiler (bin/nim_safe.exe)":
@@ -96,12 +112,15 @@ task test_compiler, "Run Hybrid Memory-Safe Compiler (--mem-safe, --safe-mode, -
   exec "nim c -r tests/test_safe_compiler.nim"
 
 task studio, "Run NimUI HTML5/CSS3 Zero-JS Studio":
+  ensureQuickJs()
   exec "nim c -r apps/html_css_studio/src/main.nim"
 
 task gallery, "Run NimUI Component, SDF & Unicode Gallery":
+  ensureQuickJs()
   exec "nim c -r apps/widget_gallery/src/main.nim"
 
 task demo, "Run Singularity Lab Relativistic Kerr Black Hole Demo":
+  ensureQuickJs()
   exec "nim c -r apps/nimui_demo/src/main.nim"
 
 task test_wiztree, "Run WizTree engine verification test suite":

@@ -118,3 +118,44 @@ jobs:
         run: |
           nim check src/corex.nim
           nim check src/algx.nim
+
+  canonical-benchmark:
+    name: Canonical Benchmark & Release Metrics (Windows)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Nim
+        uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: ${{ env.NIM_VERSION }}
+
+      - name: Build QuickJS static library
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File tools/build_quickjs.ps1
+
+      - name: Run environment diagnostics (nimble doctor)
+        shell: pwsh
+        run: nimble doctor
+
+      - name: Build & run canonical benchmark (release headless)
+        shell: pwsh
+        run: |
+          nim c -d:release --opt:speed --nimcache:nimcache/canonical_bench -o:bin/canonical_bench.exe benchmarks/canonical_bench.nim
+          ./bin/canonical_bench.exe --headless --json:benchmarks/results/canonical_bench.json --csv:benchmarks/results/canonical_bench.csv
+
+      - name: Measure release binary sizes
+        shell: pwsh
+        run: |
+          nimble build_release
+          Get-ChildItem bin/*.exe | Select-Object Name, Length | Format-Table -AutoSize
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: canonical-benchmark-results
+          path: |
+            benchmarks/results/canonical_bench.json
+            benchmarks/results/canonical_bench.csv

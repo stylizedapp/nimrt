@@ -43,6 +43,9 @@ Desktop.ini
 tools/glslang/
 src/nimui/js/.obj/
 
+# Benchmark raw outputs
+benchmarks/results/
+
 # Generated screenshots and image outputs
 # Track curated showcase/documentation screenshots explicitly while ignoring ad-hoc PNG exports
 *.png
