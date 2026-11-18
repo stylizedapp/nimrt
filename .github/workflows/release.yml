@@ -102,7 +102,7 @@ jobs:
             - ``nim_safe.exe`` — experimental memory-safe Nim compiler wrapper (``--mem-safe``, ``--check-safe-atf``)
 
           ### Integrity & Unsigned Binary Notice
-          - Prebuilt v0.1.x binaries are **unsigned** GitHub-hosted builds. Verify ``SHA256SUMS.txt`` with:
+          - Prebuilt $($env:RELEASE_TAG) binaries are **unsigned** GitHub-hosted builds. Verify ``SHA256SUMS.txt`` with:
             ````powershell
             Get-FileHash .\html_desktop.exe -Algorithm SHA256
             ````

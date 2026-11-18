@@ -1,0 +1,15 @@
+bin/
+dist/
+nimcache/
+nimcache*/
+htmldocs/
+benchmarks/results/
+.git/
+.agents/
+temp_challenger1/
+*.exe
+*.a
+*.o
+*.obj
+*.pdb
+*.png

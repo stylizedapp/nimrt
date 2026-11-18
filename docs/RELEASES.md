@@ -23,7 +23,11 @@ NimRT ships **self-contained Windows x64 binaries** with zero external browser r
 
 - **GitHub Releases (`v*.*.*` tags):** Triggered automatically by pushing a `v*.*.*` tag via [`.github/workflows/release.yml`](../.github/workflows/release.yml). Runs pre-release SDK & UI checks, builds release binaries (`nimble build_release`), packages the portable `.zip`, generates `SHA256SUMS.txt`, and publishes release notes.
 - **GitHub Actions Artifacts (`workflow_dispatch` or tag):** Every run of `release.yml` uploads `nimrt-<tag>-win64` as a 30-day Actions artifact for verification before or alongside a release.
-- **GitHub Packages / Deployments:** NimRT does not publish npm, NuGet, or Docker container packages (consistent with its native single-binary, zero-Node.js philosophy in [`docs/FOCUS.md`](FOCUS.md)). Distribution happens exclusively via GitHub Releases, Actions artifacts, and source builds (`nimble build_release`).
+- **GitHub Packages (`ghcr.io/stylizedapp/nimrt-safe`):** Official Linux OCI container image packaging the `nim_safe` memory-safe compiler (`--mem-safe`, `--safe-mode`, `--check-safe-atf`) along with `corex`/`algx` headers for zero-setup CI verification, published via [`.github/workflows/packages.yml`](../.github/workflows/packages.yml):
+  ```powershell
+  docker run --rm -v "${PWD}:/workspace" ghcr.io/stylizedapp/nimrt-safe:latest c --mem-safe --safe-mode app.nim
+  ```
+- **GitHub Deployments (`github-pages`):** Live documentation portal (`nim doc` API reference, canonical benchmark highlights, and HTML5/CSS3 compatibility manifest viewer) deployed automatically via [`.github/workflows/pages.yml`](../.github/workflows/pages.yml).
 
 ---
 
