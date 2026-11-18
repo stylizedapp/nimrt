@@ -323,6 +323,19 @@ when defined(windows):
       decodeUtf16LeFast(runBuf, startOff, charCnt, decodedStr)
       inc(totalIters)
 
+    # Category F: Strict-mode malformed MFT record & partial buffer recovery fuzzing
+    var strictErrs = 0
+    for i in 0 ..< 5_000:
+      var rec = buildTemplateRecord(nonResidentData = (i and 1) == 1)
+      let mutCount = rng.nextInt(1, 16)
+      for _ in 0 ..< mutCount:
+        let pos = rng.nextInt(0, MFT_RECORD_SIZE - 1)
+        rec[pos] = byte(rng.nextU64() and 0xFF'u64)
+      let sRes = parseMftRecord(rec, entry, recordIndex = uint64(i), parseMode = mpmStrict)
+      if sRes.isErr:
+        inc strictErrs
+    doAssert strictErrs > 0, "Expected strict mode fuzzer to reject corrupted records"
+
     # Clean up reusable locals before checking ORC heap
     runs = @[]
     decodedStr = ""

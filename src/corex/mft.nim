@@ -24,6 +24,10 @@ else:
     MFT_RECORD_IS_DIRECTORY* = 0x0002'u16
 
   type
+    MftParseMode* = enum
+      mpmLenient
+      mpmStrict
+
     MftEntry* = object
       frn*: uint64
       parentFrn*: uint64

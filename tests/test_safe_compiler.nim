@@ -94,6 +94,11 @@ proc main() =
   expectRejected("2.7 Pragma {.push checks: off.}", "unsafe_push_checks_off.nim", "--mem-safe", "MEM-SAFE-007")
   expectRejected("2.8 Inline {.emit.} pragma", "unsafe_emit_pragma.nim", "--mem-safe", "MEM-SAFE-004")
   expectRejected("2.9 Stack addr escape (distinct from MEM-SAFE-002)", "unsafe_addr_escape.nim", "--mem-safe", "MEM-SAFE-006")
+  expectRejected("2.10 Unsafe low-level import (dynlib)", "unsafe_import_dynlib.nim", "--mem-safe", "MEM-SAFE-008")
+  expectRejected("2.11 Macro expanding to unsafe cast", "unsafe_macro_bypass.nim", "--mem-safe", "MEM-SAFE-001")
+  expectRejected("2.12 Unannotated FFI importc", "unsafe_ffi_importc.nim", "--mem-safe", "MEM-SAFE-004")
+  expectRejected("2.13 External C passC pragma", "unsafe_external_c.nim", "--mem-safe", "MEM-SAFE-008")
+  expectRejected("2.14 Pointer arithmetic via ptr/cast", "unsafe_ptr_arith.nim", "--mem-safe", "MEM-SAFE-002")
 
   echo "\n[SUITE 3] --safe-mode Zero-Exception Policy..."
   expectRejected("3.1 Explicit raise statement rejected", "unsafe_raise_stmt.nim", "--safe-mode", "SAFE-MODE-001")

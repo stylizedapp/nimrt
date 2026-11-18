@@ -26,8 +26,14 @@ NimRT is engineered with defense-in-depth principles:
    - The experimental `nim_safe` compiler enforces borrow-checking, prevents raw pointer arithmetic (`ptr`/`cast`), and validates emitted C code before GCC invocation (After-Codegen-Finish ATF checker).
 
 4. **Filesystem Direct Access ($MFT)**:
-   - Direct raw `$MFT` volume scanning (`apps/wiztree`, `corex/mft.nim`) requires Windows Administrator privileges.
+   - Direct raw `$MFT` volume scanning (`apps/wiztree`, `corex/mft.nim`) requires Windows Administrator privileges, explicit user consent, and strictly read-only access (no silent admin escalation).
    - When run without elevated privileges, the engine automatically falls back to standard Win32 directory APIs (`FindFirstFileExW`).
+
+## Detailed Subsystem Security Docs
+
+- [QuickJS Threat Model & Capabilities](docs/SECURITY_QUICKJS.md)
+- [NTFS MFT Security & Privilege Boundaries](docs/SECURITY_MFT.md)
+- [`nim_safe` Compiler Security Boundaries](docs/SECURITY_NIM_SAFE.md)
 
 ## Reporting a Vulnerability
 
