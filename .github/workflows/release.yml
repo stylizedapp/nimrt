@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag label (for dry-run / manual package build)'
+        required: false
+        default: 'v0.1.0-manual'
 
 permissions:
   contents: write
@@ -13,12 +19,18 @@ env:
 
 jobs:
   release:
-    name: Build & Publish Windows Release
+    name: Build, Verify & Publish Windows Release
     runs-on: windows-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Resolve release tag
+        shell: pwsh
+        run: |
+          $tag = if ("${{ github.ref_type }}" -eq "tag") { "${{ github.ref_name }}" } else { "${{ inputs.tag }}" }
+          "RELEASE_TAG=$tag" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Setup Nim
         uses: jiro4989/setup-nim-action@v2
@@ -29,25 +41,81 @@ jobs:
         shell: pwsh
         run: powershell -ExecutionPolicy Bypass -File tools/build_quickjs.ps1
 
+      - name: Verify Component SDK & UI smoke checks
+        shell: pwsh
+        run: |
+          nim check --warningAsError[UnusedImport]:on src/nimui/sdk.nim
+          nim c -r tests/test_component_sdk.nim
+          nimble test_ui
+
       - name: Build Release Binaries
         shell: pwsh
         run: nimble build_release
 
-      - name: Compute SHA256SUMS.txt
+      - name: Stage Portable Bundle & Compute SHA256SUMS.txt
         shell: pwsh
         run: |
-          $files = Get-ChildItem -Path bin/*.exe | Sort-Object Name
-          $lines = foreach ($f in $files) {
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $bundleDir = "dist/nimrt-$($env:RELEASE_TAG)-win64-portable"
+          New-Item -ItemType Directory -Force -Path $bundleDir | Out-Null
+
+          Copy-Item bin/*.exe $bundleDir/
+          Copy-Item README.md, LICENSE, CHANGELOG.md, docs/DISTRIBUTION.md, docs/FOCUS.md $bundleDir/
+
+          $zipPath = "dist/nimrt-$($env:RELEASE_TAG)-win64-portable.zip"
+          Compress-Archive -Path "$bundleDir/*" -DestinationPath $zipPath -Force
+
+          $artifacts = @(Get-ChildItem -Path bin/*.exe) + @(Get-Item $zipPath) | Sort-Object Name
+          $lines = foreach ($f in $artifacts) {
             $hash = (Get-FileHash -Path $f.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
             "$hash  $($f.Name)"
           }
-          $lines | Set-Content -Path bin/SHA256SUMS.txt -Encoding ascii
-          Get-Content bin/SHA256SUMS.txt
+          $lines | Set-Content -Path dist/SHA256SUMS.txt -Encoding ascii
+          Copy-Item dist/SHA256SUMS.txt bin/SHA256SUMS.txt -Force
+          Get-Content dist/SHA256SUMS.txt
 
-      - name: Attach binaries and SHA256SUMS.txt to GitHub Release
+      - name: Upload Release Artifacts (Actions Package)
+        uses: actions/upload-artifact@v4
+        with:
+          name: nimrt-${{ env.RELEASE_TAG }}-win64
+          path: |
+            bin/*.exe
+            dist/*.zip
+            dist/SHA256SUMS.txt
+          retention-days: 30
+
+      - name: Generate Release Notes Body
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          @"
+          ## NimRT $($env:RELEASE_TAG) (Windows x64)
+
+          > **Native desktop runtime & Vulkan 1.1+ SDF UI engine** — <40 ms cold start, ~25 MB RAM, Zero-JS by default.
+
+          ### What to Install
+          - **Recommended (All-in-one):** ``nimrt-$($env:RELEASE_TAG)-win64-portable.zip`` — portable archive with all standalone binaries and docs (no installer, no Chromium/WebView2, no background services).
+          - **Individual binaries:**
+            - ``html_desktop.exe`` — standalone HTML5/CSS3 desktop renderer (Zero-JS default + opt-in QuickJS)
+            - ``wiztree.exe`` — high-speed NTFS MFT / Win32 disk usage analyzer CLI
+            - ``widget_gallery.exe`` — NimUI SDF widget & typography showcase
+            - ``nim_safe.exe`` — experimental memory-safe Nim compiler wrapper (``--mem-safe``, ``--check-safe-atf``)
+
+          ### Integrity & Unsigned Binary Notice
+          - Prebuilt v0.1.x binaries are **unsigned** GitHub-hosted builds. Verify ``SHA256SUMS.txt`` with:
+            ````powershell
+            Get-FileHash .\html_desktop.exe -Algorithm SHA256
+            ````
+          - See [``docs/DISTRIBUTION.md``](docs/DISTRIBUTION.md) for SmartScreen guidance, runtime vs app versioning, and uninstall steps.
+          "@ | Set-Content -Path dist/RELEASE_NOTES.md -Encoding utf8
+
+      - name: Attach binaries, portable zip, and SHA256SUMS.txt to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
+          body_path: dist/RELEASE_NOTES.md
           files: |
             bin/*.exe
-            bin/SHA256SUMS.txt
+            dist/*.zip
+            dist/SHA256SUMS.txt
           generate_release_notes: true

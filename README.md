@@ -4,7 +4,7 @@
 
 ### Нативный UI-движок и системная библиотека на Nim 2.x
 
-**Рендеринг подмножества HTML5/CSS3 на Vulkan 1.1+ SDF без Chromium и Electron.**
+**NimRT — это Windows-first нативный десктопный рантайм и движок на Vulkan 1.1+ SDF, позволяющий выпускать утилиты со стартом <40 мс и ~25 МБ RAM на Nim + практичном подмножестве HTML5/CSS3 без Chromium и Electron.**
 
 [![Windows CI](https://img.shields.io/github/actions/workflow/status/stylizedapp/nimrt/ci.yml?branch=main&label=Windows%20CI&logo=githubactions&logoColor=white)](https://github.com/stylizedapp/nimrt/actions/workflows/ci.yml)
 [![Nim Version](https://img.shields.io/badge/Nim-2.2.12%2B-FFE953?logo=nim&logoColor=black)](https://nim-lang.org/)
@@ -21,6 +21,7 @@
 [Примеры](#примеры-приложений) •
 [Архитектура](#архитектура) •
 [Быстрый старт](#быстрый-старт) •
+[Релизы](#что-устанавливать-github-releases) •
 [Бенчмарки](#бенчмарки-corex--algx-против-rust) •
 [FAQ](#faq)
 
@@ -34,7 +35,10 @@
 
 1. **NimUI** — рендеринг подмножества HTML5/CSS3 (включая Flexbox) на GPU через Vulkan 1.1+ SDF. Холодный старт < 40 мс, потребление памяти от ~20–35 МБ, чёткие векторные скругления и тени.
 2. **CoreX и AlgX** — системное ядро и алгоритмы: аллокаторы с проверкой утечек (`0 bytes leaked`), прямой парсер NTFS MFT, пул потоков с work-stealing, IOCP-реактор, SIMD-хэш-таблицы и быстрая сортировка.
-3. **Безопасность и скриптинг** — модель памяти `--mm:orc` без пауз сборщика мусора, режим **Zero-JS по умолчанию** (вся логика на Nim) и опциональная песочница **QuickJS** с жёсткими лимитами памяти и прав. Также в репозитории есть экспериментальный проверяющий компилятор `nim_safe`.
+3. **Безопасность и скриптинг** — модель памяти `--mm:orc` без пауз сборщика мусора, режим **Zero-JS по умолчанию** (вся логика на Nim) и опциональная песочница **QuickJS** с жёсткими лимитами памяти и прав. Также в репозитории есть Component SDK (`src/nimui/sdk/`) с явными разрешениями (`fs`, `network`, `process`, `clipboard`, `notifications`) и экспериментальный проверяющий компилятор `nim_safe`.
+
+> [!NOTE]
+> **Фокус и границы проекта:** см. [`docs/FOCUS.md`](docs/FOCUS.md) (первая вертикаль — быстрые локальные Windows-утилиты и dev-инструменты; не является общим веб-браузером или заменой Node.js), [`docs/COMPONENT_SDK.md`](docs/COMPONENT_SDK.md) (контракт блоков и прав) и [`docs/DISTRIBUTION.md`](docs/DISTRIBUTION.md) (политика дистрибуции, подписей и приватности).
 
 ---
 
@@ -169,6 +173,17 @@ nimble demo
 ```powershell
 nim c -r apps/html_desktop/src/main.nim --file path/to/your_file.html
 ```
+
+### Что устанавливать (GitHub Releases)
+
+Если вы не хотите собирать из исходников, скачайте готовые автономные сборки со страницы [GitHub Releases](https://github.com/stylizedapp/nimrt/releases) (Chromium, WebView2 и Node.js не требуются):
+
+- **`nimrt-vX.Y.Z-win64-portable.zip`** *(рекомендуется)* — портативный архив со всеми бинарниками и документацией.
+- **`html_desktop.exe`** — автономный рендерер локальных `.html` приложений (Zero-JS по умолчанию + опциональный QuickJS).
+- **`wiztree.exe`** — консольный анализатор диска через NTFS `$MFT` / Win32.
+- **`widget_gallery.exe`** — витрина SDF-виджетов и типографики на Vulkan 1.1+.
+- **`nim_safe.exe`** — экспериментальный проверяющий компилятор (`--mem-safe`, `--check-safe-atf`).
+- **`SHA256SUMS.txt`** — контрольные суммы для проверки целостности неподписанных MVP-сборок (подробнее — в [`docs/RELEASES.md`](docs/RELEASES.md) и [`docs/DISTRIBUTION.md`](docs/DISTRIBUTION.md)).
 
 ---
 
