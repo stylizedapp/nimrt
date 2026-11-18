@@ -91,16 +91,75 @@ Local verification of all 3 jobs defined in `.github/workflows/ci.yml`:
 
 ## 2. После (After) — Post-Swarm Integration State
 
-*(To be filled after all swarm branches are merged and verified.)*
+Verified on `main` at `108c07a` after merging all 5 feature branches (`product-sdk`, `security`, `bench-dx`, `baseline`, `ui-gfx`).
 
 ### 2.1 Speed (Startup, Benchmarks & Binary Sizes)
-- _Pending integration_
 
-### 2.2 Safety (QuickJS, MFT & `nim_safe`)
-- _Pending integration_
+#### Release Binary Sizes (`nimble build_release` + `nimble bench_canonical`)
+| Artifact | Size (bytes) | Size (human) | Delta vs До |
+|---|---:|---:|---:|
+| `bin/wiztree.exe` | 475,844 | ~464.7 KiB | 0 B |
+| `bin/widget_gallery.exe` | 726,096 | ~709.1 KiB | +8,407 B |
+| `bin/canonical_bench.exe` | 977,540 | ~954.6 KiB | *(new)* |
+| `bin/html_desktop.exe` | 2,086,743 | ~1.99 MiB | +35,517 B |
+| `bin/nim_safe.exe` | 8,652,943 | ~8.25 MiB | -51,783 B |
+| `src/nimui/js/libquickjs.a` | 1,132,028 | ~1.08 MiB | +2,064 B |
+
+#### CLI Startup Latency (`Measure-Command`)
+- `bin/wiztree.exe --help`: cold `243.66 ms`; warm `22.14 ms`
+- `bin/nim_safe.exe --version`: `1,079.09 ms`
+
+#### Canonical Headless Benchmark (`nimble bench_canonical`, `-d:release --opt:speed`, 3 warmup + 15 runs, 4 CPUs)
+Results saved to `benchmarks/results/canonical_bench.json` and `benchmarks/results/canonical_bench.csv`:
+
+| Layer | Metric | Min | p50 | p95 | Unit |
+|---|---|---:|---:|---:|---|
+| `corex_algx` | `algx_ultrasort_1m` | 16.00 | 76.30 | 145.04 | ms |
+| `corex_algx` | `algx_swissmap_300k` | 18.21 | 20.97 | 26.71 | ms |
+| `corex_algx` | `corex_signals_10k` | 3.01 | 3.17 | 5.68 | ms |
+| `corex_algx` | `corex_arena_alloc_100k` | 0.45 | 0.58 | 1.03 | ms |
+| `ui_engine` | `ui_minimal_layout_draw` (179 inst) | 0.019 | 0.019 | 0.019 | ms |
+| `ui_engine` | `ui_table_200x6_layout_draw` (747 inst) | 0.677 | 0.722 | 1.260 | ms |
+| `ui_engine` | `ui_forms_reactive_layout_draw` (149 inst) | 0.024 | 0.025 | 0.026 | ms |
+| `ui_engine` | `ui_virtuallist_100k_scroll` (829 inst) | 0.090 | 0.092 | 0.093 | ms |
+| `ui_engine` | `ui_html_css_mount` | 0.257 | 0.296 | 0.796 | ms |
+| `ui_engine` | `ui_software_sdf_raster_1280x720` (988 inst) | 66.83 | 95.44 | 110.12 | ms |
+| `full_app` | `app_cold_start_ms` | 203.43 | 203.43 | 203.43 | ms |
+| `full_app` | `app_warm_start_ms` | 204.91 | 214.18 | 214.18 | ms |
+| `full_app` | `app_e2e_frame_headless_ms` (1280×720, 987 inst) | 79.75 | 121.80 | 151.53 | ms |
+| `full_app` | `app_rss_current_bytes` / `app_rss_peak_bytes` | — | 33,742,848 / 33,746,944 | — | bytes (~32.2 MiB) |
+
+### 2.2 Safety (QuickJS, MFT, `nim_safe` & Component SDK)
+- **QuickJS (`src/nimui/js/`)**: `tests/test_nimui_quickjs.nim` passes all 5 suites including Suite 5 (`5.1 Bypass prevention, capability separation & audit log verified`, `5.2 HtmlJsSession fail-closed host capabilities & audit verified`) with 0 leaks.
+- **NTFS MFT (`src/corex/mft.nim`, `src/corex/platform/windows/win32_mft.nim`)**: `tests/test_win32_mft.nim`, `tests/test_ironclad_mft.nim`, and `tests/test_fuzz_mft.nim` (100,000 deterministic fuzz cases: 0 panics, 0 crashes, 0 OOBs) pass; `mpmStrict` and `explicitConsent` modes integrated.
+- **`nim_safe` (`compiler/`)**: `tests/test_safe_compiler.nim` passes 5/5 suites (`--mem-safe` `MEM-SAFE-001..008`, 14 AST/borrow/FFI/pointer-arithmetic rejection checks, `--safe-mode` `SAFE-MODE-001..003`, `--check-safe-atf` `ATF-001..005`, `{.trustedUnsafe.}`).
+- **Component SDK (`tests/test_component_sdk.nim`)**: Passes 4/4 suites (Permissions & Audit Log, Third-Party Block Contract & SemVer Compatibility, 11 Minimal UI Blocks + Flexbox Layout, 6 System Blocks: HTTP, JSON, SQLite, CSV, LocalStorage, Shell) with 0 leaks.
 
 ### 2.3 Code Clarity & Simplicity
-- _Pending integration_
 
-### 2.4 CI Test Status
-- _Pending integration_
+| Directory | `.nim` Files | Lines of Code | Delta vs До |
+|---|---:|---:|---|
+| `src/corex` | 32 | 11,890 | +1,790 LOC |
+| `src/algx` | 6 | 1,256 | +164 LOC |
+| `src/nimui` *(excl. vendored QuickJS C)* | 32 | 16,386 | +5 files, +3,088 LOC |
+| `compiler` | 7 | 2,066 | +1 file, +247 LOC |
+| `apps` | 33 | 12,330 | +1,426 LOC |
+| `tests` | 74 | 15,860 | +9 files, +3,222 LOC |
+
+- **Diagnostics & Strict Checks**:
+  - `nimble doctor`: `9 OK, 0 WARN, 0 FAIL` (Nim `2.2.12`, Nimble `v0.24.1`, MinGW-W64 GCC `11.1.0`, Vulkan `1.3.250` / `1.3.260`, QuickJS static lib, system fonts, workspace permissions, nimcache).
+  - `nimble check`: valid (`nim_ecosystem`).
+  - `nim check` with `--warningAsError[UnusedImport]:on --hintAsError[XDeclaredButNotUsed]:on`: 0 errors on `src/corex.nim`, `src/algx.nim`, `src/nimui.nim`.
+  - `nim check --os:linux --cpu:amd64`: exits 0 on `src/corex.nim` (7 `[UnusedImport]` warnings in `async.nim` / `mft.nim`) and `src/algx.nim` (0 warnings).
+  - `nimble test_ui`: passes all 6 suites (layout, widgets, HTML5/CSS3, Vulkan fallback diagnostics, HTML/CSS manifest & golden snapshots, layout reliability & framebuffer hash snapshots) with 0 leaks.
+
+### 2.4 Verification & CI Status on `main`
+| Command / Suite | Scope | Result |
+|---|---|---|
+| `nimble check` | Package manifest & dependency validation | **PASS** |
+| `nimble doctor` | Environment & toolchain first-run diagnostics | **PASS** (`9 OK, 0 WARN, 0 FAIL`) |
+| `nimble build_release` | `html_desktop`, `wiztree`, `widget_gallery`, `nim_safe` | **PASS** |
+| `nimble bench_canonical` | 16 canonical metrics (CoreX/AlgX, UI engine, full app) | **PASS** |
+| `nimble test_ui` | 6 NimUI suites (layout, widgets, HTML/CSS, Vulkan fallback, manifest/golden, snapshots) | **PASS** (0 leaks) |
+| `nim c -r tests/test_component_sdk.nim` | 4 Component SDK suites (11 UI + 6 system blocks) | **PASS** (0 leaks) |
+| `nimble test_all` | All 40 test targets (CoreX, AlgX, Everything, WizTree, UI, QuickJS, 100k MFT & HTML/CSS fuzzers, 4 showcase apps / 9 PNGs, `nim_safe`) | **PASS** (exit 0) |
