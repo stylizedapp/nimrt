@@ -31,11 +31,11 @@ NimRT ships **self-contained Windows x64 binaries** with zero external browser r
 
 ```powershell
 # 1. Verify SHA-256 checksum against SHA256SUMS.txt
-Get-FileHash .\nimrt-v0.1.0-win64-portable.zip -Algorithm SHA256
+Get-FileHash .\nimrt-v0.3.0-win64-portable.zip -Algorithm SHA256
 Get-Content .\SHA256SUMS.txt
 
 # 2. Extract portable archive and run
-Expand-Archive .\nimrt-v0.1.0-win64-portable.zip -DestinationPath .\nimrt
+Expand-Archive .\nimrt-v0.3.0-win64-portable.zip -DestinationPath .\nimrt
 .\nimrt\widget_gallery.exe
 ```
 

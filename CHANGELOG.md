@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-11-19
+
+Production-readiness, security hardening, deterministic UI, and DX release (60+ commits since `v0.1.0`).
+
+### Added
+- **Benchmarking & DX**: Canonical benchmark app (`benchmarks/canonical_bench.nim`) with headless JSON/CSV output, `docs/BENCHMARK_METHODOLOGY.md`, `tools/doctor.nim` (`nimble doctor`), and automatic QuickJS static library bootstrap (`ensureQuickJs()`).
+- **UI & Graphics Reliability**: Vulkan 1.1+ diagnostics and graceful CPU rasterizer fallback (`src/nimui/renderer.nim`), machine-readable HTML5/CSS3 compatibility manifest (`docs/html_css_manifest.json`, `src/nimui/html/manifest.nim`), layout cycle/depth/`NaN` guards, `zIndex` ordering, deterministic `snapshotUiTree`, and visual diff tests.
+- **Security Hardening**: QuickJS C-level hardening (`eval`, `Function`, `Proxy`, `Reflect`, dynamic `import()`), capability separation + audit log; MFT `mpmStrict` mode, `explicitConsent` enforcement, and 100k+ fuzz tests; `[MEM-SAFE-008]` FFI/external-C rejection and bypass negative tests in `compiler/mem_safe_pass.nim`.
+- **Component SDK & Release Polish**: `src/nimui/sdk.nim` (11 UI blocks, 6 system blocks, default-deny permissions, SemVer `BlockRegistry`), `docs/FOCUS.md`, `docs/DISTRIBUTION.md`, `docs/RELEASES.md`, and enhanced `.github/workflows/release.yml`.
+
+## [0.2.0] - 2026-11-17
+
+### Fixed & Improved
+- `nim_safe` `--mem-safe --safe-mode` compliance across `src/nimui` and `apps/`.
+- Win32 `ptr culong` GCC 14 compatibility and elevated Admin runner handling in `test_cli`.
+- CI hardening (`nightly_concurrency.yml`, `strict-warnings`, `ubuntu` cross-check).
+
 ## [0.1.0] - 2026-11-16
 
 Initial MVP release of the **Nim Native Ecosystem & NimUI** (Windows-first).

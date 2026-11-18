@@ -9,7 +9,7 @@ on:
       tag:
         description: 'Release tag label (for dry-run / manual package build)'
         required: false
-        default: 'v0.1.0-manual'
+        default: 'v0.3.0-manual'
 
 permissions:
   contents: write

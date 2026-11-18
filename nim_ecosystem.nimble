@@ -1,5 +1,5 @@
 # Package
-version       = "0.1.0"
+version       = "0.3.0"
 author        = "sanalyny"
 description   = "High-performance systems foundation and platform-isolated primitives for Nim"
 license       = "MIT"
